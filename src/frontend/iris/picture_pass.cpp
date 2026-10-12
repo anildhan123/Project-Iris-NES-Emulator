@@ -126,42 +126,42 @@ void main() {
 }
 )";
 
-using GlCreateShader = unsigned int(__stdcall*)(unsigned int type);
-using GlShaderSource = void(__stdcall*)(unsigned int shader, int count, const char* const* source, const int* length);
-using GlCompileShader = void(__stdcall*)(unsigned int shader);
-using GlGetShaderiv = void(__stdcall*)(unsigned int shader, unsigned int pname, int* params);
-using GlGetShaderInfoLog = void(__stdcall*)(unsigned int shader, int maxLength, int* length, char* infoLog);
-using GlDeleteShader = void(__stdcall*)(unsigned int shader);
-using GlCreateProgram = unsigned int(__stdcall*)();
-using GlAttachShader = void(__stdcall*)(unsigned int program, unsigned int shader);
-using GlLinkProgram = void(__stdcall*)(unsigned int program);
-using GlGetProgramiv = void(__stdcall*)(unsigned int program, unsigned int pname, int* params);
-using GlGetProgramInfoLog = void(__stdcall*)(unsigned int program, int maxLength, int* length, char* infoLog);
-using GlDeleteProgram = void(__stdcall*)(unsigned int program);
-using GlUseProgram = void(__stdcall*)(unsigned int program);
-using GlGetUniformLocation = int(__stdcall*)(unsigned int program, const char* name);
-using GlUniform1i = void(__stdcall*)(int location, int value);
-using GlUniform1f = void(__stdcall*)(int location, float value);
-using GlUniform2f = void(__stdcall*)(int location, float x, float y);
-using GlUniform4f = void(__stdcall*)(int location, float x, float y, float z, float w);
-using GlGenVertexArrays = void(__stdcall*)(int count, unsigned int* arrays);
-using GlBindVertexArray = void(__stdcall*)(unsigned int array);
-using GlDeleteVertexArrays = void(__stdcall*)(int count, const unsigned int* arrays);
-using GlGenBuffers = void(__stdcall*)(int count, unsigned int* buffers);
-using GlBindBuffer = void(__stdcall*)(unsigned int target, unsigned int buffer);
-using GlBufferData = void(__stdcall*)(unsigned int target, std::intptr_t size, const void* data, unsigned int usage);
-using GlDeleteBuffers = void(__stdcall*)(int count, const unsigned int* buffers);
-using GlEnableVertexAttribArray = void(__stdcall*)(unsigned int index);
-using GlVertexAttribPointer = void(__stdcall*)(
+using GlCreateShader = unsigned int(APIENTRY*)(unsigned int type);
+using GlShaderSource = void(APIENTRY*)(unsigned int shader, int count, const char* const* source, const int* length);
+using GlCompileShader = void(APIENTRY*)(unsigned int shader);
+using GlGetShaderiv = void(APIENTRY*)(unsigned int shader, unsigned int pname, int* params);
+using GlGetShaderInfoLog = void(APIENTRY*)(unsigned int shader, int maxLength, int* length, char* infoLog);
+using GlDeleteShader = void(APIENTRY*)(unsigned int shader);
+using GlCreateProgram = unsigned int(APIENTRY*)();
+using GlAttachShader = void(APIENTRY*)(unsigned int program, unsigned int shader);
+using GlLinkProgram = void(APIENTRY*)(unsigned int program);
+using GlGetProgramiv = void(APIENTRY*)(unsigned int program, unsigned int pname, int* params);
+using GlGetProgramInfoLog = void(APIENTRY*)(unsigned int program, int maxLength, int* length, char* infoLog);
+using GlDeleteProgram = void(APIENTRY*)(unsigned int program);
+using GlUseProgram = void(APIENTRY*)(unsigned int program);
+using GlGetUniformLocation = int(APIENTRY*)(unsigned int program, const char* name);
+using GlUniform1i = void(APIENTRY*)(int location, int value);
+using GlUniform1f = void(APIENTRY*)(int location, float value);
+using GlUniform2f = void(APIENTRY*)(int location, float x, float y);
+using GlUniform4f = void(APIENTRY*)(int location, float x, float y, float z, float w);
+using GlGenVertexArrays = void(APIENTRY*)(int count, unsigned int* arrays);
+using GlBindVertexArray = void(APIENTRY*)(unsigned int array);
+using GlDeleteVertexArrays = void(APIENTRY*)(int count, const unsigned int* arrays);
+using GlGenBuffers = void(APIENTRY*)(int count, unsigned int* buffers);
+using GlBindBuffer = void(APIENTRY*)(unsigned int target, unsigned int buffer);
+using GlBufferData = void(APIENTRY*)(unsigned int target, std::intptr_t size, const void* data, unsigned int usage);
+using GlDeleteBuffers = void(APIENTRY*)(int count, const unsigned int* buffers);
+using GlEnableVertexAttribArray = void(APIENTRY*)(unsigned int index);
+using GlVertexAttribPointer = void(APIENTRY*)(
     unsigned int index, int size, unsigned int type, unsigned char normalized, int stride, const void* pointer);
-using GlGenFramebuffers = void(__stdcall*)(int count, unsigned int* ids);
-using GlBindFramebuffer = void(__stdcall*)(unsigned int target, unsigned int framebuffer);
-using GlDeleteFramebuffers = void(__stdcall*)(int count, const unsigned int* ids);
-using GlFramebufferTexture2D = void(__stdcall*)(
+using GlGenFramebuffers = void(APIENTRY*)(int count, unsigned int* ids);
+using GlBindFramebuffer = void(APIENTRY*)(unsigned int target, unsigned int framebuffer);
+using GlDeleteFramebuffers = void(APIENTRY*)(int count, const unsigned int* ids);
+using GlFramebufferTexture2D = void(APIENTRY*)(
     unsigned int target, unsigned int attachment, unsigned int textarget, unsigned int texture, int level);
-using GlCheckFramebufferStatus = unsigned int(__stdcall*)(unsigned int target);
-using GlDrawArrays = void(__stdcall*)(unsigned int mode, int first, int count);
-using GlActiveTexture = void(__stdcall*)(unsigned int texture);
+using GlCheckFramebufferStatus = unsigned int(APIENTRY*)(unsigned int target);
+using GlDrawArrays = void(APIENTRY*)(unsigned int mode, int first, int count);
+using GlActiveTexture = void(APIENTRY*)(unsigned int texture);
 
 template <typename Function>
 bool loadFunction(Function& function, const char* name) {

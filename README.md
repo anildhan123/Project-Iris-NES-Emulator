@@ -38,7 +38,7 @@ cmake --build --preset windows-msvc-release
 .\build\windows-msvc-debug\bin\Release\iris.exe --profile .\build\windows-msvc-debug\bin\Release\iris_demo.nes
 ```
 
-Version 0.8.0 is an unsigned build. It is not a signed installer, and the macOS app is not notarized. `cpack -G ZIP -C Release` from the Windows build directory packs the Release executable, Iris Demo, this readme, and the license files. What that build was measured to do, and what it does not claim, is in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+Version 0.9.0 is an unsigned build. It is not a signed installer, and the macOS app is not notarized. `cpack -G ZIP -C Release` from the Windows build directory packs the Release executable, Iris Demo, this readme, and the license files. What that build was measured to do, and what it does not claim, is in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 Linux and macOS use the same desktop sources:
 
@@ -49,7 +49,7 @@ ctest --preset linux-debug --output-on-failure
 ./build/linux-debug/bin/iris --version
 ```
 
-On macOS the preset name is `macos-debug` and the binary is `./build/macos-debug/bin/iris`. The Linux job installs a C++20 compiler, CMake, and the X11, Wayland, ALSA, PulseAudio, and OpenGL packages SDL needs. A core-only tree, without the window, is:
+On macOS the preset name is `macos-debug` and the binary is `./build/macos-debug/bin/iris`. The Linux job installs a C++20 compiler, CMake, and the X11, XTEST (`libxtst-dev`), Wayland, ALSA, PulseAudio, and OpenGL packages SDL needs. A core-only tree, without the window, is:
 
 ```bash
 cmake -S . -B build/core -DIRIS_DESKTOP=OFF
