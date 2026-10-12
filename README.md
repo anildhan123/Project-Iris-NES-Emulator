@@ -32,16 +32,27 @@ ctest --preset windows-msvc-debug --output-on-failure
 
 `windows-msvc-release` is a Release build preset that reuses the same configure preset. The first configure fetches SDL, Dear ImGui, spdlog, nlohmann/json, and Catch2, then compiles them.
 
+```powershell
+cmake --build --preset windows-msvc-release
+.\build\windows-msvc-debug\bin\Release\iris.exe --version
+.\build\windows-msvc-debug\bin\Release\iris.exe --profile .\build\windows-msvc-debug\bin\Release\iris_demo.nes
+```
+
+Version 0.7.0 is an unsigned Windows release candidate. It is not a signed installer. `cpack -G ZIP -C Release` from the build directory packs the Release executable, Iris Demo, this readme, and the license files. What that build was measured to do, and what it does not claim, is in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+
 ## What the window does
 
 The menu contains only commands that work:
 
-- File → Open Game, Close Game, Exit
+- File → Open Game, Open Recent, Scan Folder, Library, Close Game, Exit
 - Emulation → Pause / Resume, Reset, Save State, Load State, State Slots
 - View → Scale, Aspect, Preset, Picture, Fullscreen, VSync, Performance
-- Help → About, Legal Notices
+- Options → Settings
+- Help → About, Legal Notices, Open Source Licenses
 
-Open Game uses the system file dialog. A ROM path can also be passed on the command line. Escape pauses. The keyboard is controller 1: arrow keys, Z (A), X (B), Right Shift (Select), and Enter (Start). F5 saves the selected slot and F7 loads it. Shift+1 through Shift+9 select slots 1–9, and Shift+0 selects slot 10. State Slots shows a thumbnail, the game title, the time, and a description for each slot. Alt+Enter toggles borderless fullscreen.
+Open Game uses the system file dialog. Scan Folder adds `*.nes` files from that folder and its subfolders. A ROM path can also be passed on the command line. The library lists games you have opened or scanned, and File → Library shows or hides it. Removing a game from the library does not delete the file.
+
+The default controls are the arrow keys, Z (A), X (B), Right Shift (Select), and Enter (Start). Numpad Enter also presses Start. Escape pauses. F5 saves the selected slot and F7 loads it. Ctrl+R resets. Shift+1 through Shift+9 select slots 1–9, and Shift+0 selects slot 10. Options → Settings can change those keys, the picture, and the audio device. State Slots shows a thumbnail, the game title, the time, and a description for each slot. Alt+Enter toggles borderless fullscreen.
 
 The picture is the PPU's 256×240 output. Fit uses the largest whole multiple that fits. A fixed 1×–6× scale that does not fit steps down, and the status bar says so. Pixel aspect is the default; 4:3 is the television shape. Original, Smooth, Sharp, and CRT are presentation presets. Picture changes brightness, contrast, saturation, and gamma. Performance adds frame rate and timing to the status bar. None of these rewrite the emulated picture, so save thumbnails stay unfiltered. If the presentation shader cannot start, the window shows crisp pixels. The status bar names the loaded game. Themes are `xp-blue`, `xp-olive`, and `xp-silver`, read from the configuration file.
 
@@ -57,11 +68,11 @@ Other mappers produce an error and leave the current game loaded. There is no re
 
 ## Data directory
 
-Configuration, logs, save states, and battery RAM are stored under `%LOCALAPPDATA%\IrisEmulator`, not in the install directory. Set `IRIS_DATA_DIR` to point that root somewhere else. A missing configuration file is created with defaults. A version 1 file is still read; the next save writes version 2. A malformed file is left untouched and the session uses defaults.
+Configuration, logs, the game library, save states, and battery RAM are stored under `%LOCALAPPDATA%\IrisEmulator`, not in the install directory. Set `IRIS_DATA_DIR` to point that root somewhere else. A missing configuration file is created with defaults. A version 1 or version 2 file is still read; the next save writes version 3. A malformed file is left untouched and the session uses defaults. The library file is separate, so a bad configuration does not erase it.
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "ui": {
     "theme": "xp-blue",
     "windowWidth": 1024,
@@ -84,12 +95,40 @@ Configuration, logs, save states, and battery RAM are stored under `%LOCALAPPDAT
     "gamma": 1.0,
     "sharpness": 2.0,
     "scanline": 0.5
+  },
+  "audio": {
+    "volume": 1.0,
+    "muted": false,
+    "device": "",
+    "latency": "balanced"
+  },
+  "input": {
+    "a": 29,
+    "b": 27,
+    "select": 229,
+    "start": 40,
+    "up": 82,
+    "down": 81,
+    "left": 80,
+    "right": 79,
+    "openGame": 18,
+    "quickSave": 62,
+    "quickLoad": 64,
+    "pause": 41,
+    "fullscreen": 40,
+    "reset": 21
+  },
+  "library": {
+    "show": true
   }
 }
 ```
 
+After a build, `cpack -G ZIP` from the build directory packs the executable, Iris Demo, this readme, and the license files. That zip is not a signed installer.
+
 ## Documentation
 
+- [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) — tested behavior and measured frame time
 - [docs/PRD.md](docs/PRD.md) — product requirements
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — module boundaries
 - [docs/ROADMAP.md](docs/ROADMAP.md) — milestone status

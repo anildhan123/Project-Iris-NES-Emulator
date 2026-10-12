@@ -1,9 +1,12 @@
 add_executable(iris_tests
     cartridge_tests.cpp
     conformance_tests.cpp
+    crash_tests.cpp
+    regression_tests.cpp
     config_tests.cpp
     cpu_tests.cpp
     log_tests.cpp
+    library_tests.cpp
     nes_system_tests.cpp
     paths_tests.cpp
     state_tests.cpp
@@ -19,3 +22,10 @@ set_target_properties(iris_tests PROPERTIES
 )
 
 add_test(NAME iris_unit COMMAND iris_tests)
+add_test(
+    NAME iris_profile
+    COMMAND iris --profile $<TARGET_FILE_DIR:iris>/iris_demo.nes
+)
+set_tests_properties(iris_profile PROPERTIES
+    ENVIRONMENT "IRIS_DATA_DIR=${CMAKE_BINARY_DIR}/profile-data"
+)

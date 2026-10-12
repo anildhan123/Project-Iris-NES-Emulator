@@ -1,5 +1,6 @@
 #include "iris/paths.hpp"
 
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <system_error>
@@ -15,6 +16,7 @@ namespace iris {
 namespace {
 
 constexpr std::uintmax_t kMaxConfigBytes = 1024 * 1024;
+constexpr std::uintmax_t kMaxLibraryBytes = 1024 * 1024;
 
 AppPaths pathsFromRoot(std::filesystem::path root) {
     AppPaths paths;
@@ -200,6 +202,89 @@ Result<Config> loadConfigFile(const std::filesystem::path& path) {
 
 bool saveConfigFile(const std::filesystem::path& path, const Config& config) {
     return writeTextFileAtomically(path, ConfigService::toJson(config) + "\n");
+}
+
+Result<GameLibrary> loadLibraryFile(const std::filesystem::path& path) {
+    std::error_code error;
+    const bool exists = std::filesystem::exists(path, error);
+    if (error) {
+        return Result<GameLibrary>::failure(ErrorCode::IoFailure, error.message());
+    }
+    if (!exists) {
+        return Result<GameLibrary>::failure(ErrorCode::NotFound, "Library file does not exist.");
+    }
+    if (!std::filesystem::is_regular_file(path, error) || error) {
+        return Result<GameLibrary>::failure(ErrorCode::IoFailure, "Library path is not a file.");
+    }
+    const auto size = std::filesystem::file_size(path, error);
+    if (error) {
+        return Result<GameLibrary>::failure(ErrorCode::IoFailure, error.message());
+    }
+    if (size > kMaxLibraryBytes) {
+        return Result<GameLibrary>::failure(ErrorCode::ValidationFailure, "Library file exceeds the size limit.");
+    }
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        return Result<GameLibrary>::failure(ErrorCode::IoFailure, "Could not open the library file.");
+    }
+    std::string text(static_cast<std::size_t>(size), '\0');
+    input.read(text.data(), static_cast<std::streamsize>(size));
+    if (!input) {
+        return Result<GameLibrary>::failure(ErrorCode::IoFailure, "Could not read the library file.");
+    }
+    if (text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF &&
+        static_cast<unsigned char>(text[1]) == 0xBB && static_cast<unsigned char>(text[2]) == 0xBF) {
+        text.erase(0, 3);
+    }
+    return LibraryService::fromJson(text);
+}
+
+bool saveLibraryFile(const std::filesystem::path& path, const GameLibrary& library) {
+    return writeTextFileAtomically(path, LibraryService::toJson(library) + "\n");
+}
+
+RomScan collectNesFiles(const std::filesystem::path& folder, int maxDepth, std::size_t maxFiles) {
+    RomScan scan;
+    if (maxDepth < 0) {
+        maxDepth = 0;
+    }
+    std::error_code failure;
+    if (!std::filesystem::is_directory(folder, failure) || failure) {
+        scan.incomplete = true;
+        return scan;
+    }
+    std::filesystem::recursive_directory_iterator cursor(
+        folder, std::filesystem::directory_options::skip_permission_denied, failure);
+    const std::filesystem::recursive_directory_iterator end;
+    for (; !failure && cursor != end; cursor.increment(failure)) {
+        std::error_code entryError;
+        if (cursor->is_directory(entryError)) {
+            if (cursor.depth() >= maxDepth) {
+                cursor.disable_recursion_pending();
+                scan.depthLimited = true;
+            }
+            continue;
+        }
+        if (entryError || !cursor->is_regular_file(entryError)) {
+            continue;
+        }
+        std::string extension = cursor->path().extension().string();
+        for (char& character : extension) {
+            character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+        }
+        if (extension != ".nes") {
+            continue;
+        }
+        if (scan.files.size() >= maxFiles) {
+            scan.capped = true;
+            break;
+        }
+        scan.files.push_back(cursor->path());
+    }
+    if (failure) {
+        scan.incomplete = true;
+    }
+    return scan;
 }
 
 }  // namespace iris

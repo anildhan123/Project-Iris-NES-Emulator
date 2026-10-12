@@ -14,6 +14,8 @@
 
 namespace iris::systems::nes {
 
+[[nodiscard]] std::string contentIdForCartridge(const Cartridge& cartridge);
+
 class NesSystem final : public IEmulatedSystem {
 public:
     NesSystem();
@@ -30,6 +32,8 @@ public:
     [[nodiscard]] AudioView audio() const override;
     void setController(int port, std::uint8_t buttons) override;
     [[nodiscard]] SystemInfo info() const override;
+    bool describeContent(
+        const std::filesystem::path& path, ContentDescription& description, std::string& error) const override;
     [[nodiscard]] std::int64_t framePeriodNs() const override;
     [[nodiscard]] std::string contentId() const override { return contentId_; }
     bool saveState(std::vector<std::uint8_t>& bytes, std::string_view description, std::string& error) override;

@@ -148,19 +148,23 @@ bool decodeEnvelope(const std::uint8_t* data, std::size_t size, Envelope& envelo
 
 }  // namespace
 
-void NesSystem::refreshContentId() {
+std::string contentIdForCartridge(const Cartridge& cartridge) {
     ByteWriter writer;
-    writer.u16(static_cast<std::uint16_t>(cartridge_.mapper()));
-    writer.u16(static_cast<std::uint16_t>(cartridge_.submapper()));
-    writer.u8(static_cast<std::uint8_t>(cartridge_.region()));
-    writer.boolean(cartridge_.chrRam());
-    writer.bytes(cartridge_.prg().data(), cartridge_.prg().size());
-    if (cartridge_.chrRam()) {
-        writer.u32(static_cast<std::uint32_t>(cartridge_.chr().size()));
+    writer.u16(static_cast<std::uint16_t>(cartridge.mapper()));
+    writer.u16(static_cast<std::uint16_t>(cartridge.submapper()));
+    writer.u8(static_cast<std::uint8_t>(cartridge.region()));
+    writer.boolean(cartridge.chrRam());
+    writer.bytes(cartridge.prg().data(), cartridge.prg().size());
+    if (cartridge.chrRam()) {
+        writer.u32(static_cast<std::uint32_t>(cartridge.chr().size()));
     } else {
-        writer.bytes(cartridge_.chr().data(), cartridge_.chr().size());
+        writer.bytes(cartridge.chr().data(), cartridge.chr().size());
     }
-    contentId_ = sha256Hex(writer.data().data(), writer.data().size());
+    return sha256Hex(writer.data().data(), writer.data().size());
+}
+
+void NesSystem::refreshContentId() {
+    contentId_ = contentIdForCartridge(cartridge_);
 }
 
 bool NesSystem::exportComponents(std::vector<std::uint8_t>& out) const {

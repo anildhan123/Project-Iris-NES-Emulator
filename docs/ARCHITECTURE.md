@@ -24,7 +24,7 @@ iris_app
 | `iris_frontend` | SDL3 window, OpenGL 3.3 context, ImGui presentation, file dialog, audio queue | CPU, PPU, APU, or mapper types |
 | `iris_app` | Process startup, `--version`, optional ROM path, shutdown | Emulator internals |
 
-The desktop calls `IEmulatedSystem`. It does not read or write CPU, PPU, or mapper state. `iris_frontend` links the interface target only. `iris_app` is what links `iris_nes`.
+The desktop calls `IEmulatedSystem`. It does not read or write CPU, PPU, or mapper state. `describeContent` reads a ROM's title, detail, and content id without replacing the running game. That content id is the same SHA-256 stored for a loaded cartridge. `iris_frontend` links the interface target only. `iris_app` is what links `iris_nes`.
 
 ## Milestone 2 runtime
 
@@ -57,15 +57,15 @@ The shell asks `IEmulatedSystem` to save, load, and inspect a state. It does not
 
 A state file starts with the magic `IRS1`, format version 1, the NES system id, and the emulator version. It then stores a SHA-256 of the cartridge identity (mapper, submapper, region, CHR RAM size or CHR ROM bytes, and PRG ROM), the mapper id, the region, a feature-flag byte that must be zero, a timestamp, the title, an optional description, a 64×60 thumbnail, and length-delimited component chunks. A CRC32 covers every preceding byte. Chunks are `CPU `, `PPU `, `APU `, `MAP `, `CART`, `PAD `, `BUS `, and `TIME`. RAM lives inside `BUS`. An unknown chunk, a bad checksum, or a version this build does not know is rejected before the running machine changes. A failed apply restores the components captured just before the attempt.
 
-Files live under the data directory: `states/{content id}/slot-01.irstate` through `slot-10.irstate`. Writes go to a temporary file and replace the destination only after the bytes are on disk. Reads are capped at 4 MiB. The shell keeps ten slots. Changing that count waits for the settings milestone.
+Files live under the data directory: `states/{content id}/slot-01.irstate` through `slot-10.irstate`. Writes go to a temporary file and replace the destination only after the bytes are on disk. Reads are capped at 4 MiB. The shell keeps ten slots.
 
 ## Configuration schema
 
-Schema version 2. A version 1 file, which has no `video` object, is still accepted. The next save writes version 2 with the presentation defaults.
+Schema version 3. A version 1 file, which has no `video` object, and a version 2 file, which has `video` but no audio or input, are still accepted. The next save writes version 3.
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "ui": {
     "theme": "xp-blue",
     "windowWidth": 1024,
@@ -88,14 +88,47 @@ Schema version 2. A version 1 file, which has no `video` object, is still accept
     "gamma": 1.0,
     "sharpness": 2.0,
     "scanline": 0.5
+  },
+  "audio": {
+    "volume": 1.0,
+    "muted": false,
+    "device": "",
+    "latency": "balanced"
+  },
+  "input": {
+    "a": 29,
+    "b": 27,
+    "select": 229,
+    "start": 40,
+    "up": 82,
+    "down": 81,
+    "left": 80,
+    "right": 79,
+    "openGame": 18,
+    "quickSave": 62,
+    "quickLoad": 64,
+    "pause": 41,
+    "fullscreen": 40,
+    "reset": 21
+  },
+  "library": {
+    "show": true
   }
 }
 ```
 
-`theme` is `xp-blue`, `xp-olive`, or `xp-silver`. Window width is 640–7680 and height is 480–4320. `level` is `trace`, `debug`, `info`, `warn`, `error`, or `critical`. `scaleMode` is `fit` or `integer`. `integerScale` is 1–6. `aspectRatio` is `pixel` or `4:3`. `filter` is `nearest`, `smooth`, `sharp`, or `crt`. Brightness is −0.5–0.5, contrast is 0.5–2, saturation is 0–2, gamma is 0.4–2.5, sharpness is 1–4, and scanlines are 0–1. Unknown fields are rejected. Do not add a setting until the application implements it.
+`theme` is `xp-blue`, `xp-olive`, or `xp-silver`. Window width is 640–7680 and height is 480–4320. `level` is `trace`, `debug`, `info`, `warn`, `error`, or `critical`. `scaleMode` is `fit` or `integer`. `integerScale` is 1–6. `aspectRatio` is `pixel` or `4:3`. `filter` is `nearest`, `smooth`, `sharp`, or `crt`. Brightness is −0.5–0.5, contrast is 0.5–2, saturation is 0–2, gamma is 0.4–2.5, sharpness is 1–4, and scanlines are 0–1. `volume` is 0–1. `latency` is `short`, `balanced`, or `long`. An empty `device` selects the default playback device. Input values are key codes from 1 to 511. The eight controller keys are unique. Quick save, quick load, and pause are unique and are not controller keys. Open and Reset both use Ctrl, so they conflict only with each other. Fullscreen uses Alt, so it may reuse Return. Unknown fields are rejected. Do not add a setting until the application implements it.
 
 The built-in shaders are original and compiled into the frontend. Each one has an id, a display name, a version, a stage (`sampling` or `color`), a cost, and parameters. Sampling runs before color. A compile or link failure leaves the crisp-pixel path in place. The data directory's `shaders` folder is not read.
+
+## Game library
+
+`library/library.json` is version 1 and is not part of the configuration file. Each game stores its path, title, detail, content id, the time it was added, and the time it was last played. The window checks whether the file is still there when it draws the list. Removing an entry does not delete the ROM. Scan walks the chosen folder and its subfolders for `*.nes` files. Directory links are not followed. The walk stops after 16 folder levels or 2000 ROM files.
 
 ## Threading
 
 The NES still runs on the UI thread. The shell paces it with `framePeriodNs()`, which follows the cartridge region. Later milestones will keep emulation off the UI thread and will cross that boundary only through an explicit synchronization point.
+
+## Process boundary
+
+`iris` installs a Windows crash filter and catches C++ exceptions around startup and the window. An unexpected failure is written to `logs/crash.log` and shown in a dialog. That path does not save configuration. Expected errors, such as a ROM the build cannot play, stay on the existing error dialog and leave the current game loaded. `iris --profile rom.nes` runs 300 frames without opening a window and prints the average and slowest frame time.

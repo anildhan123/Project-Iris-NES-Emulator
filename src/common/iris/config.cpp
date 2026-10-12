@@ -56,6 +56,57 @@ const char* levelName(LogLevel level) {
     return "info";
 }
 
+const char* latencyName(AudioLatency latency) {
+    switch (latency) {
+    case AudioLatency::Short:
+        return "short";
+    case AudioLatency::Balanced:
+        return "balanced";
+    case AudioLatency::Long:
+        return "long";
+    }
+    return "balanced";
+}
+
+std::optional<AudioLatency> latencyFromName(std::string_view name) {
+    if (name == "short") {
+        return AudioLatency::Short;
+    }
+    if (name == "balanced") {
+        return AudioLatency::Balanced;
+    }
+    if (name == "long") {
+        return AudioLatency::Long;
+    }
+    return std::nullopt;
+}
+
+bool acceptableDevice(std::string_view name) {
+    if (name.size() > 256) {
+        return false;
+    }
+    for (const unsigned char character : name) {
+        if (character < 0x20 || character == 0x7F) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool readScancode(const Json& object, const char* key, int& destination, std::string& message) {
+    if (!object[key].is_number_integer()) {
+        message = std::string(key) + " must be an integer key code.";
+        return false;
+    }
+    const auto value = object[key].get<std::int64_t>();
+    if (value < kMinScancode || value > kMaxScancode) {
+        message = std::string(key) + " is outside the supported key range.";
+        return false;
+    }
+    destination = static_cast<int>(value);
+    return true;
+}
+
 std::optional<LogLevel> levelFromName(std::string_view name) {
     if (name == "trace") {
         return LogLevel::Trace;
@@ -127,11 +178,11 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
         return invalid("Expected a JSON object.");
     }
     if (!document.contains("version") || !document["version"].is_number_integer()) {
-        return invalid("Unsupported configuration version. Expected version 1 or 2.");
+        return invalid("Unsupported configuration version. Expected version 1, 2, or 3.");
     }
     const auto version = document["version"].get<std::int64_t>();
-    if (version != 1 && version != 2) {
-        return invalid("Unsupported configuration version. Expected version 1 or 2.");
+    if (version != 1 && version != 2 && version != 3) {
+        return invalid("Unsupported configuration version. Expected version 1, 2, or 3.");
     }
 
     std::string message;
@@ -139,7 +190,11 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
         if (!hasOnly(document, {"version", "ui", "logging"}, message)) {
             return invalid(std::move(message));
         }
-    } else if (!hasOnly(document, {"version", "ui", "logging", "video"}, message)) {
+    } else if (version == 2) {
+        if (!hasOnly(document, {"version", "ui", "logging", "video"}, message)) {
+            return invalid(std::move(message));
+        }
+    } else if (!hasOnly(document, {"version", "ui", "logging", "video", "audio", "input", "library"}, message)) {
         return invalid(std::move(message));
     }
 
@@ -183,7 +238,7 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
         config.windowWidth = static_cast<int>(width);
         config.windowHeight = static_cast<int>(height);
         config.logLevel = *level;
-        if (version == 2) {
+        if (version >= 2) {
             const Json& video = document["video"];
             if (!hasOnly(
                     video,
@@ -239,6 +294,77 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
             config.vsync = video["vsync"].get<bool>();
             config.showPerformance = video["showPerformance"].get<bool>();
         }
+        if (version == 3) {
+            const Json& audio = document["audio"];
+            if (!hasOnly(audio, {"volume", "muted", "device", "latency"}, message)) {
+                return invalid(std::move(message));
+            }
+            if (!audio["volume"].is_number()) {
+                return invalid("audio.volume must be a number from 0 to 1.");
+            }
+            const double volume = audio["volume"].get<double>();
+            if (volume < 0.0 || volume > 1.0) {
+                return invalid("audio.volume must be a number from 0 to 1.");
+            }
+            if (!audio["muted"].is_boolean()) {
+                return invalid("audio.muted must be true or false.");
+            }
+            if (!audio["device"].is_string()) {
+                return invalid("audio.device must be a string.");
+            }
+            const std::string device = audio["device"].get<std::string>();
+            if (!acceptableDevice(device)) {
+                return invalid("audio.device is too long or contains a control character.");
+            }
+            if (!audio["latency"].is_string()) {
+                return invalid("audio.latency must be short, balanced, or long.");
+            }
+            const auto latency = latencyFromName(audio["latency"].get<std::string>());
+            if (!latency.has_value()) {
+                return invalid("audio.latency must be short, balanced, or long.");
+            }
+
+            const Json& input = document["input"];
+            if (!hasOnly(
+                    input,
+                    {"a", "b", "select", "start", "up", "down", "left", "right", "openGame", "quickSave", "quickLoad",
+                     "pause", "fullscreen", "reset"},
+                    message)) {
+                return invalid(std::move(message));
+            }
+            InputBindings bindings;
+            if (!readScancode(input, "a", bindings.a, message) || !readScancode(input, "b", bindings.b, message) ||
+                !readScancode(input, "select", bindings.select, message) ||
+                !readScancode(input, "start", bindings.start, message) || !readScancode(input, "up", bindings.up, message) ||
+                !readScancode(input, "down", bindings.down, message) ||
+                !readScancode(input, "left", bindings.left, message) ||
+                !readScancode(input, "right", bindings.right, message) ||
+                !readScancode(input, "openGame", bindings.openGame, message) ||
+                !readScancode(input, "quickSave", bindings.quickSave, message) ||
+                !readScancode(input, "quickLoad", bindings.quickLoad, message) ||
+                !readScancode(input, "pause", bindings.pause, message) ||
+                !readScancode(input, "fullscreen", bindings.fullscreen, message) ||
+                !readScancode(input, "reset", bindings.reset, message)) {
+                return invalid(std::move(message));
+            }
+            if (const std::optional<std::string> conflict = bindingConflict(bindings)) {
+                return invalid(*conflict);
+            }
+
+            const Json& library = document["library"];
+            if (!hasOnly(library, {"show"}, message)) {
+                return invalid(std::move(message));
+            }
+            if (!library["show"].is_boolean()) {
+                return invalid("library.show must be true or false.");
+            }
+            config.volume = static_cast<float>(volume);
+            config.muted = audio["muted"].get<bool>();
+            config.audioDevice = device;
+            config.audioLatency = *latency;
+            config.input = bindings;
+            config.showLibrary = library["show"].get<bool>();
+        }
         return Result<Config>::success(std::move(config));
     } catch (const Json::exception&) {
         return invalid("Configuration values could not be read.");
@@ -269,11 +395,39 @@ std::string ConfigService::toJson(const Config& config) {
     video["sharpness"] = config.sharpness;
     video["scanline"] = config.scanline;
 
+    Json audio = Json::object();
+    audio["volume"] = config.volume;
+    audio["muted"] = config.muted;
+    audio["device"] = config.audioDevice;
+    audio["latency"] = latencyName(config.audioLatency);
+
+    Json input = Json::object();
+    input["a"] = config.input.a;
+    input["b"] = config.input.b;
+    input["select"] = config.input.select;
+    input["start"] = config.input.start;
+    input["up"] = config.input.up;
+    input["down"] = config.input.down;
+    input["left"] = config.input.left;
+    input["right"] = config.input.right;
+    input["openGame"] = config.input.openGame;
+    input["quickSave"] = config.input.quickSave;
+    input["quickLoad"] = config.input.quickLoad;
+    input["pause"] = config.input.pause;
+    input["fullscreen"] = config.input.fullscreen;
+    input["reset"] = config.input.reset;
+
+    Json library = Json::object();
+    library["show"] = config.showLibrary;
+
     Json document = Json::object();
     document["version"] = Config::kCurrentVersion;
     document["ui"] = std::move(ui);
     document["logging"] = std::move(logging);
     document["video"] = std::move(video);
+    document["audio"] = std::move(audio);
+    document["input"] = std::move(input);
+    document["library"] = std::move(library);
     return document.dump(2);
 }
 

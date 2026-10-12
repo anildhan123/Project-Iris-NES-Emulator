@@ -3,7 +3,12 @@ add_library(iris_common STATIC
     iris/byte_io.hpp
     iris/config.cpp
     iris/config.hpp
+    iris/crash_report.cpp
+    iris/crash_report.hpp
     iris/error.hpp
+    iris/input_bindings.hpp
+    iris/library.cpp
+    iris/library.hpp
     iris/log.cpp
     iris/log.hpp
     iris/sha256.cpp

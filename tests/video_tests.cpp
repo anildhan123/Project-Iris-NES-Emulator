@@ -80,7 +80,7 @@ TEST_CASE("version 1 configuration gains presentation defaults") {
     const auto parsed = iris::ConfigService::fromJson(
         R"({"version":1,"ui":{"theme":"xp-blue","windowWidth":1024,"windowHeight":768},"logging":{"level":"info"}})");
     REQUIRE(parsed.ok());
-    REQUIRE(parsed.value().version == 2);
+    REQUIRE(parsed.value().version == 3);
     REQUIRE(parsed.value().scaleMode == iris::ScaleMode::Fit);
     REQUIRE(parsed.value().filter == iris::PictureFilter::Nearest);
     REQUIRE(parsed.value().aspect == iris::AspectMode::Pixel);
@@ -123,6 +123,6 @@ TEST_CASE("version 2 picture settings round-trip and reject values outside their
     REQUIRE_FALSE(badGamma.ok());
 
     const auto future = iris::ConfigService::fromJson(
-        R"({"version":3,"ui":{"theme":"xp-blue","windowWidth":1024,"windowHeight":768},"logging":{"level":"info"}})");
+        R"({"version":4,"ui":{"theme":"xp-blue","windowWidth":1024,"windowHeight":768},"logging":{"level":"info"}})");
     REQUIRE_FALSE(future.ok());
 }

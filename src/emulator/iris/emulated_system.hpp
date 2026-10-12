@@ -28,6 +28,13 @@ struct SystemInfo {
     bool batteryBacked = false;
 };
 
+// Identity of a ROM file. Filling this does not load or replace the running game.
+struct ContentDescription {
+    std::string title;
+    std::string detail;
+    std::string contentId;
+};
+
 // Metadata from a state file. The thumbnail is owned by this struct.
 struct StatePreview {
     bool readable = false;
@@ -69,6 +76,8 @@ public:
     [[nodiscard]] virtual AudioView audio() const = 0;
     virtual void setController(int port, std::uint8_t buttons) = 0;
     [[nodiscard]] virtual SystemInfo info() const = 0;
+    virtual bool describeContent(
+        const std::filesystem::path& path, ContentDescription& description, std::string& error) const = 0;
     // Host pacing for one emulated frame. This is independent of the monitor refresh rate.
     [[nodiscard]] virtual std::int64_t framePeriodNs() const = 0;
     [[nodiscard]] virtual std::string contentId() const = 0;

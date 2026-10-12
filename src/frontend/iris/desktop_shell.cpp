@@ -1,5 +1,6 @@
 #include "iris/desktop_shell.hpp"
 
+#include "iris/library.hpp"
 #include "iris/log.hpp"
 #include "iris/paths.hpp"
 #include "iris/picture_pass.hpp"
@@ -18,6 +19,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <shellapi.h>
 #endif
 
 #include <SDL3/SDL.h>
@@ -88,11 +90,17 @@ struct TextureGuard {
     }
 };
 
+enum class DialogKind {
+    OpenRom,
+    ScanFolder,
+};
+
 struct PendingDialog {
     std::mutex mutex;
     bool active = false;
     bool ready = false;
     bool failed = false;
+    DialogKind kind = DialogKind::OpenRom;
     std::string path;
     std::string error;
 };
@@ -177,20 +185,70 @@ std::filesystem::path pathFromUtf8(const std::string& text) {
     return std::filesystem::path(reinterpret_cast<const char8_t*>(text.c_str()));
 }
 
-std::uint8_t controllerButtons() {
-    const bool* keys = SDL_GetKeyboardState(nullptr);
-    if (keys == nullptr) {
+std::string pathToUtf8(const std::filesystem::path& path) {
+    const auto text = path.lexically_normal().generic_u8string();
+    return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+}
+
+std::string scancodeLabel(int code) {
+    const char* name = SDL_GetScancodeName(static_cast<SDL_Scancode>(code));
+    if (name == nullptr || name[0] == '\0') {
+        return "Unknown";
+    }
+    return name;
+}
+
+int audioQueueSamples(AudioLatency latency) {
+    switch (latency) {
+    case AudioLatency::Short:
+        return 12000;
+    case AudioLatency::Long:
+        return 96000;
+    case AudioLatency::Balanced:
+        return 48000;
+    }
+    return 48000;
+}
+
+const char* playbackDeviceItem(void* data, int index) {
+    const auto* items = static_cast<const std::vector<std::string>*>(data);
+    if (items == nullptr || index < 0 || index >= static_cast<int>(items->size())) {
+        return nullptr;
+    }
+    return (*items)[static_cast<std::size_t>(index)].c_str();
+}
+
+void drawBindingButton(const char* label, int& scancode, const char* chord, int*& capture) {
+    ImGui::PushID(label);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(label);
+    ImGui::SameLine(150.0f);
+    std::string shown = "Press a key";
+    if (capture != &scancode) {
+        shown = chord == nullptr ? scancodeLabel(scancode) : std::string(chord) + scancodeLabel(scancode);
+    }
+    if (ImGui::Button(shown.c_str(), ImVec2(180.0f, 0.0f))) {
+        capture = &scancode;
+    }
+    ImGui::PopID();
+}
+
+std::uint8_t controllerButtons(const InputBindings& bindings) {
+    int count = 0;
+    const bool* keys = SDL_GetKeyboardState(&count);
+    if (keys == nullptr || count <= 0) {
         return 0;
     }
+    const auto down = [&](int code) { return code >= 0 && code < count && keys[code]; };
     std::uint8_t buttons = 0;
-    if (keys[SDL_SCANCODE_Z]) buttons = static_cast<std::uint8_t>(buttons | kButtonA);
-    if (keys[SDL_SCANCODE_X]) buttons = static_cast<std::uint8_t>(buttons | kButtonB);
-    if (keys[SDL_SCANCODE_RSHIFT]) buttons = static_cast<std::uint8_t>(buttons | kButtonSelect);
-    if (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER]) buttons = static_cast<std::uint8_t>(buttons | kButtonStart);
-    if (keys[SDL_SCANCODE_UP]) buttons = static_cast<std::uint8_t>(buttons | kButtonUp);
-    if (keys[SDL_SCANCODE_DOWN]) buttons = static_cast<std::uint8_t>(buttons | kButtonDown);
-    if (keys[SDL_SCANCODE_LEFT]) buttons = static_cast<std::uint8_t>(buttons | kButtonLeft);
-    if (keys[SDL_SCANCODE_RIGHT]) buttons = static_cast<std::uint8_t>(buttons | kButtonRight);
+    if (down(bindings.a)) buttons = static_cast<std::uint8_t>(buttons | kButtonA);
+    if (down(bindings.b)) buttons = static_cast<std::uint8_t>(buttons | kButtonB);
+    if (down(bindings.select)) buttons = static_cast<std::uint8_t>(buttons | kButtonSelect);
+    if (down(bindings.start) || down(SDL_SCANCODE_KP_ENTER)) buttons = static_cast<std::uint8_t>(buttons | kButtonStart);
+    if (down(bindings.up)) buttons = static_cast<std::uint8_t>(buttons | kButtonUp);
+    if (down(bindings.down)) buttons = static_cast<std::uint8_t>(buttons | kButtonDown);
+    if (down(bindings.left)) buttons = static_cast<std::uint8_t>(buttons | kButtonLeft);
+    if (down(bindings.right)) buttons = static_cast<std::uint8_t>(buttons | kButtonRight);
     return buttons;
 }
 
@@ -255,16 +313,52 @@ int DesktopShell::run() {
         log::warn(std::string("VSync was not changed: ") + SDL_GetError());
     }
 
-    SDL_AudioSpec audioSpec{};
-    audioSpec.format = SDL_AUDIO_F32;
-    audioSpec.channels = 1;
-    audioSpec.freq = 48000;
-    session.audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &audioSpec, nullptr, nullptr);
-    if (session.audio == nullptr) {
-        log::warn(std::string("Audio output was not opened: ") + SDL_GetError());
-    } else if (!SDL_ResumeAudioStreamDevice(session.audio)) {
-        log::warn(std::string("Audio output was not started: ") + SDL_GetError());
-    }
+    const auto openPlayback = [&](const std::string& deviceName) {
+        if (session.audio != nullptr) {
+            SDL_DestroyAudioStream(session.audio);
+            session.audio = nullptr;
+        }
+        SDL_AudioSpec spec{};
+        spec.format = SDL_AUDIO_F32;
+        spec.channels = 1;
+        spec.freq = 48000;
+        SDL_AudioDeviceID device = SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
+        bool named = false;
+        if (!deviceName.empty()) {
+            int count = 0;
+            SDL_AudioDeviceID* devices = SDL_GetAudioPlaybackDevices(&count);
+            if (devices != nullptr) {
+                for (int index = 0; index < count; ++index) {
+                    const char* name = SDL_GetAudioDeviceName(devices[index]);
+                    if (name != nullptr && deviceName == name) {
+                        device = devices[index];
+                        named = true;
+                        break;
+                    }
+                }
+                SDL_free(devices);
+            }
+            if (!named) {
+                log::info("Audio device \"" + deviceName + "\" is not connected. Using the default playback device.");
+            }
+        }
+        session.audio = SDL_OpenAudioDeviceStream(device, &spec, nullptr, nullptr);
+        if (session.audio == nullptr && device != SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK) {
+            log::warn(std::string("The selected audio device did not open: ") + SDL_GetError());
+            session.audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
+        }
+        if (session.audio == nullptr) {
+            log::warn(std::string("Audio output was not opened: ") + SDL_GetError());
+            return;
+        }
+        if (!SDL_ResumeAudioStreamDevice(session.audio)) {
+            log::warn(std::string("Audio output was not started: ") + SDL_GetError());
+            return;
+        }
+        const char* opened = SDL_GetAudioDeviceName(SDL_GetAudioStreamDevice(session.audio));
+        log::info(std::string("Audio output: ") + (opened == nullptr ? "default" : opened));
+    };
+    openPlayback(config_.audioDevice);
 
     float contentScale = SDL_GetWindowDisplayScale(session.window);
     if (contentScale <= 0.0f) {
@@ -292,7 +386,7 @@ int DesktopShell::run() {
     session.imguiBackends = true;
     loadUiFont();
 
-    const XpPalette palette = xpPalette(config_.theme);
+    XpPalette palette = xpPalette(config_.theme);
     const auto* glVersion = reinterpret_cast<const char*>(glGetString(GL_VERSION));
     if (glVersion != nullptr) {
         log::info(std::string("OpenGL ") + glVersion);
@@ -329,9 +423,11 @@ int DesktopShell::run() {
                                    "\n\nThis build plays NROM, MMC1, UxROM, CNROM, and MMC3. "
                                    "A NES 2.0 header can select PAL timing. "
                                    "Iris Demo, written for this project, is generated beside the executable.\n\n"
-                                   "Open a ROM with File, Open Game. Arrow keys move, Z is A, X is B, "
-                                   "Right Shift is Select, and Enter is Start. Escape pauses. "
-                                   "F5 saves the selected state slot and F7 loads it. "
+                                   "Open a ROM with File, Open Game, or from the library. "
+                                   "The default controls are the arrow keys, Z for A, X for B, Right Shift for Select, and Enter for Start. "
+                                   "Numpad Enter also presses Start. Escape pauses. "
+                                   "F5 saves the selected state slot and F7 loads it. Ctrl+R resets. "
+                                   "Options, Settings changes the theme, picture, audio, and keys. "
                                    "Shift+1 through Shift+0 select a slot, and Emulation, State Slots shows previews. "
                                    "Battery-backed RAM is stored separately from those slots. "
                                    "View sets the scale, 4:3 aspect, and presentation filter. Alt+Enter toggles fullscreen. "
@@ -370,6 +466,31 @@ int DesktopShell::run() {
         setFullscreen(true);
     }
     const auto appPaths = resolveAppPaths();
+    GameLibrary library;
+    std::string libraryNote;
+    std::string selectedGame;
+    char libraryQuery[128] = {};
+    LibrarySort librarySort = LibrarySort::Title;
+    bool openSettings = false;
+    bool openLicenses = false;
+    bool openRemove = false;
+    bool confirmReset = false;
+    bool refreshAudioList = false;
+    Config settingsDraft = config_;
+    int* captureBinding = nullptr;
+    std::string removePath;
+    std::vector<std::string> playbackNames;
+    std::vector<float> audioScratch;
+    bool wasMuted = config_.muted;
+    if (appPaths.has_value()) {
+        const auto loadedLibrary = loadLibraryFile(appPaths->library / "library.json");
+        if (loadedLibrary.ok()) {
+            library = loadedLibrary.value();
+        } else if (loadedLibrary.error().code != ErrorCode::NotFound) {
+            log::error(loadedLibrary.error().message);
+            libraryNote = "The library file could not be read and was left unchanged.";
+        }
+    }
     constexpr int kStateSlots = 10;
     int selectedSlot = 0;
     bool openStateSlots = false;
@@ -507,6 +628,25 @@ int DesktopShell::run() {
         log::info("Loaded state slot " + std::to_string(selectedSlot + 1) + ".");
     };
 
+    const auto saveLibrary = [&]() {
+        if (!appPaths.has_value()) {
+            errorText = "Could not find the library folder.";
+            errorTitle = "Could not save the library";
+            openError = true;
+            return false;
+        }
+        std::error_code failure;
+        std::filesystem::create_directories(appPaths->library, failure);
+        if (failure || !saveLibraryFile(appPaths->library / "library.json", library)) {
+            errorText = "Could not write the library.";
+            errorTitle = "Could not save the library";
+            openError = true;
+            log::error(errorText);
+            return false;
+        }
+        return true;
+    };
+
     const auto openRom = [&](const std::filesystem::path& path) {
         flushBattery();
         std::string error;
@@ -524,6 +664,23 @@ int DesktopShell::run() {
         }
         importBattery();
         accumulated = system_.framePeriodNs();
+        LibraryEntry entry;
+        entry.path = pathToUtf8(path);
+        entry.title = info.title;
+        entry.detail = info.detail;
+        entry.contentId = system_.contentId();
+        entry.addedUnixMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now().time_since_epoch())
+                                .count();
+        entry.lastPlayedUnixMs = entry.addedUnixMs;
+        std::string upsertError;
+        if (!LibraryService::upsert(library, std::move(entry), upsertError)) {
+            errorText = upsertError;
+            errorTitle = "Could not update the library";
+            openError = true;
+            return;
+        }
+        saveLibrary();
     };
 
     const auto showOpenDialog = [&]() {
@@ -531,10 +688,81 @@ int DesktopShell::run() {
         if (dialog.active) {
             return;
         }
+        dialog.kind = DialogKind::OpenRom;
         dialog.active = true;
         dialog.ready = false;
         SDL_ShowOpenFileDialog(
             onOpenFile, &dialog, session.window, kFilters, 2, basePath.empty() ? nullptr : basePath.c_str(), false);
+    };
+
+    const auto scanFolder = [&](const std::filesystem::path& folder) {
+        std::error_code failure;
+        if (!std::filesystem::is_directory(folder, failure)) {
+            errorText = "That folder could not be opened.";
+            errorTitle = "Could not scan the folder";
+            openError = true;
+            return;
+        }
+        int listed = 0;
+        int skipped = 0;
+        bool libraryFull = false;
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::system_clock::now().time_since_epoch())
+                             .count();
+        const RomScan found = collectNesFiles(folder);
+        for (const std::filesystem::path& file : found.files) {
+            ContentDescription description;
+            std::string describeError;
+            if (!system_.describeContent(file, description, describeError)) {
+                ++skipped;
+                continue;
+            }
+            LibraryEntry entry;
+            entry.path = pathToUtf8(file);
+            entry.title = description.title.empty() ? file.stem().string() : description.title;
+            entry.detail = description.detail;
+            entry.contentId = description.contentId;
+            entry.addedUnixMs = now;
+            entry.lastPlayedUnixMs = 0;
+            std::string upsertError;
+            if (!LibraryService::upsert(library, std::move(entry), upsertError)) {
+                libraryFull = true;
+                break;
+            }
+            ++listed;
+        }
+        if (!saveLibrary()) {
+            return;
+        }
+        libraryNote = "Added " + std::to_string(listed) + (listed == 1 ? " game." : " games.");
+        libraryNote += " Subfolders were included.";
+        if (skipped > 0) {
+            libraryNote += " Skipped " + std::to_string(skipped) + (skipped == 1 ? " file." : " files.");
+        }
+        if (found.capped) {
+            libraryNote += " Stopped after 2000 ROM files.";
+        }
+        if (found.depthLimited) {
+            libraryNote += " Stopped after 16 folder levels.";
+        }
+        if (libraryFull) {
+            libraryNote += " The library is full.";
+        }
+        if (found.incomplete) {
+            libraryNote += " The folder could not be read completely.";
+        }
+    };
+
+    const auto showScanDialog = [&]() {
+        std::lock_guard lock(dialog.mutex);
+        if (dialog.active) {
+            return;
+        }
+        dialog.kind = DialogKind::ScanFolder;
+        dialog.active = true;
+        dialog.ready = false;
+        SDL_ShowOpenFolderDialog(
+            onOpenFile, &dialog, session.window, basePath.empty() ? nullptr : basePath.c_str(), false);
     };
 
     while (!requestExit) {
@@ -548,23 +776,41 @@ int DesktopShell::run() {
                 event.window.windowID == SDL_GetWindowID(session.window)) {
                 requestExit = true;
             }
+            if (event.type == SDL_EVENT_AUDIO_DEVICE_REMOVED && !event.adevice.recording && session.audio != nullptr &&
+                event.adevice.which == SDL_GetAudioStreamDevice(session.audio)) {
+                log::info("The audio device was disconnected. Switching to the default playback device.");
+                const std::string gone = config_.audioDevice;
+                config_.audioDevice.clear();
+                if (settingsDraft.audioDevice == gone) {
+                    settingsDraft.audioDevice.clear();
+                }
+                openPlayback("");
+            }
             if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
-                const bool ctrl = (event.key.mod & SDL_KMOD_CTRL) != 0;
-                const bool alt = (event.key.mod & SDL_KMOD_ALT) != 0;
-                if (ctrl && event.key.scancode == SDL_SCANCODE_O) {
-                    showOpenDialog();
-                } else if (alt && !ctrl && event.key.scancode == SDL_SCANCODE_RETURN && !ImGui::GetIO().WantTextInput) {
-                    setFullscreen(!config_.fullscreen);
-                } else if (event.key.scancode == SDL_SCANCODE_ESCAPE && system_.loaded() &&
-                           !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)) {
-                    system_.setPaused(!system_.paused());
-                } else if (!ImGui::GetIO().WantTextInput && system_.loaded()) {
+                if (captureBinding != nullptr) {
+                    const int code = static_cast<int>(event.key.scancode);
+                    if (validScancode(code)) {
+                        *captureBinding = code;
+                    }
+                    captureBinding = nullptr;
+                } else if (!ImGui::GetIO().WantTextInput && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)) {
+                    const bool ctrl = (event.key.mod & SDL_KMOD_CTRL) != 0;
+                    const bool alt = (event.key.mod & SDL_KMOD_ALT) != 0;
                     const bool shift = (event.key.mod & SDL_KMOD_SHIFT) != 0;
-                    if (!ctrl && event.key.scancode == SDL_SCANCODE_F5) {
+                    const int code = static_cast<int>(event.key.scancode);
+                    if (ctrl && !alt && code == config_.input.openGame) {
+                        showOpenDialog();
+                    } else if (ctrl && !alt && code == config_.input.reset && system_.loaded()) {
+                        system_.reset();
+                    } else if (alt && !ctrl && code == config_.input.fullscreen) {
+                        setFullscreen(!config_.fullscreen);
+                    } else if (!ctrl && !alt && !shift && code == config_.input.pause && system_.loaded()) {
+                        system_.setPaused(!system_.paused());
+                    } else if (!ctrl && !alt && !shift && code == config_.input.quickSave && system_.loaded()) {
                         saveSelectedSlot();
-                    } else if (!ctrl && event.key.scancode == SDL_SCANCODE_F7) {
+                    } else if (!ctrl && !alt && !shift && code == config_.input.quickLoad && system_.loaded()) {
                         loadSelectedSlot();
-                    } else if (shift && !ctrl) {
+                    } else if (shift && !ctrl && !alt && system_.loaded()) {
                         int slot = -1;
                         if (event.key.scancode >= SDL_SCANCODE_1 && event.key.scancode <= SDL_SCANCODE_9) {
                             slot = event.key.scancode - SDL_SCANCODE_1;
@@ -596,23 +842,29 @@ int DesktopShell::run() {
             std::string chosen;
             bool failed = false;
             std::string failure;
+            DialogKind kind = DialogKind::OpenRom;
             {
                 std::lock_guard lock(dialog.mutex);
                 if (dialog.ready) {
                     chosen = dialog.path;
                     failed = dialog.failed;
                     failure = dialog.error;
+                    kind = dialog.kind;
                     dialog.ready = false;
                     dialog.path.clear();
                 }
             }
             if (failed) {
                 errorText = failure;
-                errorTitle = "Could not open game";
+                errorTitle = kind == DialogKind::ScanFolder ? "Could not scan the folder" : "Could not open game";
                 openError = true;
                 log::error(failure);
             } else if (!chosen.empty()) {
-                openRom(pathFromUtf8(chosen));
+                if (kind == DialogKind::ScanFolder) {
+                    scanFolder(pathFromUtf8(chosen));
+                } else {
+                    openRom(pathFromUtf8(chosen));
+                }
             }
         }
 
@@ -628,9 +880,24 @@ int DesktopShell::run() {
                 lastEmulationMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - emulationStart).count();
                 ++emulatedFrames;
                 const AudioView audio = system_.audio();
+                if (session.audio != nullptr && config_.muted && !wasMuted) {
+                    SDL_ClearAudioStream(session.audio);
+                }
+                wasMuted = config_.muted;
                 if (session.audio != nullptr && audio.samples != nullptr && audio.count > 0 &&
-                    SDL_GetAudioStreamQueued(session.audio) < 48000 * static_cast<int>(sizeof(float))) {
-                    SDL_PutAudioStreamData(session.audio, audio.samples, audio.count * static_cast<int>(sizeof(float)));
+                    SDL_GetAudioStreamQueued(session.audio) <
+                        audioQueueSamples(config_.audioLatency) * static_cast<int>(sizeof(float))) {
+                    audioScratch.resize(static_cast<std::size_t>(audio.count));
+                    if (config_.muted || config_.volume <= 0.0f) {
+                        std::fill(audioScratch.begin(), audioScratch.end(), 0.0f);
+                    } else {
+                        const float volume = std::min(config_.volume, 1.0f);
+                        for (int index = 0; index < audio.count; ++index) {
+                            audioScratch[static_cast<std::size_t>(index)] = audio.samples[index] * volume;
+                        }
+                    }
+                    SDL_PutAudioStreamData(
+                        session.audio, audioScratch.data(), audio.count * static_cast<int>(sizeof(float)));
                 }
                 accumulated -= period;
                 if (accumulated > period) {
@@ -642,7 +909,7 @@ int DesktopShell::run() {
         }
 
         const bool uiOwnsInput = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup);
-        system_.setController(0, system_.loaded() && !uiOwnsInput ? controllerButtons() : 0);
+        system_.setController(0, system_.loaded() && !uiOwnsInput ? controllerButtons(config_.input) : 0);
         system_.setController(1, 0);
 
         ImGui_ImplOpenGL3_NewFrame();
@@ -656,11 +923,40 @@ int DesktopShell::run() {
                                                  ImGuiWindowFlags_NoSavedSettings |
                                                  ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_MenuBar;
         if (ImGui::Begin("##client", nullptr, windowFlags)) {
+            const auto chord = [](const char* prefix, int code) {
+                return prefix == nullptr ? scancodeLabel(code) : std::string(prefix) + scancodeLabel(code);
+            };
+            const std::string openShortcut = chord("Ctrl+", config_.input.openGame);
+            const std::string resetShortcut = chord("Ctrl+", config_.input.reset);
+            const std::string saveShortcut = scancodeLabel(config_.input.quickSave);
+            const std::string loadShortcut = scancodeLabel(config_.input.quickLoad);
+            const std::string pauseShortcut = scancodeLabel(config_.input.pause);
+            const std::string fullscreenShortcut = chord("Alt+", config_.input.fullscreen);
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("File")) {
-                    if (ImGui::MenuItem("Open Game...", "Ctrl+O")) {
+                    if (ImGui::MenuItem("Open Game...", openShortcut.c_str())) {
                         showOpenDialog();
                     }
+                    if (ImGui::BeginMenu("Open Recent")) {
+                        const auto recentGames = LibraryService::recent(library, 10);
+                        if (recentGames.empty()) {
+                            ImGui::MenuItem("Empty", nullptr, false, false);
+                        }
+                        for (const LibraryEntry& game : recentGames) {
+                            std::error_code missing;
+                            const bool exists = std::filesystem::is_regular_file(pathFromUtf8(game.path), missing);
+                            const std::string label = exists ? game.title : game.title + " (missing)";
+                            if (ImGui::MenuItem(label.c_str(), nullptr, false, exists)) {
+                                openRom(pathFromUtf8(game.path));
+                            }
+                        }
+                        ImGui::EndMenu();
+                    }
+                    if (ImGui::MenuItem("Scan Folder...")) {
+                        showScanDialog();
+                    }
+                    ImGui::MenuItem("Library", nullptr, &config_.showLibrary);
+                    ImGui::Separator();
                     if (ImGui::MenuItem("Close Game", nullptr, false, system_.loaded())) {
                         flushBattery();
                         system_.unload();
@@ -673,17 +969,17 @@ int DesktopShell::run() {
                 }
                 if (ImGui::BeginMenu("Emulation")) {
                     const char* pauseLabel = system_.paused() ? "Resume" : "Pause";
-                    if (ImGui::MenuItem(pauseLabel, "Esc", false, system_.loaded())) {
+                    if (ImGui::MenuItem(pauseLabel, pauseShortcut.c_str(), false, system_.loaded())) {
                         system_.setPaused(!system_.paused());
                     }
-                    if (ImGui::MenuItem("Reset", nullptr, false, system_.loaded())) {
+                    if (ImGui::MenuItem("Reset", resetShortcut.c_str(), false, system_.loaded())) {
                         system_.reset();
                     }
                     ImGui::Separator();
-                    if (ImGui::MenuItem("Save State", "F5", false, system_.loaded())) {
+                    if (ImGui::MenuItem("Save State", saveShortcut.c_str(), false, system_.loaded())) {
                         saveSelectedSlot();
                     }
-                    if (ImGui::MenuItem("Load State", "F7", false, system_.loaded())) {
+                    if (ImGui::MenuItem("Load State", loadShortcut.c_str(), false, system_.loaded())) {
                         loadSelectedSlot();
                     }
                     if (ImGui::MenuItem("State Slots...", nullptr, false, system_.loaded())) {
@@ -767,7 +1063,7 @@ int DesktopShell::run() {
                         openPicture = true;
                     }
                     ImGui::Separator();
-                    if (ImGui::MenuItem("Fullscreen", "Alt+Enter", config_.fullscreen)) {
+                    if (ImGui::MenuItem("Fullscreen", fullscreenShortcut.c_str(), config_.fullscreen)) {
                         setFullscreen(!config_.fullscreen);
                     }
                     if (ImGui::MenuItem("VSync", nullptr, &config_.vsync)) {
@@ -784,12 +1080,21 @@ int DesktopShell::run() {
                     ImGui::MenuItem("Performance", nullptr, &config_.showPerformance);
                     ImGui::EndMenu();
                 }
+                if (ImGui::BeginMenu("Options")) {
+                    if (ImGui::MenuItem("Settings...")) {
+                        openSettings = true;
+                    }
+                    ImGui::EndMenu();
+                }
                 if (ImGui::BeginMenu("Help")) {
                     if (ImGui::MenuItem("About")) {
                         openAbout = true;
                     }
                     if (ImGui::MenuItem("Legal Notices")) {
                         openLegal = true;
+                    }
+                    if (ImGui::MenuItem("Open Source Licenses")) {
+                        openLicenses = true;
                     }
                     ImGui::EndMenu();
                 }
@@ -812,8 +1117,62 @@ int DesktopShell::run() {
             if (viewportHeight < 1.0f) {
                 viewportHeight = 1.0f;
             }
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
             std::string scaleStatus;
+            if (config_.showLibrary) {
+                ImGui::BeginChild("##library", ImVec2(220.0f, viewportHeight), ImGuiChildFlags_Borders);
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::InputTextWithHint("##find", "Find", libraryQuery, sizeof(libraryQuery));
+                int sortIndex = librarySort == LibrarySort::LastPlayed ? 1 : 0;
+                ImGui::SetNextItemWidth(-1.0f);
+                if (ImGui::Combo("##sort", &sortIndex, "Title\0Last played\0")) {
+                    librarySort = sortIndex == 1 ? LibrarySort::LastPlayed : LibrarySort::Title;
+                }
+                if (ImGui::Button("Scan folder")) {
+                    showScanDialog();
+                }
+                ImGui::TextWrapped("Subfolders are included.");
+                if (!libraryNote.empty()) {
+                    ImGui::TextWrapped("%s", libraryNote.c_str());
+                }
+                const float listHeight = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing();
+                ImGui::BeginChild("##library-list", ImVec2(0.0f, listHeight > 1.0f ? listHeight : 1.0f), ImGuiChildFlags_Borders);
+                const auto shown = LibraryService::query(library, libraryQuery, librarySort);
+                for (const LibraryEntry& game : shown) {
+                    ImGui::PushID(game.path.c_str());
+                    std::error_code missing;
+                    const bool exists = std::filesystem::is_regular_file(pathFromUtf8(game.path), missing);
+                    const std::string label = exists ? game.title : game.title + " (missing)";
+                    if (ImGui::Selectable(label.c_str(), selectedGame == game.path)) {
+                        selectedGame = game.path;
+                        if (exists && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                            openRom(pathFromUtf8(game.path));
+                        }
+                    }
+                    if (!game.detail.empty()) {
+                        ImGui::TextDisabled("%s", game.detail.c_str());
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndChild();
+                std::error_code selectedError;
+                const bool canPlay =
+                    !selectedGame.empty() && std::filesystem::is_regular_file(pathFromUtf8(selectedGame), selectedError);
+                ImGui::BeginDisabled(!canPlay);
+                if (ImGui::Button("Play")) {
+                    openRom(pathFromUtf8(selectedGame));
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::BeginDisabled(selectedGame.empty());
+                if (ImGui::Button("Remove")) {
+                    removePath = selectedGame;
+                    openRemove = true;
+                }
+                ImGui::EndDisabled();
+                ImGui::EndChild();
+                ImGui::SameLine();
+            }
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
             ImGui::BeginChild(
                 "##viewport",
                 ImVec2(0.0f, viewportHeight),
@@ -909,6 +1268,294 @@ int DesktopShell::run() {
                 versionLabel.c_str());
             draw->PopClipRect();
 
+            if (openSettings) {
+                settingsDraft = config_;
+                captureBinding = nullptr;
+                confirmReset = false;
+                refreshAudioList = true;
+                ImGui::OpenPopup("Settings");
+                openSettings = false;
+            }
+            const ImGuiViewport* settingsViewport = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(settingsViewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowSize(ImVec2(560.0f, 520.0f), ImGuiCond_Appearing);
+            if (ImGui::BeginPopupModal("Settings", nullptr)) {
+                const auto applyDraft = [&]() {
+                    if (bindingConflict(settingsDraft.input).has_value()) {
+                        return;
+                    }
+                    const bool deviceChanged = settingsDraft.audioDevice != config_.audioDevice;
+                    const bool themeChanged = settingsDraft.theme != config_.theme;
+                    const bool logChanged = settingsDraft.logLevel != config_.logLevel;
+                    const bool vsyncChanged = settingsDraft.vsync != config_.vsync;
+                    const bool wasFullscreen = (SDL_GetWindowFlags(session.window) & SDL_WINDOW_FULLSCREEN) != 0;
+                    const bool fullscreenChanged = settingsDraft.fullscreen != wasFullscreen;
+                    const int keptWidth = config_.windowWidth;
+                    const int keptHeight = config_.windowHeight;
+                    config_ = settingsDraft;
+                    config_.windowWidth = keptWidth;
+                    config_.windowHeight = keptHeight;
+                    settingsDraft.windowWidth = keptWidth;
+                    settingsDraft.windowHeight = keptHeight;
+                    if (themeChanged) {
+                        applyXpTheme(config_.theme, contentScale);
+                        palette = xpPalette(config_.theme);
+                    }
+                    if (logChanged) {
+                        log::setLevel(config_.logLevel);
+                    }
+                    if (vsyncChanged && !SDL_GL_SetSwapInterval(config_.vsync ? 1 : 0)) {
+                        config_.vsync = !config_.vsync;
+                        settingsDraft.vsync = config_.vsync;
+                        errorText = SDL_GetError();
+                        if (errorText.empty()) {
+                            errorText = "VSync could not be changed.";
+                        }
+                        errorTitle = "Could not change VSync";
+                        openError = true;
+                    }
+                    if (deviceChanged) {
+                        openPlayback(config_.audioDevice);
+                    }
+                    if (config_.muted && session.audio != nullptr) {
+                        SDL_ClearAudioStream(session.audio);
+                    }
+                    if (fullscreenChanged) {
+                        config_.fullscreen = wasFullscreen;
+                        setFullscreen(settingsDraft.fullscreen);
+                        settingsDraft.fullscreen = config_.fullscreen;
+                    }
+                };
+                const auto reloadDevices = [&]() {
+                    playbackNames.clear();
+                    int count = 0;
+                    SDL_AudioDeviceID* devices = SDL_GetAudioPlaybackDevices(&count);
+                    if (devices == nullptr) {
+                        return;
+                    }
+                    for (int index = 0; index < count; ++index) {
+                        const char* name = SDL_GetAudioDeviceName(devices[index]);
+                        if (name != nullptr && name[0] != '\0') {
+                            playbackNames.emplace_back(name);
+                        }
+                    }
+                    SDL_free(devices);
+                };
+                if (ImGui::BeginTabBar("settings-tabs")) {
+                    if (ImGui::BeginTabItem("General")) {
+                        int theme = static_cast<int>(settingsDraft.theme);
+                        if (ImGui::Combo("Theme", &theme, "XP Blue\0Olive Green\0Silver\0")) {
+                            settingsDraft.theme = static_cast<Theme>(theme);
+                        }
+                        int level = static_cast<int>(settingsDraft.logLevel);
+                        if (ImGui::Combo("Log level", &level, "Trace\0Debug\0Info\0Warn\0Error\0Critical\0")) {
+                            settingsDraft.logLevel = static_cast<LogLevel>(level);
+                        }
+                        ImGui::Checkbox("Show the game library", &settingsDraft.showLibrary);
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("Video")) {
+                        int scale = static_cast<int>(settingsDraft.scaleMode);
+                        if (ImGui::Combo("Scale", &scale, "Fit\0Integer\0")) {
+                            settingsDraft.scaleMode = static_cast<ScaleMode>(scale);
+                        }
+                        ImGui::SliderInt(
+                            "Integer scale", &settingsDraft.integerScale, kMinimumIntegerScale, kMaximumIntegerScale);
+                        int aspect = static_cast<int>(settingsDraft.aspect);
+                        if (ImGui::Combo("Aspect", &aspect, "Pixel\0Television 4:3\0")) {
+                            settingsDraft.aspect = static_cast<AspectMode>(aspect);
+                        }
+                        int filter = static_cast<int>(settingsDraft.filter);
+                        if (ImGui::Combo("Filter", &filter, "Original\0Smooth\0Sharp\0CRT\0")) {
+                            settingsDraft.filter = static_cast<PictureFilter>(filter);
+                        }
+                        ImGui::SliderFloat("Brightness", &settingsDraft.brightness, kBrightness.minimum, kBrightness.maximum, "%.2f");
+                        ImGui::SliderFloat("Contrast", &settingsDraft.contrast, kContrast.minimum, kContrast.maximum, "%.2f");
+                        ImGui::SliderFloat(
+                            "Saturation", &settingsDraft.saturation, kSaturation.minimum, kSaturation.maximum, "%.2f");
+                        ImGui::SliderFloat("Gamma", &settingsDraft.gamma, kGamma.minimum, kGamma.maximum, "%.2f");
+                        if (settingsDraft.filter == PictureFilter::Sharp) {
+                            ImGui::SliderFloat(
+                                "Sharpness", &settingsDraft.sharpness, kSharpness.minimum, kSharpness.maximum, "%.2f");
+                        }
+                        if (settingsDraft.filter == PictureFilter::Crt) {
+                            ImGui::SliderFloat("Scanlines", &settingsDraft.scanline, kScanline.minimum, kScanline.maximum, "%.2f");
+                        }
+                        ImGui::Checkbox("Fullscreen", &settingsDraft.fullscreen);
+                        ImGui::Checkbox("VSync", &settingsDraft.vsync);
+                        ImGui::Checkbox("Performance", &settingsDraft.showPerformance);
+                        ImGui::TextWrapped("These settings change how the picture is shown. The emulated image stays as the PPU drew it.");
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("Audio")) {
+                        if (refreshAudioList) {
+                            reloadDevices();
+                            refreshAudioList = false;
+                        }
+                        ImGui::SliderFloat("Volume", &settingsDraft.volume, 0.0f, 1.0f, "%.2f");
+                        ImGui::Checkbox("Mute", &settingsDraft.muted);
+                        int latency = static_cast<int>(settingsDraft.audioLatency);
+                        if (ImGui::Combo("Latency", &latency, "Short\0Balanced\0Long\0")) {
+                            settingsDraft.audioLatency = static_cast<AudioLatency>(latency);
+                        }
+                        std::vector<std::string> choices;
+                        choices.emplace_back("System default");
+                        for (const std::string& name : playbackNames) {
+                            choices.push_back(name);
+                        }
+                        if (!settingsDraft.audioDevice.empty() &&
+                            std::find(playbackNames.begin(), playbackNames.end(), settingsDraft.audioDevice) == playbackNames.end()) {
+                            choices.push_back(settingsDraft.audioDevice);
+                        }
+                        int currentDevice = 0;
+                        for (int index = 1; index < static_cast<int>(choices.size()); ++index) {
+                            if (choices[static_cast<std::size_t>(index)] == settingsDraft.audioDevice) {
+                                currentDevice = index;
+                            }
+                        }
+                        if (ImGui::Combo("Device", &currentDevice, playbackDeviceItem, &choices, static_cast<int>(choices.size()))) {
+                            settingsDraft.audioDevice =
+                                currentDevice == 0 ? std::string() : choices[static_cast<std::size_t>(currentDevice)];
+                        }
+                        if (ImGui::Button("Refresh devices")) {
+                            reloadDevices();
+                        }
+                        ImGui::TextWrapped("Volume is applied when samples are queued. The emulated audio is not rewritten.");
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("Input")) {
+                        ImGui::TextUnformatted("Controller");
+                        drawBindingButton("A", settingsDraft.input.a, nullptr, captureBinding);
+                        drawBindingButton("B", settingsDraft.input.b, nullptr, captureBinding);
+                        drawBindingButton("Select", settingsDraft.input.select, nullptr, captureBinding);
+                        drawBindingButton("Start", settingsDraft.input.start, nullptr, captureBinding);
+                        drawBindingButton("Up", settingsDraft.input.up, nullptr, captureBinding);
+                        drawBindingButton("Down", settingsDraft.input.down, nullptr, captureBinding);
+                        drawBindingButton("Left", settingsDraft.input.left, nullptr, captureBinding);
+                        drawBindingButton("Right", settingsDraft.input.right, nullptr, captureBinding);
+                        ImGui::Separator();
+                        ImGui::TextUnformatted("Shortcuts");
+                        drawBindingButton("Open game", settingsDraft.input.openGame, "Ctrl+", captureBinding);
+                        drawBindingButton("Quick save", settingsDraft.input.quickSave, nullptr, captureBinding);
+                        drawBindingButton("Quick load", settingsDraft.input.quickLoad, nullptr, captureBinding);
+                        drawBindingButton("Pause", settingsDraft.input.pause, nullptr, captureBinding);
+                        drawBindingButton("Fullscreen", settingsDraft.input.fullscreen, "Alt+", captureBinding);
+                        drawBindingButton("Reset", settingsDraft.input.reset, "Ctrl+", captureBinding);
+                        ImGui::TextWrapped(
+                            "Click a key, then press the replacement. Numpad Enter also presses Start. "
+                            "Shift+1 through Shift+0 still select state slots.");
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("Paths")) {
+                        if (appPaths.has_value()) {
+                            ImGui::TextWrapped("Data folder");
+                            ImGui::TextWrapped("%s", pathToUtf8(appPaths->root).c_str());
+                            ImGui::TextWrapped("Configuration");
+                            ImGui::TextWrapped("%s", pathToUtf8(appPaths->configFile).c_str());
+                            ImGui::TextWrapped("Library");
+                            ImGui::TextWrapped("%s", pathToUtf8(appPaths->library / "library.json").c_str());
+                            ImGui::TextWrapped("Save states");
+                            ImGui::TextWrapped("%s", pathToUtf8(appPaths->states).c_str());
+                            ImGui::TextWrapped("Battery RAM");
+                            ImGui::TextWrapped("%s", pathToUtf8(appPaths->saves).c_str());
+                            ImGui::TextWrapped("Logs");
+                            ImGui::TextWrapped("%s", pathToUtf8(appPaths->logs).c_str());
+                            if (ImGui::Button("Open data folder")) {
+#if defined(_WIN32)
+                                const auto opened = reinterpret_cast<INT_PTR>(ShellExecuteW(
+                                    nullptr, L"open", appPaths->root.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+                                if (opened <= 32) {
+                                    errorText = "The data folder could not be opened.";
+                                    errorTitle = "Could not open the folder";
+                                    openError = true;
+                                }
+#else
+                                errorText = "Opening the data folder is not available on this system.";
+                                errorTitle = "Could not open the folder";
+                                openError = true;
+#endif
+                            }
+                        } else {
+                            ImGui::TextUnformatted("The data folder could not be found.");
+                        }
+                        ImGui::TextWrapped("Set IRIS_DATA_DIR before starting Iris to use a different data folder.");
+                        ImGui::EndTabItem();
+                    }
+                    ImGui::EndTabBar();
+                }
+                if (const std::optional<std::string> conflict = bindingConflict(settingsDraft.input)) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.0f, 0.0f, 1.0f));
+                    ImGui::TextWrapped("%s", conflict->c_str());
+                    ImGui::PopStyleColor();
+                }
+                const bool conflicted = bindingConflict(settingsDraft.input).has_value();
+                ImGui::BeginDisabled(conflicted);
+                if (ImGui::Button("OK", ImVec2(75.0f, 0.0f))) {
+                    applyDraft();
+                    captureBinding = nullptr;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Apply", ImVec2(75.0f, 0.0f))) {
+                    applyDraft();
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(75.0f, 0.0f))) {
+                    captureBinding = nullptr;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Reset to defaults")) {
+                    confirmReset = true;
+                }
+                if (confirmReset) {
+                    ImGui::OpenPopup("Reset settings");
+                    confirmReset = false;
+                }
+                if (ImGui::BeginPopupModal("Reset settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                    ImGui::TextWrapped(
+                        "Theme, picture, audio, and controls return to their defaults. The window size stays as it is.");
+                    if (ImGui::Button("Reset", ImVec2(75.0f, 0.0f))) {
+                        const int width = settingsDraft.windowWidth;
+                        const int height = settingsDraft.windowHeight;
+                        const bool fullscreen = settingsDraft.fullscreen;
+                        settingsDraft = ConfigService::defaults();
+                        settingsDraft.windowWidth = width;
+                        settingsDraft.windowHeight = height;
+                        settingsDraft.fullscreen = fullscreen;
+                        captureBinding = nullptr;
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel", ImVec2(75.0f, 0.0f))) {
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndPopup();
+                }
+                ImGui::EndPopup();
+            }
+            if (openRemove) {
+                ImGui::OpenPopup("Remove from library");
+                openRemove = false;
+            }
+            if (ImGui::BeginPopupModal("Remove from library", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::TextWrapped("Remove this game from the library? The file stays where it is.");
+                if (ImGui::Button("Remove", ImVec2(75.0f, 0.0f))) {
+                    if (LibraryService::remove(library, removePath)) {
+                        if (selectedGame == removePath) {
+                            selectedGame.clear();
+                        }
+                        saveLibrary();
+                    }
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(75.0f, 0.0f))) {
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
             drawModal("About Iris Emulator", aboutText.c_str(), openAbout);
             if (openPicture) {
                 ImGui::OpenPopup("Picture");
@@ -1052,6 +1699,16 @@ int DesktopShell::run() {
                 "Owning an original cartridge does not by itself make every method of dumping or downloading a game lawful. "
                 "Those rules depend on jurisdiction and circumstance.",
                 openLegal);
+            drawModal(
+                "Open Source Licenses",
+                "This build uses the following open-source libraries. Full license texts are in THIRD_PARTY_NOTICES.md beside the program.\n\n"
+                "SDL 3.4.18 — zlib License\n"
+                "Dear ImGui 1.92.9b — MIT License\n"
+                "spdlog 1.17.0 — MIT License, which bundles fmt, also MIT\n"
+                "nlohmann/json 3.12.0 — MIT License\n"
+                "Catch2 3.16.1 — Boost Software License 1.0. Test builds only. Not part of the application.\n\n"
+                "Iris does not include Tahoma. On Windows it reads the copy installed with the operating system.",
+                openLicenses);
             drawModal(errorTitle.c_str(), errorText.c_str(), openError);
         }
         ImGui::End();

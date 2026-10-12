@@ -2,6 +2,9 @@
 #include "iris/nes/demo_rom.hpp"
 #include "iris/nes/nes_system.hpp"
 #include "iris/nes/palette.hpp"
+#include "iris/paths.hpp"
+
+#include "test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -127,4 +130,32 @@ TEST_CASE("the original demo draws IRIS and moves a sprite from port 1") {
         nes.runFrame();
     }
     REQUIRE(minXOf(nes.frame(), yellow) <= origin + 2);
+}
+
+TEST_CASE("describing a ROM does not replace the running game") {
+    const auto rom = iris::systems::nes::makeIrisDemoRom();
+    iris::systems::nes::NesSystem nes;
+    std::string error;
+    REQUIRE(nes.loadBytes(rom.data(), rom.size(), "Iris Demo", error));
+    const std::string id = nes.contentId();
+    REQUIRE(id.size() == 64);
+
+    iris::test::TemporaryDirectory directory;
+    const auto junk = directory.path() / "nope.nes";
+    const std::uint8_t junkBytes[] = {'n', 'o'};
+    REQUIRE(iris::writeBinaryFileAtomically(junk, junkBytes, sizeof(junkBytes)));
+    iris::ContentDescription description;
+    REQUIRE_FALSE(nes.describeContent(junk, description, error));
+    REQUIRE(nes.loaded());
+    REQUIRE(nes.contentId() == id);
+    REQUIRE(nes.info().title == "Iris Demo");
+
+    const auto demo = directory.path() / "iris_demo.nes";
+    REQUIRE(iris::writeBinaryFileAtomically(demo, rom.data(), rom.size()));
+    REQUIRE(nes.describeContent(demo, description, error));
+    REQUIRE(description.contentId == id);
+    REQUIRE(description.detail == "NROM, NTSC");
+    REQUIRE(description.title == "iris_demo");
+    REQUIRE(nes.contentId() == id);
+    REQUIRE(nes.info().title == "Iris Demo");
 }

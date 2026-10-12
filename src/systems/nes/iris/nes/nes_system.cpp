@@ -164,6 +164,25 @@ void NesSystem::setController(int port, std::uint8_t buttons) {
     }
 }
 
+bool NesSystem::describeContent(
+    const std::filesystem::path& path, ContentDescription& description, std::string& error) const {
+    auto parsed = Cartridge::fromFile(path);
+    if (!parsed.ok()) {
+        error = parsed.error().message;
+        return false;
+    }
+    const Cartridge& cartridge = parsed.value();
+    description.title = cartridge.name();
+    description.contentId = contentIdForCartridge(cartridge);
+    std::string supportError;
+    if (!mapperSupported(cartridge, supportError)) {
+        description.detail = std::move(supportError);
+    } else {
+        description.detail = std::string(mapperLabel(cartridge.mapper())) + ", " + regionLabel(cartridge.region());
+    }
+    return true;
+}
+
 SystemInfo NesSystem::info() const {
     SystemInfo info;
     info.title = title_.empty() ? "NES" : title_;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "iris/error.hpp"
+#include "iris/input_bindings.hpp"
 #include "iris/presentation.hpp"
 
 #include <string>
@@ -28,8 +29,14 @@ enum class LogLevel {
     Critical,
 };
 
+enum class AudioLatency {
+    Short,
+    Balanced,
+    Long,
+};
+
 struct Config {
-    static constexpr int kCurrentVersion = 2;
+    static constexpr int kCurrentVersion = 3;
 
     int version = kCurrentVersion;
     Theme theme = Theme::XpBlue;
@@ -49,6 +56,12 @@ struct Config {
     float gamma = kGamma.defaultValue;
     float sharpness = kSharpness.defaultValue;
     float scanline = kScanline.defaultValue;
+    float volume = 1.0f;
+    bool muted = false;
+    std::string audioDevice;
+    AudioLatency audioLatency = AudioLatency::Balanced;
+    InputBindings input{};
+    bool showLibrary = true;
 };
 
 [[nodiscard]] inline bool operator==(const Config& left, const Config& right) {
@@ -58,7 +71,9 @@ struct Config {
            left.filter == right.filter && left.fullscreen == right.fullscreen && left.vsync == right.vsync &&
            left.showPerformance == right.showPerformance && left.brightness == right.brightness &&
            left.contrast == right.contrast && left.saturation == right.saturation && left.gamma == right.gamma &&
-           left.sharpness == right.sharpness && left.scanline == right.scanline;
+           left.sharpness == right.sharpness && left.scanline == right.scanline && left.volume == right.volume &&
+           left.muted == right.muted && left.audioDevice == right.audioDevice && left.audioLatency == right.audioLatency &&
+           left.input == right.input && left.showLibrary == right.showLibrary;
 }
 
 class ConfigService {

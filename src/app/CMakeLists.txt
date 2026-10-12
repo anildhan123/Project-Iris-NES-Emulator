@@ -2,11 +2,22 @@ add_executable(iris
     main.cpp
     iris/application.cpp
     iris/application.hpp
+    iris/crash.cpp
+    iris/crash.hpp
 )
 
 target_include_directories(iris PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(iris PRIVATE iris_frontend iris_nes)
 iris_set_warnings(iris)
+
+set(IRIS_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
+set(IRIS_VERSION_MINOR ${PROJECT_VERSION_MINOR})
+set(IRIS_VERSION_PATCH ${PROJECT_VERSION_PATCH})
+set(IRIS_VERSION_STRING ${PROJECT_VERSION})
+configure_file(iris.rc.in ${CMAKE_CURRENT_BINARY_DIR}/iris.rc @ONLY)
+if(WIN32)
+    target_sources(iris PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/iris.rc)
+endif()
 
 add_dependencies(iris iris_make_demo)
 add_custom_command(TARGET iris POST_BUILD

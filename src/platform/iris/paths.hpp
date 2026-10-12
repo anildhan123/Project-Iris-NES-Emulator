@@ -1,12 +1,15 @@
 #pragma once
 
 #include "iris/config.hpp"
+#include "iris/library.hpp"
 
+#include <cstddef>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <cstdint>
+#include <vector>
 
 namespace iris {
 
@@ -46,5 +49,24 @@ struct AppPaths {
 
 [[nodiscard]] Result<Config> loadConfigFile(const std::filesystem::path& path);
 [[nodiscard]] bool saveConfigFile(const std::filesystem::path& path, const Config& config);
+
+[[nodiscard]] Result<GameLibrary> loadLibraryFile(const std::filesystem::path& path);
+[[nodiscard]] bool saveLibraryFile(const std::filesystem::path& path, const GameLibrary& library);
+
+inline constexpr int kMaxRomScanDepth = 16;
+inline constexpr std::size_t kMaxRomScanFiles = 2000;
+
+struct RomScan {
+    std::vector<std::filesystem::path> files;
+    bool capped = false;
+    bool depthLimited = false;
+    bool incomplete = false;
+};
+
+// Walks folder and its subfolders for *.nes files. Directory links are not followed.
+[[nodiscard]] RomScan collectNesFiles(
+    const std::filesystem::path& folder,
+    int maxDepth = kMaxRomScanDepth,
+    std::size_t maxFiles = kMaxRomScanFiles);
 
 }  // namespace iris

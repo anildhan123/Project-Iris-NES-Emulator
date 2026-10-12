@@ -51,15 +51,26 @@ Pattern bytes are not fetched dot by dot. Mappers beyond MMC3 wait for a later m
 - The presentation shader samples a copy of the PPU texture. Save thumbnails still use the unfiltered picture. If the shader cannot be created, the window shows crisp pixels.
 - Performance can show host fps, emulated fps, and the time spent in emulation and presentation.
 
-The game library, audio device settings, and other consoles wait for a later milestone.
+The game library, audio device settings, and other consoles were still ahead at that point. The library and audio settings landed in Milestone 6. Other consoles wait.
 
-## Milestone 6 — Complete desktop frontend
+## Milestone 6 — Complete desktop frontend (implemented)
 
-Game library, recent games, settings, controller and audio configuration, XP-inspired menus and dialogs, packaging, and legal notices in the product UI.
+- The game library is `library/library.json`, separate from configuration. It lists recent games, can search and sort, and can scan a folder and its subfolders. Removing an entry leaves the ROM on disk. A missing file is marked when the list is shown.
+- Settings changes the theme, log level, library sidebar, picture, volume, mute, audio device, latency, and keyboard bindings. Version 1 and version 2 configuration files still load.
+- If the playback device is disconnected, the window opens the default device. Volume scales a copy of the samples that are queued. The APU buffer is left as the emulator wrote it.
+- Help lists the pinned open-source libraries. A CPack ZIP contains the executable, Iris Demo, the readme, and the license files.
 
-## Milestone 7 — Compatibility and release hardening
+Release hardening and other consoles were still ahead at that point. Release hardening landed in Milestone 7. Other consoles wait.
 
-Conformance results, regression suite, profiling, crash and error handling, a Windows release candidate, and documentation.
+## Milestone 7 — Compatibility and release hardening (implemented)
+
+- The original conformance programs stay in the suite: official CPU behavior, UxROM, CNROM, MMC1, MMC3 IRQ, the frame counter, DMC, and PAL and Dendy frame length. Results and limits are in `docs/COMPATIBILITY.md`.
+- The original demo's picture after 90 idle frames is pinned. A second run must match, and holding Right must change the picture. The same suite rejects a debug build that averages more than 100 ms per frame.
+- `iris --profile rom.nes` runs 300 frames without a window and prints the target, average, and slowest frame. A Release build of that command is part of Windows CI.
+- An unexpected C++ exception or Windows hardware exception is written to `logs/crash.log` and shown in a dialog. Configuration is not saved after that failure.
+- Version 0.7.0 is the unsigned Windows release candidate. The executable carries a version resource. The Release build is produced with the existing `windows-msvc-release` preset.
+
+Linux, macOS, and mobile frontends wait for a later milestone.
 
 ## Milestone 8 — Portability validation
 

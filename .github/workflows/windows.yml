@@ -23,3 +23,25 @@ jobs:
 
       - name: Version
         run: .\build\windows-msvc-debug\bin\Debug\iris.exe --version
+
+  release:
+    name: MSVC release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset windows-msvc-debug
+
+      - name: Build
+        run: cmake --build --preset windows-msvc-release
+
+      - name: Version
+        run: .\build\windows-msvc-debug\bin\Release\iris.exe --version
+
+      - name: Profile demo
+        working-directory: build/windows-msvc-debug/bin/Release
+        env:
+          IRIS_DATA_DIR: ${{ github.workspace }}/build/profile-data
+        run: .\iris.exe --profile .\iris_demo.nes
