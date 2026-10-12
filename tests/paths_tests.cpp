@@ -100,3 +100,41 @@ TEST_CASE("joinRelative rejects absolute paths and parent traversal") {
     REQUIRE_FALSE(iris::joinRelative(root, "C:/Windows").has_value());
     REQUIRE_FALSE(iris::joinRelative(root, "/absolute").has_value());
 }
+
+TEST_CASE("Windows and XDG data roots follow the platform variables") {
+    const iris::DataEnvironment empty{};
+    REQUIRE_FALSE(iris::defaultDataRoot(iris::DataLayout::Windows, empty).has_value());
+    REQUIRE_FALSE(iris::defaultDataRoot(iris::DataLayout::Xdg, empty).has_value());
+
+    iris::DataEnvironment local{};
+    local.localAppData = "C:/Users/me/AppData/Local";
+    const auto fromLocal = iris::defaultDataRoot(iris::DataLayout::Windows, local);
+    REQUIRE(fromLocal.has_value());
+    REQUIRE(fromLocal->filename() == "IrisEmulator");
+
+    iris::DataEnvironment profile{};
+    profile.userProfile = "C:/Users/me";
+    const auto fromProfile = iris::defaultDataRoot(iris::DataLayout::Windows, profile);
+    REQUIRE(fromProfile.has_value());
+    REQUIRE(fromProfile->generic_string().find("AppData/Local/IrisEmulator") != std::string::npos);
+
+    iris::DataEnvironment xdg{};
+    xdg.xdgDataHome = "/home/me/.local/share";
+    const auto fromXdg = iris::defaultDataRoot(iris::DataLayout::Xdg, xdg);
+    REQUIRE(fromXdg.has_value());
+    REQUIRE(fromXdg->filename() == "IrisEmulator");
+
+    iris::DataEnvironment home{};
+    home.home = "/home/me";
+    const auto fromHome = iris::defaultDataRoot(iris::DataLayout::Xdg, home);
+    REQUIRE(fromHome.has_value());
+    REQUIRE(fromHome->generic_string().find(".local/share/IrisEmulator") != std::string::npos);
+
+    iris::DataEnvironment overridden{};
+    overridden.irisDataDir = "D:/IrisData";
+    overridden.home = "/home/me";
+    overridden.localAppData = "C:/Users/me/AppData/Local";
+    const auto fromOverride = iris::defaultDataRoot(iris::DataLayout::Xdg, overridden);
+    REQUIRE(fromOverride.has_value());
+    REQUIRE(fromOverride->filename() == "IrisData");
+}

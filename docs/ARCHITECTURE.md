@@ -13,6 +13,10 @@ iris_app
   -> iris_nes
        -> iris_emulator
        -> iris_common
+iris_core
+  -> iris_nes
+iris_jni (Android only)
+  -> iris_core
 ```
 
 | Module | Responsibility | Must not depend on |
@@ -21,8 +25,11 @@ iris_app
 | `iris_platform` | Data directories, safe path joins, atomic file replacement | SDL, ImGui, UI widgets |
 | `iris_emulator` | `IEmulatedSystem`, frame and audio views, controller button bits | SDL, ImGui, CPU, PPU, or mapper types |
 | `iris_nes` | iNES parsing, NROM, MMC1, UxROM, CNROM, MMC3, CPU, bus, PPU, APU, controllers | SDL, ImGui, Win32 UI |
-| `iris_frontend` | SDL3 window, OpenGL 3.3 context, ImGui presentation, file dialog, audio queue | CPU, PPU, APU, or mapper types |
+| `iris_core` | C functions around the NES system: load, run, frame, audio, and save state | SDL, ImGui, CPU, PPU, or mapper types in the header |
+| `iris_frontend` | SDL3 window, OpenGL context, ImGui presentation, file dialog, audio queue | CPU, PPU, APU, or mapper types |
 | `iris_app` | Process startup, `--version`, optional ROM path, shutdown | Emulator internals |
+
+`IRIS_DESKTOP` defaults to on. Android and iOS configure it off, so those builds do not fetch SDL or Dear ImGui and do not build the window. `iris_core` stays in every build. Its header, `src/core/iris.h`, is the stable boundary: an opaque `IrisSystem`, integer results, and caller-owned error buffers. The picture and sample pointers stay valid until the next load, unload, run, or destroy on that handle. `ports/android/iris_jni.cpp` is the JNI bridge and is compiled only when `ANDROID` is set. `ports/ios/iris_bridge.h` is the same C API for a future Swift or Objective-C caller. Neither port has a screen, a touch control, or an audio-focus policy.
 
 The desktop calls `IEmulatedSystem`. It does not read or write CPU, PPU, or mapper state. `describeContent` reads a ROM's title, detail, and content id without replacing the running game. That content id is the same SHA-256 stored for a loaded cartridge. `iris_frontend` links the interface target only. `iris_app` is what links `iris_nes`.
 
@@ -132,3 +139,5 @@ The NES still runs on the UI thread. The shell paces it with `framePeriodNs()`, 
 ## Process boundary
 
 `iris` installs a Windows crash filter and catches C++ exceptions around startup and the window. An unexpected failure is written to `logs/crash.log` and shown in a dialog. That path does not save configuration. Expected errors, such as a ROM the build cannot play, stay on the existing error dialog and leave the current game loaded. `iris --profile rom.nes` runs 300 frames without opening a window and prints the average and slowest frame time.
+
+The desktop data root is `IRIS_DATA_DIR` when that variable is set. Otherwise Windows uses `%LOCALAPPDATA%\IrisEmulator`, then `%USERPROFILE%\AppData\Local\IrisEmulator`. Linux and macOS use `$XDG_DATA_HOME/IrisEmulator`, then `$HOME/.local/share/IrisEmulator`.

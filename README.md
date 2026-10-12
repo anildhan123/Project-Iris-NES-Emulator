@@ -6,10 +6,10 @@ The project license is MIT. Third-party licenses are listed in [THIRD_PARTY_NOTI
 
 ## Requirements
 
-- Windows 11
-- Visual Studio 2026 (or another MSVC toolset with C++20), including the desktop C++ workload
+- Windows 11, or a current Ubuntu or macOS desktop
+- A C++20 compiler. The Windows build uses Visual Studio 2026 (or another MSVC toolset) with the desktop C++ workload
 - CMake 3.25 or newer
-- A GPU driver that can create an OpenGL 3.3 Core context
+- A GPU driver that can create an OpenGL 3.3 Core context on Windows and Linux. macOS uses an OpenGL 3.2 compatibility context
 - Git, used by CMake to fetch pinned dependencies
 
 This machine's Visual Studio install includes CMake, but that executable is not on `PATH`:
@@ -38,7 +38,36 @@ cmake --build --preset windows-msvc-release
 .\build\windows-msvc-debug\bin\Release\iris.exe --profile .\build\windows-msvc-debug\bin\Release\iris_demo.nes
 ```
 
-Version 0.7.0 is an unsigned Windows release candidate. It is not a signed installer. `cpack -G ZIP -C Release` from the build directory packs the Release executable, Iris Demo, this readme, and the license files. What that build was measured to do, and what it does not claim, is in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+Version 0.8.0 is an unsigned build. It is not a signed installer, and the macOS app is not notarized. `cpack -G ZIP -C Release` from the Windows build directory packs the Release executable, Iris Demo, this readme, and the license files. What that build was measured to do, and what it does not claim, is in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+
+Linux and macOS use the same desktop sources:
+
+```bash
+cmake --preset linux-debug
+cmake --build --preset linux-debug
+ctest --preset linux-debug --output-on-failure
+./build/linux-debug/bin/iris --version
+```
+
+On macOS the preset name is `macos-debug` and the binary is `./build/macos-debug/bin/iris`. The Linux job installs a C++20 compiler, CMake, and the X11, Wayland, ALSA, PulseAudio, and OpenGL packages SDL needs. A core-only tree, without the window, is:
+
+```bash
+cmake -S . -B build/core -DIRIS_DESKTOP=OFF
+cmake --build build/core
+ctest --test-dir build/core --output-on-failure
+```
+
+An Android NDK configure builds the JNI library instead of the window:
+
+```bash
+cmake -S . -B build/android \
+  -DANDROID_ABI=arm64-v8a \
+  -DANDROID_PLATFORM=android-24 \
+  -DCMAKE_TOOLCHAIN_FILE=$NDK/build/cmake/android.toolchain.cmake \
+  -DIRIS_DESKTOP=OFF
+```
+
+That library is `ports/android`. It is not an Android application. The iOS bridge is the C header `ports/ios/iris_bridge.h`.
 
 ## What the window does
 
@@ -68,7 +97,7 @@ Other mappers produce an error and leave the current game loaded. There is no re
 
 ## Data directory
 
-Configuration, logs, the game library, save states, and battery RAM are stored under `%LOCALAPPDATA%\IrisEmulator`, not in the install directory. Set `IRIS_DATA_DIR` to point that root somewhere else. A missing configuration file is created with defaults. A version 1 or version 2 file is still read; the next save writes version 3. A malformed file is left untouched and the session uses defaults. The library file is separate, so a bad configuration does not erase it.
+Configuration, logs, the game library, save states, and battery RAM are stored outside the install directory. On Windows that is `%LOCALAPPDATA%\IrisEmulator`. On Linux and macOS it is `$XDG_DATA_HOME/IrisEmulator`, or `$HOME/.local/share/IrisEmulator` when `XDG_DATA_HOME` is unset. Set `IRIS_DATA_DIR` to point that root somewhere else. A missing configuration file is created with defaults. A version 1 or version 2 file is still read; the next save writes version 3. A malformed file is left untouched and the session uses defaults. The library file is separate, so a bad configuration does not erase it.
 
 ```json
 {

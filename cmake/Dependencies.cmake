@@ -61,33 +61,39 @@ FetchContent_Declare(
     GIT_SHALLOW TRUE
 )
 
-FetchContent_MakeAvailable(SDL imgui spdlog nlohmann_json Catch2)
-
-add_library(imgui STATIC
-    ${imgui_SOURCE_DIR}/imgui.cpp
-    ${imgui_SOURCE_DIR}/imgui_draw.cpp
-    ${imgui_SOURCE_DIR}/imgui_tables.cpp
-    ${imgui_SOURCE_DIR}/imgui_widgets.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
-    ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
-)
-
-target_include_directories(imgui SYSTEM PUBLIC
-    ${imgui_SOURCE_DIR}
-    ${imgui_SOURCE_DIR}/backends
-)
-
-target_link_libraries(imgui PUBLIC SDL3::SDL3)
-target_compile_definitions(imgui PRIVATE SDL_MAIN_HANDLED)
-
-if(WIN32)
-    target_link_libraries(imgui PUBLIC opengl32)
+if(IRIS_DESKTOP)
+    FetchContent_MakeAvailable(SDL imgui spdlog nlohmann_json Catch2)
+else()
+    FetchContent_MakeAvailable(spdlog nlohmann_json Catch2)
 endif()
 
-if(MSVC)
-    target_compile_options(imgui PRIVATE /W0)
-else()
-    target_compile_options(imgui PRIVATE -w)
+if(IRIS_DESKTOP)
+    add_library(imgui STATIC
+        ${imgui_SOURCE_DIR}/imgui.cpp
+        ${imgui_SOURCE_DIR}/imgui_draw.cpp
+        ${imgui_SOURCE_DIR}/imgui_tables.cpp
+        ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+        ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    )
+
+    target_include_directories(imgui SYSTEM PUBLIC
+        ${imgui_SOURCE_DIR}
+        ${imgui_SOURCE_DIR}/backends
+    )
+
+    target_link_libraries(imgui PUBLIC SDL3::SDL3)
+    target_compile_definitions(imgui PRIVATE SDL_MAIN_HANDLED)
+
+    if(WIN32)
+        target_link_libraries(imgui PUBLIC opengl32)
+    endif()
+
+    if(MSVC)
+        target_compile_options(imgui PRIVATE /W0)
+    else()
+        target_compile_options(imgui PRIVATE -w)
+    endif()
 endif()
 
 if(WIN32)
@@ -95,4 +101,8 @@ if(WIN32)
     target_compile_definitions(spdlog PUBLIC SPDLOG_WCHAR_FILENAMES)
 endif()
 
-message(STATUS "Iris dependencies: SDL 3.4.18, Dear ImGui 1.92.9b, spdlog 1.17.0, nlohmann/json 3.12.0, Catch2 3.16.1")
+if(IRIS_DESKTOP)
+    message(STATUS "Iris dependencies: SDL 3.4.18, Dear ImGui 1.92.9b, spdlog 1.17.0, nlohmann/json 3.12.0, Catch2 3.16.1")
+else()
+    message(STATUS "Iris core dependencies: spdlog 1.17.0, nlohmann/json 3.12.0, Catch2 3.16.1")
+endif()

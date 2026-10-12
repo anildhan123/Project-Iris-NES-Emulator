@@ -284,9 +284,16 @@ int DesktopShell::run() {
     }
 
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+#if defined(__APPLE__)
+    // macOS has no OpenGL 3.3 Core context. 3.2 compatibility is the supported profile.
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+#else
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+#endif
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
@@ -378,7 +385,12 @@ int DesktopShell::run() {
         log::error("ImGui SDL3 backend failed to initialize.");
         return 1;
     }
-    if (!ImGui_ImplOpenGL3_Init("#version 330 core")) {
+#if defined(__APPLE__)
+    const char* const glslVersion = "#version 150";
+#else
+    const char* const glslVersion = "#version 330 core";
+#endif
+    if (!ImGui_ImplOpenGL3_Init(glslVersion)) {
         ImGui_ImplSDL3_Shutdown();
         log::error("ImGui OpenGL 3 backend failed to initialize.");
         return 1;

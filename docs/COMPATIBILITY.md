@@ -1,6 +1,6 @@
 # Compatibility
 
-Version 0.7.0 records what this Windows build was tested to do. It is not a catalogue of commercial games, and it does not include those games.
+Version 0.8.0 records what this Windows build was tested to do, and which other builds are defined but were not run on the development machine. It is not a catalogue of commercial games, and it does not include those games.
 
 Run the suite from a configured build tree:
 
@@ -61,4 +61,14 @@ An unexpected C++ exception, or a Windows access violation, integer division by 
 
 ## Release candidate
 
-0.7.0 is an unsigned Windows build. The executable's version resource says 0.7.0. Build it with `cmake --build --preset windows-msvc-release`. Package it with `cpack -G ZIP -C Release` from the build directory. The zip contains the executable, Iris Demo, the readme, and the license files. It is not a signed installer, and it is not a Linux, macOS, or mobile build.
+0.8.0 is an unsigned build. The Windows executable's version resource says 0.8.0. Build it with `cmake --build --preset windows-msvc-release`. Package it with `cpack -G ZIP -C Release` from the build directory. The zip contains the executable, Iris Demo, the readme, and the license files. It is not a signed installer.
+
+The frame-time numbers above were measured for 0.7.0 on this Windows 11 machine. A later `--profile` run prints `Iris Emulator 0.8.0` and its own host times. The target line stays the NTSC frame period.
+
+## Portability
+
+The development machine is Windows. The C API test and the Windows and XDG data-root tests ran here. `iris --version` on this machine prints `Iris Emulator 0.8.0`. A second configure with the desktop turned off built the core and passed the unit tests, and it did not produce the window executable.
+
+Linux and macOS desktop builds are the `linux-debug` and `macos-debug` presets, and GitHub Actions runs both. Those jobs had not been observed from this machine when 0.8.0 was assembled. Linux needs an OpenGL 3.3 Core driver. macOS requests OpenGL 3.2 compatibility; the picture shaders are still GLSL 330, and a shader failure shows crisp pixels. The macOS binary is not signed or notarized.
+
+`ports/android` is a JNI library compiled only by the Android NDK. `ports/ios/iris_bridge.h` is included by the Windows unit test so the C declarations compile. Neither port was run as an app, and this machine did not run the NDK or Xcode.

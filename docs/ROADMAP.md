@@ -70,8 +70,15 @@ Release hardening and other consoles were still ahead at that point. Release har
 - An unexpected C++ exception or Windows hardware exception is written to `logs/crash.log` and shown in a dialog. Configuration is not saved after that failure.
 - Version 0.7.0 is the unsigned Windows release candidate. The executable carries a version resource. The Release build is produced with the existing `windows-msvc-release` preset.
 
-Linux, macOS, and mobile frontends wait for a later milestone.
+Linux and macOS desktop builds, and the shared core, landed in Milestone 8. Full mobile frontends and other consoles wait.
 
-## Milestone 8 — Portability validation
+## Milestone 8 — Portability validation (implemented)
 
-Linux and macOS builds, a stable core API, and Android and iOS feasibility prototypes. Full mobile frontends wait until the core and state APIs are stable.
+- `src/core/iris.h` is the C API. It creates the NES system, loads a ROM, runs a frame, and copies a save state. The header does not include SDL, ImGui, or CPU, PPU, or mapper types. A Windows test loads Iris Demo through that API and checks the pinned picture hash.
+- `IRIS_DESKTOP` builds the SDL window. It is forced off for Android and iOS, and those configures do not fetch SDL or Dear ImGui.
+- Linux uses the `linux-debug` preset. macOS uses `macos-debug` and requests an OpenGL 3.2 compatibility context, because macOS does not provide OpenGL 3.3 Core. The picture shaders stay GLSL 330; if they fail, the window shows crisp pixels.
+- User data on Linux and macOS is `$XDG_DATA_HOME/IrisEmulator`, or `$HOME/.local/share/IrisEmulator`. `IRIS_DATA_DIR` still wins.
+- `ports/android` is a JNI library and a Java class with native declarations. It is not an app. `ports/ios/iris_bridge.h` is the same C API for a future Swift or Objective-C caller. There is no touch control, audio-focus handling, Gradle screen, or Xcode app.
+- GitHub Actions builds the desktop on Ubuntu and macOS. This repository's development machine is Windows, so those two jobs are the platform check. The macOS build is not signed or notarized.
+
+Full mobile frontends and other consoles are not started.

@@ -27,7 +27,23 @@ struct AppPaths {
 
 [[nodiscard]] std::optional<std::string> environmentValue(const char* name);
 
-// IRIS_DATA_DIR when set, otherwise %LOCALAPPDATA%\IrisEmulator.
+enum class DataLayout {
+    Windows,
+    Xdg,
+};
+
+struct DataEnvironment {
+    std::string_view irisDataDir;
+    std::string_view localAppData;
+    std::string_view userProfile;
+    std::string_view xdgDataHome;
+    std::string_view home;
+};
+
+// IRIS_DATA_DIR wins. Windows then uses Local AppData. XDG uses XDG_DATA_HOME, then ~/.local/share.
+[[nodiscard]] std::optional<std::filesystem::path> defaultDataRoot(DataLayout layout, const DataEnvironment& environment);
+
+// IRIS_DATA_DIR when set. Otherwise the platform data directory for this host.
 [[nodiscard]] std::optional<AppPaths> resolveAppPaths();
 
 [[nodiscard]] bool ensureAppDirectories(const AppPaths& paths);

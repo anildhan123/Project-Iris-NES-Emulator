@@ -54,18 +54,46 @@ std::optional<std::string> environmentValue(const char* name) {
 #endif
 }
 
-std::optional<AppPaths> resolveAppPaths() {
-    if (const auto overridePath = environmentValue("IRIS_DATA_DIR")) {
-        return pathsFromRoot(std::filesystem::path(*overridePath).lexically_normal());
+std::optional<std::filesystem::path> defaultDataRoot(DataLayout layout, const DataEnvironment& environment) {
+    if (!environment.irisDataDir.empty()) {
+        return std::filesystem::path(std::string(environment.irisDataDir)).lexically_normal();
     }
-    if (const auto localAppData = environmentValue("LOCALAPPDATA")) {
-        return pathsFromRoot((std::filesystem::path(*localAppData) / "IrisEmulator").lexically_normal());
+    if (layout == DataLayout::Windows) {
+        if (!environment.localAppData.empty()) {
+            return (std::filesystem::path(std::string(environment.localAppData)) / "IrisEmulator").lexically_normal();
+        }
+        if (!environment.userProfile.empty()) {
+            return (std::filesystem::path(std::string(environment.userProfile)) / "AppData" / "Local" / "IrisEmulator")
+                .lexically_normal();
+        }
+        return std::nullopt;
     }
-    if (const auto userProfile = environmentValue("USERPROFILE")) {
-        return pathsFromRoot(
-            (std::filesystem::path(*userProfile) / "AppData" / "Local" / "IrisEmulator").lexically_normal());
+    if (!environment.xdgDataHome.empty()) {
+        return (std::filesystem::path(std::string(environment.xdgDataHome)) / "IrisEmulator").lexically_normal();
+    }
+    if (!environment.home.empty()) {
+        return (std::filesystem::path(std::string(environment.home)) / ".local" / "share" / "IrisEmulator").lexically_normal();
     }
     return std::nullopt;
+}
+
+std::optional<AppPaths> resolveAppPaths() {
+    const std::string irisDataDir = environmentValue("IRIS_DATA_DIR").value_or("");
+    const std::string localAppData = environmentValue("LOCALAPPDATA").value_or("");
+    const std::string userProfile = environmentValue("USERPROFILE").value_or("");
+    const std::string xdgDataHome = environmentValue("XDG_DATA_HOME").value_or("");
+    const std::string home = environmentValue("HOME").value_or("");
+    const DataEnvironment environment{irisDataDir, localAppData, userProfile, xdgDataHome, home};
+#if defined(_WIN32)
+    const DataLayout layout = DataLayout::Windows;
+#else
+    const DataLayout layout = DataLayout::Xdg;
+#endif
+    const auto root = defaultDataRoot(layout, environment);
+    if (!root.has_value()) {
+        return std::nullopt;
+    }
+    return pathsFromRoot(*root);
 }
 
 bool ensureAppDirectories(const AppPaths& paths) {

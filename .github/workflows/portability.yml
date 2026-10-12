@@ -1,0 +1,50 @@
+name: Portability
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    name: Ubuntu debug
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake pkg-config libgl1-mesa-dev libpulse-dev libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev libxss-dev libwayland-dev libxkbcommon-dev libdecor-0-dev libudev-dev
+          sudo apt-get install -y libasound2-dev || sudo apt-get install -y libasound-dev
+
+      - name: Configure
+        run: cmake --preset linux-debug
+
+      - name: Build
+        run: cmake --build --preset linux-debug
+
+      - name: Test
+        run: ctest --preset linux-debug --output-on-failure
+
+      - name: Version
+        run: ./build/linux-debug/bin/iris --version
+
+  macos:
+    name: macOS debug
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset macos-debug
+
+      - name: Build
+        run: cmake --build --preset macos-debug
+
+      - name: Test
+        run: ctest --preset macos-debug --output-on-failure
+
+      - name: Version
+        run: ./build/macos-debug/bin/iris --version
