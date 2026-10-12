@@ -37,10 +37,10 @@ ctest --preset windows-msvc-debug --output-on-failure
 The menu contains only commands that work:
 
 - File → Open Game, Close Game, Exit
-- Emulation → Pause / Resume, Reset
+- Emulation → Pause / Resume, Reset, Save State, Load State, State Slots
 - Help → About, Legal Notices
 
-Open Game uses the system file dialog. A ROM path can also be passed on the command line. Escape pauses. The keyboard is controller 1: arrow keys, Z (A), X (B), Right Shift (Select), and Enter (Start).
+Open Game uses the system file dialog. A ROM path can also be passed on the command line. Escape pauses. The keyboard is controller 1: arrow keys, Z (A), X (B), Right Shift (Select), and Enter (Start). F5 saves the selected slot and F7 loads it. Shift+1 through Shift+9 select slots 1–9, and Shift+0 selects slot 10. State Slots shows a thumbnail, the game title, the time, and a description for each slot.
 
 The picture is the PPU's 256×240 output, scaled by whole pixels with nearest filtering. The status bar names the loaded game. Themes are `xp-blue`, `xp-olive`, and `xp-silver`, read from the configuration file.
 
@@ -52,11 +52,11 @@ After a build, the original demo is next to the executable:
 
 File → Open Game starts in that folder, so `iris_demo.nes` is there as well. The demo draws a tile grid and the word IRIS. The arrow keys move the sprite. Hold Z to play a tone.
 
-Other mappers produce an error and leave the current game loaded. Battery-backed RAM is not saved yet. There is no region menu: NTSC is the default, and PAL or Dendy comes from the NES 2.0 header.
+Other mappers produce an error and leave the current game loaded. There is no region menu: NTSC is the default, and PAL or Dendy comes from the NES 2.0 header. A cartridge with battery-backed RAM writes `saves/{content id}.sav` when the game closes or Iris exits, and reads it again the next time that game opens. Reset does not erase that file. Save states are separate files under `states/`.
 
 ## Data directory
 
-Configuration and logs are stored under `%LOCALAPPDATA%\IrisEmulator`, not in the install directory. Set `IRIS_DATA_DIR` to point that root somewhere else. A missing configuration file is created with defaults. A malformed file is left untouched and the session uses defaults.
+Configuration, logs, save states, and battery RAM are stored under `%LOCALAPPDATA%\IrisEmulator`, not in the install directory. Set `IRIS_DATA_DIR` to point that root somewhere else. A missing configuration file is created with defaults. A malformed file is left untouched and the session uses defaults.
 
 ```json
 {

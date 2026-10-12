@@ -18,6 +18,8 @@ public:
     void onA12Rise() override;
     [[nodiscard]] bool irq() const override { return irq_; }
     void reset() override;
+    void captureState(iris::ByteWriter& writer) const override;
+    [[nodiscard]] bool applyState(iris::ByteReader& reader) override;
 
 private:
     [[nodiscard]] int prgBank(std::uint16_t address) const;

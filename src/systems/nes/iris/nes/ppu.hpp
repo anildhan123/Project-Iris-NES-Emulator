@@ -6,6 +6,11 @@
 #include <cstdint>
 #include <vector>
 
+namespace iris {
+class ByteReader;
+class ByteWriter;
+}
+
 namespace iris::systems::nes {
 
 class Ppu {
@@ -21,6 +26,9 @@ public:
     void writeRegister(std::uint16_t address, std::uint8_t value);
     [[nodiscard]] std::uint8_t readRegister(std::uint16_t address);
     void writeOam(std::uint8_t value);
+
+    void captureState(iris::ByteWriter& writer) const;
+    [[nodiscard]] bool applyState(iris::ByteReader& reader);
 
     [[nodiscard]] bool nmiLine() const;
     [[nodiscard]] std::uint64_t frame() const { return frame_; }

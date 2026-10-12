@@ -1,5 +1,7 @@
 #include "iris/nes/apu.hpp"
 
+#include "iris/byte_io.hpp"
+
 namespace iris::systems::nes {
 namespace {
 
@@ -493,6 +495,187 @@ void Apu::clock(std::vector<float>& samples) {
         samplePhase_ -= cpuClock_;
         samples.push_back(mix());
     }
+}
+
+void Apu::captureEnvelope(ByteWriter& writer, const Envelope& envelope) {
+    writer.boolean(envelope.start);
+    writer.boolean(envelope.loop);
+    writer.boolean(envelope.constant);
+    writer.u8(envelope.volume);
+    writer.u8(envelope.divider);
+    writer.u8(envelope.decay);
+}
+
+bool Apu::readEnvelope(ByteReader& reader, Envelope& envelope) {
+    envelope.start = reader.boolean();
+    envelope.loop = reader.boolean();
+    envelope.constant = reader.boolean();
+    envelope.volume = reader.u8();
+    envelope.divider = reader.u8();
+    envelope.decay = reader.u8();
+    return reader.ok();
+}
+
+void Apu::captureState(ByteWriter& writer) const {
+    auto capturePulse = [&](const Pulse& pulse) {
+        writer.boolean(pulse.enabled);
+        writer.boolean(pulse.halt);
+        writer.u8(pulse.duty);
+        writer.u8(pulse.sequence);
+        writer.u16(pulse.timer);
+        writer.u16(pulse.period);
+        writer.u8(pulse.length);
+        writer.boolean(pulse.sweepEnabled);
+        writer.u8(pulse.sweepPeriod);
+        writer.u8(pulse.sweepDivider);
+        writer.boolean(pulse.sweepNegate);
+        writer.u8(pulse.sweepShift);
+        writer.boolean(pulse.sweepReload);
+        captureEnvelope(writer, pulse.envelope);
+    };
+    capturePulse(pulse1_);
+    capturePulse(pulse2_);
+    writer.boolean(triangle_.enabled);
+    writer.boolean(triangle_.halt);
+    writer.boolean(triangle_.linearReload);
+    writer.u8(triangle_.linearPeriod);
+    writer.u8(triangle_.linear);
+    writer.u8(triangle_.sequence);
+    writer.u16(triangle_.timer);
+    writer.u16(triangle_.period);
+    writer.u8(triangle_.length);
+    writer.boolean(noise_.enabled);
+    writer.boolean(noise_.mode);
+    writer.u16(noise_.timer);
+    writer.u16(noise_.period);
+    writer.u16(noise_.shift);
+    writer.u8(noise_.length);
+    writer.boolean(noise_.halt);
+    captureEnvelope(writer, noise_.envelope);
+    writer.u32(static_cast<std::uint32_t>(frameCycle_));
+    writer.u32(static_cast<std::uint32_t>(samplePhase_));
+    writer.boolean(evenCycle_);
+    writer.boolean(fiveStep_);
+    writer.boolean(irqInhibit_);
+    writer.boolean(frameIrq_);
+    writer.boolean(dmcIrqEnable_);
+    writer.boolean(dmcLoop_);
+    writer.boolean(dmcIrq_);
+    writer.boolean(dmcSilence_);
+    writer.boolean(dmcSampleEmpty_);
+    writer.boolean(dmcFetch_);
+    writer.u8(dmcOutput_);
+    writer.u8(dmcShift_);
+    writer.u8(dmcSample_);
+    writer.u8(dmcBits_);
+    writer.u8(dmcRate_);
+    writer.u16(dmcTimer_);
+    writer.u16(dmcPeriod_);
+    writer.u16(dmcAddress_);
+    writer.u16(dmcSampleAddress_);
+    writer.u32(static_cast<std::uint32_t>(dmcBytesRemaining_));
+    writer.u32(static_cast<std::uint32_t>(dmcSampleLength_));
+}
+
+bool Apu::applyState(ByteReader& reader) {
+    auto readPulse = [&](Pulse& pulse) {
+        pulse.enabled = reader.boolean();
+        pulse.halt = reader.boolean();
+        pulse.duty = reader.u8();
+        pulse.sequence = reader.u8();
+        pulse.timer = reader.u16();
+        pulse.period = reader.u16();
+        pulse.length = reader.u8();
+        pulse.sweepEnabled = reader.boolean();
+        pulse.sweepPeriod = reader.u8();
+        pulse.sweepDivider = reader.u8();
+        pulse.sweepNegate = reader.boolean();
+        pulse.sweepShift = reader.u8();
+        pulse.sweepReload = reader.boolean();
+        return readEnvelope(reader, pulse.envelope);
+    };
+    Pulse pulse1;
+    Pulse pulse2;
+    Triangle triangle;
+    Noise noise;
+    if (!readPulse(pulse1) || !readPulse(pulse2)) {
+        return false;
+    }
+    triangle.enabled = reader.boolean();
+    triangle.halt = reader.boolean();
+    triangle.linearReload = reader.boolean();
+    triangle.linearPeriod = reader.u8();
+    triangle.linear = reader.u8();
+    triangle.sequence = reader.u8();
+    triangle.timer = reader.u16();
+    triangle.period = reader.u16();
+    triangle.length = reader.u8();
+    noise.enabled = reader.boolean();
+    noise.mode = reader.boolean();
+    noise.timer = reader.u16();
+    noise.period = reader.u16();
+    noise.shift = reader.u16();
+    noise.length = reader.u8();
+    noise.halt = reader.boolean();
+    if (!readEnvelope(reader, noise.envelope)) {
+        return false;
+    }
+    const int frameCycle = static_cast<int>(reader.u32());
+    const int samplePhase = static_cast<int>(reader.u32());
+    const bool evenCycle = reader.boolean();
+    const bool fiveStep = reader.boolean();
+    const bool irqInhibit = reader.boolean();
+    const bool frameIrq = reader.boolean();
+    const bool dmcIrqEnable = reader.boolean();
+    const bool dmcLoop = reader.boolean();
+    const bool dmcIrq = reader.boolean();
+    const bool dmcSilence = reader.boolean();
+    const bool dmcSampleEmpty = reader.boolean();
+    const bool dmcFetch = reader.boolean();
+    const std::uint8_t dmcOutput = reader.u8();
+    const std::uint8_t dmcShift = reader.u8();
+    const std::uint8_t dmcSample = reader.u8();
+    const std::uint8_t dmcBits = reader.u8();
+    const std::uint8_t dmcRate = reader.u8();
+    const std::uint16_t dmcTimer = reader.u16();
+    const std::uint16_t dmcPeriod = reader.u16();
+    const std::uint16_t dmcAddress = reader.u16();
+    const std::uint16_t dmcSampleAddress = reader.u16();
+    const int dmcBytesRemaining = static_cast<int>(reader.u32());
+    const int dmcSampleLength = static_cast<int>(reader.u32());
+    if (!reader.ok() || !reader.exhausted() || pulse1.duty > 3 || pulse2.duty > 3 || dmcRate > 15 || dmcOutput > 127 ||
+        dmcBits == 0 || dmcBits > 8 || dmcPeriod == 0 || samplePhase < 0 || samplePhase > 2000000 || frameCycle < 0 ||
+        frameCycle > 100000 || dmcBytesRemaining < 0 || dmcSampleLength < 1 || dmcSampleLength > 100000) {
+        return false;
+    }
+    pulse1_ = pulse1;
+    pulse2_ = pulse2;
+    triangle_ = triangle;
+    noise_ = noise;
+    frameCycle_ = frameCycle;
+    samplePhase_ = samplePhase;
+    evenCycle_ = evenCycle;
+    fiveStep_ = fiveStep;
+    irqInhibit_ = irqInhibit;
+    frameIrq_ = frameIrq;
+    dmcIrqEnable_ = dmcIrqEnable;
+    dmcLoop_ = dmcLoop;
+    dmcIrq_ = dmcIrq;
+    dmcSilence_ = dmcSilence;
+    dmcSampleEmpty_ = dmcSampleEmpty;
+    dmcFetch_ = dmcFetch;
+    dmcOutput_ = dmcOutput;
+    dmcShift_ = dmcShift;
+    dmcSample_ = dmcSample;
+    dmcBits_ = dmcBits;
+    dmcRate_ = dmcRate;
+    dmcTimer_ = dmcTimer;
+    dmcPeriod_ = dmcPeriod;
+    dmcAddress_ = dmcAddress;
+    dmcSampleAddress_ = dmcSampleAddress;
+    dmcBytesRemaining_ = dmcBytesRemaining;
+    dmcSampleLength_ = dmcSampleLength;
+    return true;
 }
 
 }  // namespace iris::systems::nes

@@ -1,5 +1,6 @@
 #include "iris/nes/ppu.hpp"
 
+#include "iris/byte_io.hpp"
 #include "iris/nes/palette.hpp"
 
 #include <algorithm>
@@ -428,6 +429,77 @@ void Ppu::renderScanline(int scanline) {
     v_ = address;
     incrementY();
     copyHorizontal();
+}
+
+void Ppu::captureState(ByteWriter& writer) const {
+    writer.u8(ctrl_);
+    writer.u8(mask_);
+    writer.u8(status_);
+    writer.u8(oamAddr_);
+    writer.u8(dataLatch_);
+    writer.u8(readBuffer_);
+    writer.u8(fineX_);
+    writer.u16(v_);
+    writer.u16(t_);
+    writer.boolean(w_);
+    writer.u16(static_cast<std::uint16_t>(scanline_));
+    writer.u16(static_cast<std::uint16_t>(dot_));
+    writer.u16(static_cast<std::uint16_t>(a12LowDots_));
+    writer.boolean(a12High_);
+    writer.u64(frame_);
+    writer.bytes(vram_.data(), vram_.size());
+    writer.bytes(palette_.data(), palette_.size());
+    writer.bytes(oam_.data(), oam_.size());
+    writer.bytes(frameBuffer_.data(), frameBuffer_.size());
+}
+
+bool Ppu::applyState(ByteReader& reader) {
+    const std::uint8_t ctrl = reader.u8();
+    const std::uint8_t mask = reader.u8();
+    const std::uint8_t status = reader.u8();
+    const std::uint8_t oamAddr = reader.u8();
+    const std::uint8_t dataLatch = reader.u8();
+    const std::uint8_t readBuffer = reader.u8();
+    const std::uint8_t fineX = reader.u8();
+    const std::uint16_t v = reader.u16();
+    const std::uint16_t t = reader.u16();
+    const bool w = reader.boolean();
+    const std::uint16_t scanline = reader.u16();
+    const std::uint16_t dot = reader.u16();
+    const std::uint16_t a12LowDots = reader.u16();
+    const bool a12High = reader.boolean();
+    const std::uint64_t frame = reader.u64();
+    std::array<std::uint8_t, 4096> vram{};
+    std::array<std::uint8_t, 32> palette{};
+    std::array<std::uint8_t, 256> oam{};
+    std::vector<std::uint8_t> frameBuffer(frameBuffer_.size());
+    reader.bytes(vram.data(), vram.size());
+    reader.bytes(palette.data(), palette.size());
+    reader.bytes(oam.data(), oam.size());
+    reader.bytes(frameBuffer.data(), frameBuffer.size());
+    if (!reader.ok() || !reader.exhausted() || fineX > 7 || scanline >= scanlines_ || dot >= 341 || a12LowDots > 32) {
+        return false;
+    }
+    ctrl_ = ctrl;
+    mask_ = mask;
+    status_ = status;
+    oamAddr_ = oamAddr;
+    dataLatch_ = dataLatch;
+    readBuffer_ = readBuffer;
+    fineX_ = fineX;
+    v_ = v;
+    t_ = t;
+    w_ = w;
+    scanline_ = scanline;
+    dot_ = dot;
+    a12LowDots_ = a12LowDots;
+    a12High_ = a12High;
+    frame_ = frame;
+    vram_ = vram;
+    palette_ = palette;
+    oam_ = oam;
+    frameBuffer_ = std::move(frameBuffer);
+    return true;
 }
 
 }  // namespace iris::systems::nes

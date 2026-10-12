@@ -7,6 +7,11 @@
 
 #include <cstdint>
 
+namespace iris {
+class ByteReader;
+class ByteWriter;
+}
+
 namespace iris::systems::nes {
 
 class Bus final : public CpuMemory {
@@ -19,6 +24,8 @@ public:
     [[nodiscard]] std::uint8_t read(std::uint16_t address) override;
     void write(std::uint16_t address, std::uint8_t value) override;
     [[nodiscard]] int takeDmaCycles(std::uint64_t cpuCycle);
+    void captureState(iris::ByteWriter& writer) const;
+    [[nodiscard]] bool applyState(iris::ByteReader& reader);
 
 private:
     Ppu& ppu_;

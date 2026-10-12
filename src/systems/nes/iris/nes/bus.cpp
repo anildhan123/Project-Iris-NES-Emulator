@@ -1,5 +1,7 @@
 #include "iris/nes/bus.hpp"
 
+#include "iris/byte_io.hpp"
+
 #include <algorithm>
 
 namespace iris::systems::nes {
@@ -69,6 +71,26 @@ int Bus::takeDmaCycles(std::uint64_t cpuCycle) {
     const int cycles = dmaCycles_ + ((cpuCycle & 1U) != 0U ? 1 : 0);
     dmaCycles_ = 0;
     return cycles;
+}
+
+void Bus::captureState(ByteWriter& writer) const {
+    writer.bytes(ram_, sizeof(ram_));
+    writer.u8(openBus_);
+    writer.u16(static_cast<std::uint16_t>(dmaCycles_));
+}
+
+bool Bus::applyState(ByteReader& reader) {
+    std::uint8_t ram[2048] = {};
+    reader.bytes(ram, sizeof(ram));
+    const std::uint8_t openBus = reader.u8();
+    const std::uint16_t dmaCycles = reader.u16();
+    if (!reader.ok() || !reader.exhausted() || dmaCycles > 514) {
+        return false;
+    }
+    std::copy(std::begin(ram), std::end(ram), std::begin(ram_));
+    openBus_ = openBus;
+    dmaCycles_ = dmaCycles;
+    return true;
 }
 
 }  // namespace iris::systems::nes

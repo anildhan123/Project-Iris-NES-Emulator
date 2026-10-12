@@ -46,6 +46,7 @@ bool NesSystem::adopt(Cartridge cartridge, std::string& error) {
     ppu_.connect(mapper_.get(), cartridge_.mirroring());
     ppu_.setTiming(timing.scanlines, timing.oddFrameSkip);
     title_ = cartridge_.name();
+    refreshContentId();
     loaded_ = true;
     paused_ = false;
     cpuCycles_ = 0;
@@ -64,6 +65,7 @@ void NesSystem::unload() {
     loaded_ = false;
     paused_ = false;
     title_.clear();
+    contentId_.clear();
     audio_.clear();
     mapper_.reset();
     bus_.connect(nullptr);

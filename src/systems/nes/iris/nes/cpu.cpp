@@ -1,5 +1,6 @@
 #include "iris/nes/cpu.hpp"
 
+#include "iris/byte_io.hpp"
 #include "iris/log.hpp"
 
 #include <array>
@@ -156,6 +157,49 @@ void Cpu::reset(CpuMemory& memory) {
 void Cpu::signalNmi() { nmiPending_ = true; }
 
 void Cpu::setIrqLine(bool active) { irqLine_ = active; }
+
+void Cpu::captureState(ByteWriter& writer) const {
+    writer.u8(a_);
+    writer.u8(x_);
+    writer.u8(y_);
+    writer.u8(sp_);
+    writer.u8(p_);
+    writer.u16(pc_);
+    writer.boolean(nmiPending_);
+    writer.boolean(irqLine_);
+    writer.boolean(irqDelay_);
+    writer.u32(static_cast<std::uint32_t>(unknownOpcodes_));
+    writer.boolean(loggedUnknown_);
+}
+
+bool Cpu::applyState(ByteReader& reader) {
+    const std::uint8_t a = reader.u8();
+    const std::uint8_t x = reader.u8();
+    const std::uint8_t y = reader.u8();
+    const std::uint8_t sp = reader.u8();
+    const std::uint8_t p = reader.u8();
+    const std::uint16_t pc = reader.u16();
+    const bool nmiPending = reader.boolean();
+    const bool irqLine = reader.boolean();
+    const bool irqDelay = reader.boolean();
+    const std::uint32_t unknownOpcodes = reader.u32();
+    const bool loggedUnknown = reader.boolean();
+    if (!reader.ok() || !reader.exhausted()) {
+        return false;
+    }
+    a_ = a;
+    x_ = x;
+    y_ = y;
+    sp_ = sp;
+    p_ = static_cast<std::uint8_t>(p | 0x20);
+    pc_ = pc;
+    nmiPending_ = nmiPending;
+    irqLine_ = irqLine;
+    irqDelay_ = irqDelay;
+    unknownOpcodes_ = static_cast<int>(unknownOpcodes);
+    loggedUnknown_ = loggedUnknown;
+    return true;
+}
 
 CpuState Cpu::state() const { return CpuState{a_, x_, y_, sp_, p_, pc_}; }
 

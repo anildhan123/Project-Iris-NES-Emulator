@@ -1,5 +1,7 @@
 #include "iris/nes/controller.hpp"
 
+#include "iris/byte_io.hpp"
+
 namespace iris::systems::nes {
 
 void Controller::setButtons(std::uint8_t buttons) {
@@ -22,6 +24,25 @@ std::uint8_t Controller::read() {
         shift_ = static_cast<std::uint8_t>((shift_ >> 1) | 0x80);
     }
     return bit;
+}
+
+void Controller::captureState(ByteWriter& writer) const {
+    writer.u8(buttons_);
+    writer.u8(shift_);
+    writer.boolean(strobe_);
+}
+
+bool Controller::applyState(ByteReader& reader) {
+    const std::uint8_t buttons = reader.u8();
+    const std::uint8_t shift = reader.u8();
+    const bool strobe = reader.boolean();
+    if (!reader.ok()) {
+        return false;
+    }
+    buttons_ = buttons;
+    shift_ = shift;
+    strobe_ = strobe;
+    return true;
 }
 
 }  // namespace iris::systems::nes

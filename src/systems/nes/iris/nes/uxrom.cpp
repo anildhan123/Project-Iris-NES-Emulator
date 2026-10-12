@@ -1,5 +1,7 @@
 #include "iris/nes/uxrom.hpp"
 
+#include "iris/byte_io.hpp"
+
 namespace iris::systems::nes {
 namespace {
 
@@ -48,5 +50,20 @@ void Uxrom::writeChr(std::uint16_t address, std::uint8_t value) {
 }
 
 Mirroring Uxrom::mirroring() const { return cartridge_.mirroring(); }
+
+void Uxrom::captureState(ByteWriter& writer) const { writer.u8(static_cast<std::uint8_t>(bank_)); }
+
+bool Uxrom::applyState(ByteReader& reader) {
+    const std::uint8_t bank = reader.u8();
+    if (!reader.ok() || !reader.exhausted()) {
+        return false;
+    }
+    const int banks = static_cast<int>(cartridge_.prg().size() / (16 * 1024));
+    if (bank >= banks) {
+        return false;
+    }
+    bank_ = bank;
+    return true;
+}
 
 }  // namespace iris::systems::nes

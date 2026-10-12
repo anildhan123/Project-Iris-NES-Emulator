@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <cstdint>
 
 namespace iris {
 
@@ -33,10 +34,15 @@ struct AppPaths {
     const std::filesystem::path& root,
     const std::filesystem::path& relative);
 
-// Writes a temporary file beside destination, then replaces destination.
 [[nodiscard]] bool writeTextFileAtomically(
     const std::filesystem::path& destination,
     std::string_view contents);
+
+// Writes a temporary file beside destination, then replaces destination.
+[[nodiscard]] bool writeBinaryFileAtomically(
+    const std::filesystem::path& destination,
+    const std::uint8_t* data,
+    std::size_t size);
 
 [[nodiscard]] Result<Config> loadConfigFile(const std::filesystem::path& path);
 [[nodiscard]] bool saveConfigFile(const std::filesystem::path& path, const Config& config);

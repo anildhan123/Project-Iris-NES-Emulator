@@ -108,7 +108,7 @@ std::optional<std::filesystem::path> joinRelative(
     return combined;
 }
 
-bool writeTextFileAtomically(const std::filesystem::path& destination, std::string_view contents) {
+bool writeBinaryFileAtomically(const std::filesystem::path& destination, const std::uint8_t* data, std::size_t size) {
     const auto temporary = destination.native() +
 #if defined(_WIN32)
                            L".tmp";
@@ -121,7 +121,9 @@ bool writeTextFileAtomically(const std::filesystem::path& destination, std::stri
         if (!output) {
             return false;
         }
-        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+        if (data != nullptr && size > 0) {
+            output.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
+        }
         output.flush();
         if (!output) {
             output.close();
@@ -152,6 +154,11 @@ bool writeTextFileAtomically(const std::filesystem::path& destination, std::stri
         return false;
     }
     return true;
+}
+
+bool writeTextFileAtomically(const std::filesystem::path& destination, std::string_view contents) {
+    return writeBinaryFileAtomically(
+        destination, reinterpret_cast<const std::uint8_t*>(contents.data()), contents.size());
 }
 
 Result<Config> loadConfigFile(const std::filesystem::path& path) {

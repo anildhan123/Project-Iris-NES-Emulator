@@ -1,5 +1,7 @@
 #pragma once
 
+#include "iris/byte_io.hpp"
+
 #include <cstdint>
 
 namespace iris::systems::nes {
@@ -28,6 +30,8 @@ public:
     virtual void onA12Rise() {}
     [[nodiscard]] virtual bool irq() const { return false; }
     virtual void reset() {}
+    virtual void captureState(iris::ByteWriter&) const {}
+    [[nodiscard]] virtual bool applyState(iris::ByteReader& reader) { return reader.ok() && reader.exhausted(); }
 };
 
 }  // namespace iris::systems::nes

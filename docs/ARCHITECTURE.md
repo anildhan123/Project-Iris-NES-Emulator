@@ -49,7 +49,15 @@ Emulation still shares the UI thread. Moving it off that thread is a later miles
 - NTSC is 262 scanlines and skips one dot on odd rendered frames. PAL and Dendy are 312 scanlines and do not skip that dot. The host frame period comes from `framePeriodNs()`.
 - The APU mixes pulse, triangle, noise, and DMC. The frame counter follows the NTSC or PAL step sequence, including the frame IRQ. Dendy uses the NTSC APU sequence with its own CPU clock. A DMC sample read stalls the CPU for four cycles.
 - Controller bits are A, B, Select, Start, Up, Down, Left, Right. Keyboard mapping lives in the shell.
-- Battery-backed RAM is allocated when the header asks for it and is not written to disk.
+- Battery-backed PRG RAM is loaded from `saves/{content id}.sav` when a game opens and written back when that game closes or the process exits. Reset leaves it in place. It is not part of a save state.
+
+## Save states
+
+The shell asks `IEmulatedSystem` to save, load, and inspect a state. It does not read CPU, PPU, or mapper fields.
+
+A state file starts with the magic `IRS1`, format version 1, the NES system id, and the emulator version. It then stores a SHA-256 of the cartridge identity (mapper, submapper, region, CHR RAM size or CHR ROM bytes, and PRG ROM), the mapper id, the region, a feature-flag byte that must be zero, a timestamp, the title, an optional description, a 64×60 thumbnail, and length-delimited component chunks. A CRC32 covers every preceding byte. Chunks are `CPU `, `PPU `, `APU `, `MAP `, `CART`, `PAD `, `BUS `, and `TIME`. RAM lives inside `BUS`. An unknown chunk, a bad checksum, or a version this build does not know is rejected before the running machine changes. A failed apply restores the components captured just before the attempt.
+
+Files live under the data directory: `states/{content id}/slot-01.irstate` through `slot-10.irstate`. Writes go to a temporary file and replace the destination only after the bytes are on disk. Reads are capped at 4 MiB. The shell keeps ten slots. Changing that count waits for the settings milestone.
 
 ## Configuration schema
 

@@ -20,6 +20,7 @@ add_library(iris_nes STATIC
     iris/nes/mmc3.hpp
     iris/nes/nes_system.cpp
     iris/nes/nes_system.hpp
+    iris/nes/nes_state.cpp
     iris/nes/nrom.cpp
     iris/nes/nrom.hpp
     iris/nes/timing.hpp

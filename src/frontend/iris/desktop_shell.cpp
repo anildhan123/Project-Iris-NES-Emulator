@@ -28,11 +28,16 @@
 #include <imgui_impl_sdl3.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
+#include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace iris {
 namespace {
@@ -309,6 +314,7 @@ int DesktopShell::run() {
     bool openError = false;
     bool loadInitialRom = !initialRom_.empty();
     std::string errorText;
+    std::string errorTitle = "Could not open game";
     PendingDialog dialog;
     TextureGuard texture;
     const std::string versionLabel = std::string(kProductName) + " " + kVersionString;
@@ -317,14 +323,156 @@ int DesktopShell::run() {
                                    "A NES 2.0 header can select PAL timing. "
                                    "Iris Demo, written for this project, is generated beside the executable.\n\n"
                                    "Open a ROM with File, Open Game. Arrow keys move, Z is A, X is B, "
-                                   "Right Shift is Select, and Enter is Start. Escape pauses.";
+                                   "Right Shift is Select, and Enter is Start. Escape pauses. "
+                                   "F5 saves the selected state slot and F7 loads it. "
+                                   "Shift+1 through Shift+0 select a slot, and Emulation, State Slots shows previews. "
+                                   "Battery-backed RAM is stored separately from those slots.";
     auto previous = std::chrono::steady_clock::now();
     std::int64_t accumulated = system_.framePeriodNs();
+    const auto appPaths = resolveAppPaths();
+    constexpr int kStateSlots = 10;
+    int selectedSlot = 0;
+    bool openStateSlots = false;
+    bool refreshStateSlots = false;
+    std::array<std::string, kStateSlots> slotDescriptions{};
+    std::array<std::array<char, 201>, kStateSlots> slotDescriptionEdit{};
+    std::array<StatePreview, kStateSlots> slotPreviews{};
+    std::array<TextureGuard, kStateSlots> slotTextures{};
+    for (auto& text : slotDescriptionEdit) {
+        text.fill('\0');
+    }
+
+    const auto slotFile = [&](int slot) -> std::filesystem::path {
+        if (!appPaths.has_value() || system_.contentId().size() != 64) {
+            return {};
+        }
+        char name[24] = {};
+        std::snprintf(name, sizeof(name), "slot-%02d.irstate", slot + 1);
+        return appPaths->states / system_.contentId() / name;
+    };
+
+    const auto readFile = [](const std::filesystem::path& path, std::size_t limit, std::vector<std::uint8_t>& bytes, std::string& error) {
+        std::error_code failure;
+        if (!std::filesystem::is_regular_file(path, failure)) {
+            error = "The file could not be read.";
+            return false;
+        }
+        const auto size = std::filesystem::file_size(path, failure);
+        if (failure || size > limit) {
+            error = "The file could not be read.";
+            return false;
+        }
+        std::ifstream input(path, std::ios::binary);
+        bytes.resize(static_cast<std::size_t>(size));
+        if (!bytes.empty()) {
+            input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        }
+        if (!input) {
+            error = "The file could not be read.";
+            return false;
+        }
+        return true;
+    };
+
+    const auto flushBattery = [&]() {
+        if (!appPaths.has_value()) {
+            return;
+        }
+        std::vector<std::uint8_t> bytes;
+        if (!system_.copyBattery(bytes)) {
+            return;
+        }
+        std::error_code failure;
+        std::filesystem::create_directories(appPaths->saves, failure);
+        const auto file = appPaths->saves / (system_.contentId() + ".sav");
+        if (failure || !writeBinaryFileAtomically(file, bytes.data(), bytes.size())) {
+            log::error("Could not write the battery save.");
+        }
+    };
+
+    const auto importBattery = [&]() {
+        if (!appPaths.has_value() || !system_.info().batteryBacked) {
+            return;
+        }
+        const auto file = appPaths->saves / (system_.contentId() + ".sav");
+        std::error_code failure;
+        if (!std::filesystem::is_regular_file(file, failure)) {
+            return;
+        }
+        std::vector<std::uint8_t> bytes;
+        std::string error;
+        if (!readFile(file, 2 * 1024 * 1024, bytes, error) || !system_.restoreBattery(bytes.data(), bytes.size(), error)) {
+            errorText = error.empty() ? "The battery save does not match this cartridge and was not loaded." : error;
+            errorTitle = "Could not load the battery save";
+            openError = true;
+            log::error(errorText);
+        }
+    };
+
+    const auto saveSelectedSlot = [&]() {
+        if (!system_.loaded()) {
+            return;
+        }
+        if (!appPaths.has_value()) {
+            errorText = "Could not find the save folder.";
+            errorTitle = "Could not save the state";
+            openError = true;
+            return;
+        }
+        std::vector<std::uint8_t> bytes;
+        std::string error;
+        const std::string description = slotDescriptions[static_cast<std::size_t>(selectedSlot)];
+        if (!system_.saveState(bytes, description, error)) {
+            errorText = error;
+            errorTitle = "Could not save the state";
+            openError = true;
+            log::error(error);
+            return;
+        }
+        const auto file = slotFile(selectedSlot);
+        std::error_code failure;
+        std::filesystem::create_directories(file.parent_path(), failure);
+        if (failure || file.empty() || !writeBinaryFileAtomically(file, bytes.data(), bytes.size())) {
+            errorText = "Could not write the state file.";
+            errorTitle = "Could not save the state";
+            openError = true;
+            log::error(errorText);
+            return;
+        }
+        log::info("Saved state slot " + std::to_string(selectedSlot + 1) + ".");
+        refreshStateSlots = true;
+    };
+
+    const auto loadSelectedSlot = [&]() {
+        if (!system_.loaded()) {
+            return;
+        }
+        const auto file = slotFile(selectedSlot);
+        std::error_code failure;
+        if (file.empty() || !std::filesystem::is_regular_file(file, failure)) {
+            errorText = "Slot " + std::to_string(selectedSlot + 1) + " is empty.";
+            errorTitle = "Could not load the state";
+            openError = true;
+            return;
+        }
+        std::vector<std::uint8_t> bytes;
+        std::string error;
+        if (!readFile(file, 4 * 1024 * 1024, bytes, error) || !system_.loadState(bytes.data(), bytes.size(), error)) {
+            errorText = error.empty() ? "The state file is damaged or incomplete." : error;
+            errorTitle = "Could not load the state";
+            openError = true;
+            log::error(errorText);
+            return;
+        }
+        log::info("Loaded state slot " + std::to_string(selectedSlot + 1) + ".");
+    };
 
     const auto openRom = [&](const std::filesystem::path& path) {
+        flushBattery();
         std::string error;
         if (!system_.loadContent(path, error)) {
             errorText = error;
+            errorTitle = "Could not open game";
             openError = true;
             log::error(error);
             return;
@@ -332,8 +480,9 @@ int DesktopShell::run() {
         const SystemInfo info = system_.info();
         log::info(std::string("Loaded ") + info.title + " (" + info.detail + ").");
         if (info.batteryBacked) {
-            log::warn("Battery-backed RAM will not be saved in this version.");
+            log::warn("Battery-backed RAM is stored separately from save states.");
         }
+        importBattery();
         accumulated = system_.framePeriodNs();
     };
 
@@ -366,6 +515,23 @@ int DesktopShell::run() {
                 } else if (event.key.scancode == SDL_SCANCODE_ESCAPE && system_.loaded() &&
                            !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)) {
                     system_.setPaused(!system_.paused());
+                } else if (!ImGui::GetIO().WantTextInput && system_.loaded()) {
+                    const bool shift = (event.key.mod & SDL_KMOD_SHIFT) != 0;
+                    if (!ctrl && event.key.scancode == SDL_SCANCODE_F5) {
+                        saveSelectedSlot();
+                    } else if (!ctrl && event.key.scancode == SDL_SCANCODE_F7) {
+                        loadSelectedSlot();
+                    } else if (shift && !ctrl) {
+                        int slot = -1;
+                        if (event.key.scancode >= SDL_SCANCODE_1 && event.key.scancode <= SDL_SCANCODE_9) {
+                            slot = event.key.scancode - SDL_SCANCODE_1;
+                        } else if (event.key.scancode == SDL_SCANCODE_0) {
+                            slot = 9;
+                        }
+                        if (slot >= 0) {
+                            selectedSlot = slot;
+                        }
+                    }
                 }
             }
         }
@@ -399,6 +565,7 @@ int DesktopShell::run() {
             }
             if (failed) {
                 errorText = failure;
+                errorTitle = "Could not open game";
                 openError = true;
                 log::error(failure);
             } else if (!chosen.empty()) {
@@ -449,6 +616,7 @@ int DesktopShell::run() {
                         showOpenDialog();
                     }
                     if (ImGui::MenuItem("Close Game", nullptr, false, system_.loaded())) {
+                        flushBattery();
                         system_.unload();
                     }
                     ImGui::Separator();
@@ -464,6 +632,16 @@ int DesktopShell::run() {
                     }
                     if (ImGui::MenuItem("Reset", nullptr, false, system_.loaded())) {
                         system_.reset();
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Save State", "F5", false, system_.loaded())) {
+                        saveSelectedSlot();
+                    }
+                    if (ImGui::MenuItem("Load State", "F7", false, system_.loaded())) {
+                        loadSelectedSlot();
+                    }
+                    if (ImGui::MenuItem("State Slots...", nullptr, false, system_.loaded())) {
+                        openStateSlots = true;
                     }
                     ImGui::EndMenu();
                 }
@@ -547,6 +725,104 @@ int DesktopShell::run() {
             draw->PopClipRect();
 
             drawModal("About Iris Emulator", aboutText.c_str(), openAbout);
+            if (openStateSlots) {
+                ImGui::OpenPopup("State Slots");
+                openStateSlots = false;
+                refreshStateSlots = true;
+            }
+            if (ImGui::BeginPopupModal("State Slots", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                if (refreshStateSlots) {
+                    refreshStateSlots = false;
+                    for (int slot = 0; slot < kStateSlots; ++slot) {
+                        StatePreview preview;
+                        const auto file = slotFile(slot);
+                        std::error_code failure;
+                        std::vector<std::uint8_t> bytes;
+                        std::string error;
+                        if (!file.empty() && std::filesystem::is_regular_file(file, failure) &&
+                            readFile(file, 4 * 1024 * 1024, bytes, error)) {
+                            system_.inspectState(bytes.data(), bytes.size(), preview);
+                        }
+                        slotPreviews[static_cast<std::size_t>(slot)] = preview;
+                        const std::string description = preview.readable ? preview.description : std::string{};
+                        slotDescriptions[static_cast<std::size_t>(slot)] = description;
+                        auto& edit = slotDescriptionEdit[static_cast<std::size_t>(slot)];
+                        edit.fill('\0');
+                        std::snprintf(edit.data(), edit.size(), "%s", description.c_str());
+                        if (preview.readable && !preview.thumbnailRgba.empty()) {
+                            uploadFrame(slotTextures[static_cast<std::size_t>(slot)].id,
+                                        FrameView{preview.thumbnailRgba.data(), preview.thumbnailWidth, preview.thumbnailHeight});
+                        }
+                    }
+                }
+                ImGui::TextUnformatted("F5 saves the current slot. F7 loads it. Shift+1 through Shift+0 select a slot.");
+                ImGui::Spacing();
+                if (ImGui::BeginChild("##state-slots", ImVec2(560.0f, 360.0f), ImGuiChildFlags_Borders)) {
+                    for (int slot = 0; slot < kStateSlots; ++slot) {
+                        ImGui::PushID(slot);
+                        const StatePreview& preview = slotPreviews[static_cast<std::size_t>(slot)];
+                        if (preview.readable && !preview.thumbnailRgba.empty()) {
+                            ImGui::Image(static_cast<ImTextureID>(slotTextures[static_cast<std::size_t>(slot)].id), ImVec2(64.0f, 60.0f));
+                        } else {
+                            ImGui::Dummy(ImVec2(64.0f, 60.0f));
+                        }
+                        ImGui::SameLine();
+                        ImGui::BeginGroup();
+                        const std::string heading = "Slot " + std::to_string(slot + 1) + (slot == selectedSlot ? " (current)" : "");
+                        ImGui::TextUnformatted(heading.c_str());
+                        if (!preview.readable) {
+                            ImGui::TextUnformatted("Empty");
+                        } else {
+                            std::string when = preview.title;
+                            if (preview.savedAtUnixMs > 0) {
+                                const std::time_t seconds = static_cast<std::time_t>(preview.savedAtUnixMs / 1000);
+                                std::tm local{};
+#if defined(_WIN32)
+                                localtime_s(&local, &seconds);
+#else
+                                localtime_r(&seconds, &local);
+#endif
+                                char buffer[32] = {};
+                                if (std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M", &local) > 0) {
+                                    when += "  ";
+                                    when += buffer;
+                                }
+                            }
+                            ImGui::TextUnformatted(when.c_str());
+                            if (!preview.sameGame) {
+                                ImGui::TextUnformatted("Different game");
+                            }
+                        }
+                        ImGui::SetNextItemWidth(220.0f);
+                        ImGui::InputText("Description", slotDescriptionEdit[static_cast<std::size_t>(slot)].data(),
+                                         slotDescriptionEdit[static_cast<std::size_t>(slot)].size());
+                        if (ImGui::Button("Use")) {
+                            selectedSlot = slot;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Save")) {
+                            selectedSlot = slot;
+                            slotDescriptions[static_cast<std::size_t>(slot)] = slotDescriptionEdit[static_cast<std::size_t>(slot)].data();
+                            saveSelectedSlot();
+                        }
+                        ImGui::SameLine();
+                        ImGui::BeginDisabled(!(preview.readable && preview.sameGame));
+                        if (ImGui::Button("Load")) {
+                            selectedSlot = slot;
+                            loadSelectedSlot();
+                        }
+                        ImGui::EndDisabled();
+                        ImGui::EndGroup();
+                        ImGui::Separator();
+                        ImGui::PopID();
+                    }
+                }
+                ImGui::EndChild();
+                if (ImGui::Button("Close", ImVec2(75.0f, 0.0f))) {
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
             drawModal(
                 "Legal Notices",
                 "Iris Emulator does not include commercial games and does not download ROMs. "
@@ -555,7 +831,7 @@ int DesktopShell::run() {
                 "Owning an original cartridge does not by itself make every method of dumping or downloading a game lawful. "
                 "Those rules depend on jurisdiction and circumstance.",
                 openLegal);
-            drawModal("Could not open game", errorText.c_str(), openError);
+            drawModal(errorTitle.c_str(), errorText.c_str(), openError);
         }
         ImGui::End();
 
@@ -567,6 +843,7 @@ int DesktopShell::run() {
         SDL_GL_SwapWindow(session.window);
     }
 
+    flushBattery();
     SDL_GetWindowSize(session.window, &windowWidth_, &windowHeight_);
     return 0;
 }

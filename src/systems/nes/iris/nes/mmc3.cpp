@@ -1,5 +1,7 @@
 #include "iris/nes/mmc3.hpp"
 
+#include "iris/byte_io.hpp"
+
 namespace iris::systems::nes {
 namespace {
 
@@ -143,6 +145,45 @@ void Mmc3::onA12Rise() {
     if (counter_ == 0 && irqEnabled_) {
         irq_ = true;
     }
+}
+
+void Mmc3::captureState(ByteWriter& writer) const {
+    for (const std::uint8_t bank : banks_) {
+        writer.u8(bank);
+    }
+    writer.u8(select_);
+    writer.u8(latch_);
+    writer.u8(counter_);
+    writer.boolean(reload_);
+    writer.boolean(irqEnabled_);
+    writer.boolean(irq_);
+    writer.boolean(horizontal_);
+}
+
+bool Mmc3::applyState(ByteReader& reader) {
+    std::array<std::uint8_t, 8> banks{};
+    for (std::uint8_t& bank : banks) {
+        bank = reader.u8();
+    }
+    const std::uint8_t select = reader.u8();
+    const std::uint8_t latch = reader.u8();
+    const std::uint8_t counter = reader.u8();
+    const bool reload = reader.boolean();
+    const bool irqEnabled = reader.boolean();
+    const bool irq = reader.boolean();
+    const bool horizontal = reader.boolean();
+    if (!reader.ok() || !reader.exhausted()) {
+        return false;
+    }
+    banks_ = banks;
+    select_ = select;
+    latch_ = latch;
+    counter_ = counter;
+    reload_ = reload;
+    irqEnabled_ = irqEnabled;
+    irq_ = irq;
+    horizontal_ = horizontal;
+    return true;
 }
 
 }  // namespace iris::systems::nes

@@ -5,6 +5,11 @@
 #include <cstdint>
 #include <vector>
 
+namespace iris {
+class ByteReader;
+class ByteWriter;
+}
+
 namespace iris::systems::nes {
 
 class Apu {
@@ -20,6 +25,8 @@ public:
     [[nodiscard]] bool irq() const { return frameIrq_ || dmcIrq_; }
     [[nodiscard]] bool pollDmc(std::uint16_t& address);
     void supplyDmc(std::uint8_t value);
+    void captureState(iris::ByteWriter& writer) const;
+    [[nodiscard]] bool applyState(iris::ByteReader& reader);
 
 private:
     struct Envelope {
@@ -98,6 +105,8 @@ private:
     void clockFrame();
     void clockDmc();
     [[nodiscard]] float mix() const;
+    static void captureEnvelope(ByteWriter& writer, const Envelope& envelope);
+    static bool readEnvelope(ByteReader& reader, Envelope& envelope);
 
     Pulse pulse1_;
     Pulse pulse2_;

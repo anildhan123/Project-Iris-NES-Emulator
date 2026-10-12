@@ -3,6 +3,11 @@
 #include <array>
 #include <cstdint>
 
+namespace iris {
+class ByteReader;
+class ByteWriter;
+}
+
 namespace iris::systems::nes {
 
 class CpuMemory {
@@ -31,6 +36,8 @@ public:
 
     [[nodiscard]] CpuState state() const;
     [[nodiscard]] int unknownOpcodes() const { return unknownOpcodes_; }
+    void captureState(iris::ByteWriter& writer) const;
+    [[nodiscard]] bool applyState(iris::ByteReader& reader);
 
 private:
     enum class OpKind : std::uint8_t {

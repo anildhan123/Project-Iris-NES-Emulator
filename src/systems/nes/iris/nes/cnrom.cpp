@@ -1,5 +1,7 @@
 #include "iris/nes/cnrom.hpp"
 
+#include "iris/byte_io.hpp"
+
 namespace iris::systems::nes {
 namespace {
 
@@ -47,6 +49,21 @@ void Cnrom::writeChr(std::uint16_t address, std::uint8_t value) {
     if (cartridge_.chrRam() && !cartridge_.chr().empty()) {
         cartridge_.chr()[static_cast<std::size_t>(bank_) * kChrBank + (address & 0x1FFF)] = value;
     }
+}
+
+void Cnrom::captureState(ByteWriter& writer) const { writer.u8(static_cast<std::uint8_t>(bank_)); }
+
+bool Cnrom::applyState(ByteReader& reader) {
+    const std::uint8_t bank = reader.u8();
+    if (!reader.ok() || !reader.exhausted()) {
+        return false;
+    }
+    const int banks = static_cast<int>(cartridge_.chr().size() / kChrBank);
+    if (bank >= banks) {
+        return false;
+    }
+    bank_ = bank;
+    return true;
 }
 
 }  // namespace iris::systems::nes

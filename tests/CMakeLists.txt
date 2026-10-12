@@ -6,6 +6,7 @@ add_executable(iris_tests
     log_tests.cpp
     nes_system_tests.cpp
     paths_tests.cpp
+    state_tests.cpp
 )
 
 target_include_directories(iris_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

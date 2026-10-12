@@ -13,6 +13,8 @@ public:
     [[nodiscard]] std::uint8_t readChr(std::uint16_t address) override;
     void writeChr(std::uint16_t address, std::uint8_t value) override;
     [[nodiscard]] Mirroring mirroring() const override;
+    void captureState(iris::ByteWriter& writer) const override;
+    [[nodiscard]] bool applyState(iris::ByteReader& reader) override;
 
 private:
     Cartridge& cartridge_;

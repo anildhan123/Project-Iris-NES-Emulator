@@ -33,11 +33,14 @@ NTSC frame timing in that version was paced on the UI thread. Mappers other than
 - Original conformance tests for banking, frame IRQ, DMC, and MMC3 IRQ.
 - NTSC timing. A NES 2.0 header can select PAL clocks and 312 scanlines. Dendy is recognized with its own clock and scanline count.
 
-Battery-backed RAM is still not saved. Pattern bytes are not fetched dot by dot. Mappers beyond MMC3 wait for a later milestone.
+Pattern bytes are not fetched dot by dot. Mappers beyond MMC3 wait for a later milestone.
 
-## Milestone 4 — Save systems
+## Milestone 4 — Save systems (implemented)
 
-Versioned state format, quick save and load, slots, thumbnails, battery-backed RAM, and corruption handling.
+- Versioned `IRS1` state files. A file names the game by content hash, mapper, and region, and stores CPU, PPU, APU, mapper, cartridge RAM, controllers, bus, and timing.
+- Ten slots. F5 saves the selected slot, F7 loads it, and Shift+1 through Shift+0 select slots 1–10. The State Slots window shows a thumbnail, title, time, and description.
+- A damaged file, or a file for a different game, is refused and the running game stays as it was.
+- Battery-backed RAM is a separate `.sav` file, loaded with the game and written when the game closes or the program exits. Reset does not erase it.
 
 ## Milestone 5 — Modern graphics
 

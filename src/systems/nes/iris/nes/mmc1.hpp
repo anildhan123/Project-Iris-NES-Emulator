@@ -15,6 +15,8 @@ public:
     [[nodiscard]] Mirroring mirroring() const override;
     void cpuCycle() override { ignoreWrite_ = false; }
     void reset() override;
+    void captureState(iris::ByteWriter& writer) const override;
+    [[nodiscard]] bool applyState(iris::ByteReader& reader) override;
 
 private:
     void loadRegister(std::uint16_t address, std::uint8_t value);

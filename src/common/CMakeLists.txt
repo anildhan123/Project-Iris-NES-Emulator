@@ -1,9 +1,13 @@
 add_library(iris_common STATIC
+    iris/byte_io.cpp
+    iris/byte_io.hpp
     iris/config.cpp
     iris/config.hpp
     iris/error.hpp
     iris/log.cpp
     iris/log.hpp
+    iris/sha256.cpp
+    iris/sha256.hpp
     iris/version.hpp
 )
 
