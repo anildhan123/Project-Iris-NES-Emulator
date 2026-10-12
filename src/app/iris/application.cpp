@@ -70,9 +70,7 @@ int Application::run(int argc, char** argv) {
     DesktopShell shell(config, *system, initialRom);
     const int code = shell.run();
     if (code == 0 && persistConfig) {
-        config.windowWidth = shell.windowWidth();
-        config.windowHeight = shell.windowHeight();
-        if (!saveConfigFile(paths->configFile, config)) {
+        if (!saveConfigFile(paths->configFile, shell.config())) {
             log::error("Could not save configuration.");
         }
     }

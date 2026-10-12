@@ -1,6 +1,8 @@
 add_library(iris_frontend STATIC
     iris/desktop_shell.cpp
     iris/desktop_shell.hpp
+    iris/picture_pass.cpp
+    iris/picture_pass.hpp
     iris/xp_theme.cpp
     iris/xp_theme.hpp
 )

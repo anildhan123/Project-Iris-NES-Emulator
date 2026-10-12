@@ -38,11 +38,12 @@ The menu contains only commands that work:
 
 - File → Open Game, Close Game, Exit
 - Emulation → Pause / Resume, Reset, Save State, Load State, State Slots
+- View → Scale, Aspect, Preset, Picture, Fullscreen, VSync, Performance
 - Help → About, Legal Notices
 
-Open Game uses the system file dialog. A ROM path can also be passed on the command line. Escape pauses. The keyboard is controller 1: arrow keys, Z (A), X (B), Right Shift (Select), and Enter (Start). F5 saves the selected slot and F7 loads it. Shift+1 through Shift+9 select slots 1–9, and Shift+0 selects slot 10. State Slots shows a thumbnail, the game title, the time, and a description for each slot.
+Open Game uses the system file dialog. A ROM path can also be passed on the command line. Escape pauses. The keyboard is controller 1: arrow keys, Z (A), X (B), Right Shift (Select), and Enter (Start). F5 saves the selected slot and F7 loads it. Shift+1 through Shift+9 select slots 1–9, and Shift+0 selects slot 10. State Slots shows a thumbnail, the game title, the time, and a description for each slot. Alt+Enter toggles borderless fullscreen.
 
-The picture is the PPU's 256×240 output, scaled by whole pixels with nearest filtering. The status bar names the loaded game. Themes are `xp-blue`, `xp-olive`, and `xp-silver`, read from the configuration file.
+The picture is the PPU's 256×240 output. Fit uses the largest whole multiple that fits. A fixed 1×–6× scale that does not fit steps down, and the status bar says so. Pixel aspect is the default; 4:3 is the television shape. Original, Smooth, Sharp, and CRT are presentation presets. Picture changes brightness, contrast, saturation, and gamma. Performance adds frame rate and timing to the status bar. None of these rewrite the emulated picture, so save thumbnails stay unfiltered. If the presentation shader cannot start, the window shows crisp pixels. The status bar names the loaded game. Themes are `xp-blue`, `xp-olive`, and `xp-silver`, read from the configuration file.
 
 After a build, the original demo is next to the executable:
 
@@ -56,11 +57,11 @@ Other mappers produce an error and leave the current game loaded. There is no re
 
 ## Data directory
 
-Configuration, logs, save states, and battery RAM are stored under `%LOCALAPPDATA%\IrisEmulator`, not in the install directory. Set `IRIS_DATA_DIR` to point that root somewhere else. A missing configuration file is created with defaults. A malformed file is left untouched and the session uses defaults.
+Configuration, logs, save states, and battery RAM are stored under `%LOCALAPPDATA%\IrisEmulator`, not in the install directory. Set `IRIS_DATA_DIR` to point that root somewhere else. A missing configuration file is created with defaults. A version 1 file is still read; the next save writes version 2. A malformed file is left untouched and the session uses defaults.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "ui": {
     "theme": "xp-blue",
     "windowWidth": 1024,
@@ -68,6 +69,21 @@ Configuration, logs, save states, and battery RAM are stored under `%LOCALAPPDAT
   },
   "logging": {
     "level": "info"
+  },
+  "video": {
+    "scaleMode": "fit",
+    "integerScale": 3,
+    "aspectRatio": "pixel",
+    "filter": "nearest",
+    "fullscreen": false,
+    "vsync": true,
+    "showPerformance": false,
+    "brightness": 0.0,
+    "contrast": 1.0,
+    "saturation": 1.0,
+    "gamma": 1.0,
+    "sharpness": 2.0,
+    "scanline": 0.5
   }
 }
 ```

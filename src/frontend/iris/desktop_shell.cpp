@@ -2,6 +2,7 @@
 
 #include "iris/log.hpp"
 #include "iris/paths.hpp"
+#include "iris/picture_pass.hpp"
 #include "iris/version.hpp"
 #include "iris/xp_theme.hpp"
 
@@ -30,6 +31,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <ctime>
@@ -249,8 +251,8 @@ int DesktopShell::run() {
         log::error(std::string("SDL_GL_MakeCurrent failed: ") + SDL_GetError());
         return 1;
     }
-    if (!SDL_GL_SetSwapInterval(1)) {
-        log::warn(std::string("VSync was not enabled: ") + SDL_GetError());
+    if (!SDL_GL_SetSwapInterval(config_.vsync ? 1 : 0)) {
+        log::warn(std::string("VSync was not changed: ") + SDL_GetError());
     }
 
     SDL_AudioSpec audioSpec{};
@@ -295,6 +297,10 @@ int DesktopShell::run() {
     if (glVersion != nullptr) {
         log::info(std::string("OpenGL ") + glVersion);
     }
+    PicturePass picturePass;
+    if (!picturePass.initialize()) {
+        log::warn("The picture will be shown as crisp pixels.");
+    }
 
     SDL_SetWindowPosition(session.window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     SDL_ShowWindow(session.window);
@@ -312,6 +318,7 @@ int DesktopShell::run() {
     bool openAbout = false;
     bool openLegal = false;
     bool openError = false;
+    bool openPicture = false;
     bool loadInitialRom = !initialRom_.empty();
     std::string errorText;
     std::string errorTitle = "Could not open game";
@@ -326,9 +333,42 @@ int DesktopShell::run() {
                                    "Right Shift is Select, and Enter is Start. Escape pauses. "
                                    "F5 saves the selected state slot and F7 loads it. "
                                    "Shift+1 through Shift+0 select a slot, and Emulation, State Slots shows previews. "
-                                   "Battery-backed RAM is stored separately from those slots.";
+                                   "Battery-backed RAM is stored separately from those slots. "
+                                   "View sets the scale, 4:3 aspect, and presentation filter. Alt+Enter toggles fullscreen. "
+                                   "Filters and color settings do not change the emulated picture.";
     auto previous = std::chrono::steady_clock::now();
     std::int64_t accumulated = system_.framePeriodNs();
+    double hostFps = 0.0;
+    double emulatedFps = 0.0;
+    double lastEmulationMs = 0.0;
+    double lastPresentMs = 0.0;
+    int hostFrames = 0;
+    int emulatedFrames = 0;
+    auto fpsWindow = previous;
+    const auto setFullscreen = [&](bool enabled) {
+        const bool active = (SDL_GetWindowFlags(session.window) & SDL_WINDOW_FULLSCREEN) != 0;
+        if (enabled == active) {
+            config_.fullscreen = enabled;
+            return;
+        }
+        if (enabled) {
+            SDL_GetWindowSize(session.window, &windowWidth_, &windowHeight_);
+        }
+        if (!SDL_SetWindowFullscreen(session.window, enabled)) {
+            errorText = SDL_GetError();
+            if (errorText.empty()) {
+                errorText = "Fullscreen is not available.";
+            }
+            errorTitle = "Could not change fullscreen";
+            openError = true;
+            log::error(errorText);
+            return;
+        }
+        config_.fullscreen = enabled;
+    };
+    if (config_.fullscreen) {
+        setFullscreen(true);
+    }
     const auto appPaths = resolveAppPaths();
     constexpr int kStateSlots = 10;
     int selectedSlot = 0;
@@ -510,8 +550,11 @@ int DesktopShell::run() {
             }
             if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
                 const bool ctrl = (event.key.mod & SDL_KMOD_CTRL) != 0;
+                const bool alt = (event.key.mod & SDL_KMOD_ALT) != 0;
                 if (ctrl && event.key.scancode == SDL_SCANCODE_O) {
                     showOpenDialog();
+                } else if (alt && !ctrl && event.key.scancode == SDL_SCANCODE_RETURN && !ImGui::GetIO().WantTextInput) {
+                    setFullscreen(!config_.fullscreen);
                 } else if (event.key.scancode == SDL_SCANCODE_ESCAPE && system_.loaded() &&
                            !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)) {
                     system_.setPaused(!system_.paused());
@@ -580,7 +623,10 @@ int DesktopShell::run() {
         if (system_.loaded() && !system_.paused()) {
             accumulated += elapsed;
             if (accumulated >= period) {
+                const auto emulationStart = std::chrono::steady_clock::now();
                 system_.runFrame();
+                lastEmulationMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - emulationStart).count();
+                ++emulatedFrames;
                 const AudioView audio = system_.audio();
                 if (session.audio != nullptr && audio.samples != nullptr && audio.count > 0 &&
                     SDL_GetAudioStreamQueued(session.audio) < 48000 * static_cast<int>(sizeof(float))) {
@@ -645,6 +691,99 @@ int DesktopShell::run() {
                     }
                     ImGui::EndMenu();
                 }
+                if (ImGui::BeginMenu("View")) {
+                    if (ImGui::BeginMenu("Scale")) {
+                        if (ImGui::MenuItem("Fit", nullptr, config_.scaleMode == ScaleMode::Fit)) {
+                            config_.scaleMode = ScaleMode::Fit;
+                        }
+                        for (int scale = kMinimumIntegerScale; scale <= kMaximumIntegerScale; ++scale) {
+                            const std::string label = std::to_string(scale) + "x";
+                            const bool selected = config_.scaleMode == ScaleMode::Integer && config_.integerScale == scale;
+                            if (ImGui::MenuItem(label.c_str(), nullptr, selected)) {
+                                config_.scaleMode = ScaleMode::Integer;
+                                config_.integerScale = scale;
+                            }
+                        }
+                        ImGui::EndMenu();
+                    }
+                    if (ImGui::BeginMenu("Aspect")) {
+                        if (ImGui::MenuItem("Pixel", nullptr, config_.aspect == AspectMode::Pixel)) {
+                            config_.aspect = AspectMode::Pixel;
+                        }
+                        if (ImGui::MenuItem("4:3", nullptr, config_.aspect == AspectMode::Television)) {
+                            config_.aspect = AspectMode::Television;
+                        }
+                        ImGui::EndMenu();
+                    }
+                    if (ImGui::BeginMenu("Preset")) {
+                        const auto applyPreset = [&](PictureFilter filter) {
+                            config_.filter = filter;
+                            config_.brightness = kBrightness.defaultValue;
+                            config_.contrast = kContrast.defaultValue;
+                            config_.saturation = kSaturation.defaultValue;
+                            config_.gamma = kGamma.defaultValue;
+                            if (filter == PictureFilter::Sharp) {
+                                config_.sharpness = kSharpness.defaultValue;
+                            }
+                            if (filter == PictureFilter::Crt) {
+                                config_.scanline = kScanline.defaultValue;
+                            }
+                        };
+                        if (ImGui::MenuItem(
+                                "Original",
+                                nullptr,
+                                matchesPreset(
+                                    config_.filter, PictureFilter::Nearest, config_.brightness, config_.contrast,
+                                    config_.saturation, config_.gamma, config_.sharpness, config_.scanline))) {
+                            applyPreset(PictureFilter::Nearest);
+                        }
+                        if (ImGui::MenuItem(
+                                "Smooth",
+                                nullptr,
+                                matchesPreset(
+                                    config_.filter, PictureFilter::Smooth, config_.brightness, config_.contrast,
+                                    config_.saturation, config_.gamma, config_.sharpness, config_.scanline))) {
+                            applyPreset(PictureFilter::Smooth);
+                        }
+                        if (ImGui::MenuItem(
+                                "Sharp",
+                                nullptr,
+                                matchesPreset(
+                                    config_.filter, PictureFilter::Sharp, config_.brightness, config_.contrast,
+                                    config_.saturation, config_.gamma, config_.sharpness, config_.scanline))) {
+                            applyPreset(PictureFilter::Sharp);
+                        }
+                        if (ImGui::MenuItem(
+                                "CRT",
+                                nullptr,
+                                matchesPreset(
+                                    config_.filter, PictureFilter::Crt, config_.brightness, config_.contrast,
+                                    config_.saturation, config_.gamma, config_.sharpness, config_.scanline))) {
+                            applyPreset(PictureFilter::Crt);
+                        }
+                        ImGui::EndMenu();
+                    }
+                    if (ImGui::MenuItem("Picture...")) {
+                        openPicture = true;
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Fullscreen", "Alt+Enter", config_.fullscreen)) {
+                        setFullscreen(!config_.fullscreen);
+                    }
+                    if (ImGui::MenuItem("VSync", nullptr, &config_.vsync)) {
+                        if (!SDL_GL_SetSwapInterval(config_.vsync ? 1 : 0)) {
+                            config_.vsync = !config_.vsync;
+                            errorText = SDL_GetError();
+                            if (errorText.empty()) {
+                                errorText = "VSync could not be changed.";
+                            }
+                            errorTitle = "Could not change VSync";
+                            openError = true;
+                        }
+                    }
+                    ImGui::MenuItem("Performance", nullptr, &config_.showPerformance);
+                    ImGui::EndMenu();
+                }
                 if (ImGui::BeginMenu("Help")) {
                     if (ImGui::MenuItem("About")) {
                         openAbout = true;
@@ -674,6 +813,7 @@ int DesktopShell::run() {
                 viewportHeight = 1.0f;
             }
             ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
+            std::string scaleStatus;
             ImGui::BeginChild(
                 "##viewport",
                 ImVec2(0.0f, viewportHeight),
@@ -684,14 +824,42 @@ int DesktopShell::run() {
                 uploadFrame(texture.id, frame);
                 const float availW = ImGui::GetContentRegionAvail().x;
                 const float availH = ImGui::GetContentRegionAvail().y;
-                float scale = std::min(availW / static_cast<float>(frame.width), availH / static_cast<float>(frame.height));
-                if (scale >= 1.0f) {
-                    scale = std::floor(scale);
+                const float scaleX = io.DisplayFramebufferScale.x > 0.0f ? io.DisplayFramebufferScale.x : 1.0f;
+                const float scaleY = io.DisplayFramebufferScale.y > 0.0f ? io.DisplayFramebufferScale.y : 1.0f;
+                const int pixelW = std::max(1, static_cast<int>(std::floor(static_cast<double>(availW) * scaleX)));
+                const int pixelH = std::max(1, static_cast<int>(std::floor(static_cast<double>(availH) * scaleY)));
+                const PicturePlacement placement = placePicture(
+                    pixelW, pixelH, frame.width, frame.height, config_.scaleMode, config_.integerScale, config_.aspect);
+                scaleStatus = placement.fellBack ? placementNote(config_.scaleMode, config_.integerScale, placement)
+                                                 : placementLabel(placement, config_.aspect);
+                if (placement.width > 0 && placement.height > 0) {
+                    const float widgetW = static_cast<float>(placement.width) / scaleX;
+                    const float widgetH = static_cast<float>(placement.height) / scaleY;
+                    const ImVec2 cursor = ImGui::GetCursorPos();
+                    ImGui::SetCursorPos(ImVec2(cursor.x + (availW - widgetW) * 0.5f, cursor.y + (availH - widgetH) * 0.5f));
+                    const auto presentStart = std::chrono::steady_clock::now();
+                    PictureAdjustments adjustments;
+                    adjustments.filter = config_.filter;
+                    adjustments.brightness = config_.brightness;
+                    adjustments.contrast = config_.contrast;
+                    adjustments.saturation = config_.saturation;
+                    adjustments.gamma = config_.gamma;
+                    adjustments.sharpness = config_.sharpness;
+                    adjustments.scanline = config_.scanline;
+                    const bool shaded = picturePass.ready() &&
+                                        picturePass.draw(texture.id, frame.width, frame.height, placement.width, placement.height, adjustments);
+                    lastPresentMs =
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - presentStart).count();
+                    if (shaded) {
+                        ImGui::Image(static_cast<ImTextureID>(picturePass.texture()), ImVec2(widgetW, widgetH));
+                    } else {
+                        ImGui::Image(static_cast<ImTextureID>(texture.id), ImVec2(widgetW, widgetH));
+                        if (!scaleStatus.empty()) {
+                            scaleStatus += " - ";
+                        }
+                        scaleStatus += "crisp pixels";
+                    }
                 }
-                const ImVec2 size(static_cast<float>(frame.width) * scale, static_cast<float>(frame.height) * scale);
-                const ImVec2 cursor = ImGui::GetCursorPos();
-                ImGui::SetCursorPos(ImVec2(cursor.x + (availW - size.x) * 0.5f, cursor.y + (availH - size.y) * 0.5f));
-                ImGui::Image(static_cast<ImTextureID>(texture.id), size);
             }
             ImGui::EndChild();
             ImGui::PopStyleColor();
@@ -703,6 +871,23 @@ int DesktopShell::run() {
                 if (system_.paused()) {
                     status += " - Paused";
                 }
+            }
+            if (!scaleStatus.empty()) {
+                status += " - ";
+                status += scaleStatus;
+            }
+            if (config_.showPerformance && hostFps > 0.0) {
+                char performance[96] = {};
+                std::snprintf(
+                    performance,
+                    sizeof(performance),
+                    "%.0f fps, %.0f emulated, emu %.1f ms, present %.1f ms",
+                    hostFps,
+                    emulatedFps,
+                    lastEmulationMs,
+                    lastPresentMs);
+                status += " - ";
+                status += performance;
             }
 
             ImDrawList* draw = ImGui::GetWindowDrawList();
@@ -725,6 +910,42 @@ int DesktopShell::run() {
             draw->PopClipRect();
 
             drawModal("About Iris Emulator", aboutText.c_str(), openAbout);
+            if (openPicture) {
+                ImGui::OpenPopup("Picture");
+                openPicture = false;
+            }
+            if (ImGui::BeginPopupModal("Picture", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::TextUnformatted("These settings change how the picture is shown. The emulated image stays as the PPU drew it.");
+                ImGui::Text("Filter: %s", pictureFilterName(config_.filter));
+                ImGui::Spacing();
+                ImGui::SetNextItemWidth(220.0f);
+                ImGui::SliderFloat("Brightness", &config_.brightness, kBrightness.minimum, kBrightness.maximum, "%.2f");
+                ImGui::SetNextItemWidth(220.0f);
+                ImGui::SliderFloat("Contrast", &config_.contrast, kContrast.minimum, kContrast.maximum, "%.2f");
+                ImGui::SetNextItemWidth(220.0f);
+                ImGui::SliderFloat("Saturation", &config_.saturation, kSaturation.minimum, kSaturation.maximum, "%.2f");
+                ImGui::SetNextItemWidth(220.0f);
+                ImGui::SliderFloat("Gamma", &config_.gamma, kGamma.minimum, kGamma.maximum, "%.2f");
+                if (config_.filter == PictureFilter::Sharp) {
+                    ImGui::SetNextItemWidth(220.0f);
+                    ImGui::SliderFloat("Sharpness", &config_.sharpness, kSharpness.minimum, kSharpness.maximum, "%.2f");
+                }
+                if (config_.filter == PictureFilter::Crt) {
+                    ImGui::SetNextItemWidth(220.0f);
+                    ImGui::SliderFloat("Scanlines", &config_.scanline, kScanline.minimum, kScanline.maximum, "%.2f");
+                }
+                if (ImGui::Button("Original colors")) {
+                    config_.brightness = kBrightness.defaultValue;
+                    config_.contrast = kContrast.defaultValue;
+                    config_.saturation = kSaturation.defaultValue;
+                    config_.gamma = kGamma.defaultValue;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Close", ImVec2(75.0f, 0.0f))) {
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
             if (openStateSlots) {
                 ImGui::OpenPopup("State Slots");
                 openStateSlots = false;
@@ -841,10 +1062,23 @@ int DesktopShell::run() {
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(session.window);
+        ++hostFrames;
+        const double fpsElapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - fpsWindow).count();
+        if (fpsElapsed >= 0.5) {
+            hostFps = static_cast<double>(hostFrames) / fpsElapsed;
+            emulatedFps = static_cast<double>(emulatedFrames) / fpsElapsed;
+            hostFrames = 0;
+            emulatedFrames = 0;
+            fpsWindow = std::chrono::steady_clock::now();
+        }
     }
 
     flushBattery();
-    SDL_GetWindowSize(session.window, &windowWidth_, &windowHeight_);
+    if ((SDL_GetWindowFlags(session.window) & SDL_WINDOW_FULLSCREEN) == 0) {
+        SDL_GetWindowSize(session.window, &windowWidth_, &windowHeight_);
+    }
+    config_.windowWidth = windowWidth_;
+    config_.windowHeight = windowHeight_;
     return 0;
 }
 

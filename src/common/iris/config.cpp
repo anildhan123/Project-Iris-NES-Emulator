@@ -123,15 +123,27 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
         return Result<Config>::failure(ErrorCode::ParseFailure, exception.what());
     }
 
+    if (!document.is_object()) {
+        return invalid("Expected a JSON object.");
+    }
+    if (!document.contains("version") || !document["version"].is_number_integer()) {
+        return invalid("Unsupported configuration version. Expected version 1 or 2.");
+    }
+    const auto version = document["version"].get<std::int64_t>();
+    if (version != 1 && version != 2) {
+        return invalid("Unsupported configuration version. Expected version 1 or 2.");
+    }
+
     std::string message;
-    if (!hasOnly(document, {"version", "ui", "logging"}, message)) {
+    if (version == 1) {
+        if (!hasOnly(document, {"version", "ui", "logging"}, message)) {
+            return invalid(std::move(message));
+        }
+    } else if (!hasOnly(document, {"version", "ui", "logging", "video"}, message)) {
         return invalid(std::move(message));
     }
 
     try {
-        if (!document["version"].is_number_integer() || document["version"].get<std::int64_t>() != Config::kCurrentVersion) {
-            return invalid("Unsupported configuration version. Expected version 1.");
-        }
 
         const Json& ui = document["ui"];
         if (!hasOnly(ui, {"theme", "windowWidth", "windowHeight"}, message)) {
@@ -171,6 +183,62 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
         config.windowWidth = static_cast<int>(width);
         config.windowHeight = static_cast<int>(height);
         config.logLevel = *level;
+        if (version == 2) {
+            const Json& video = document["video"];
+            if (!hasOnly(
+                    video,
+                    {"scaleMode", "integerScale", "aspectRatio", "filter", "fullscreen", "vsync", "showPerformance",
+                     "brightness", "contrast", "saturation", "gamma", "sharpness", "scanline"},
+                    message)) {
+                return invalid(std::move(message));
+            }
+            if (!video["scaleMode"].is_string() || !video["aspectRatio"].is_string() || !video["filter"].is_string()) {
+                return invalid("Video mode names must be strings.");
+            }
+            const auto scaleMode = scaleModeFromId(video["scaleMode"].get<std::string>());
+            if (!scaleMode.has_value()) {
+                return invalid("video.scaleMode must be fit or integer.");
+            }
+            const auto aspect = aspectModeFromId(video["aspectRatio"].get<std::string>());
+            if (!aspect.has_value()) {
+                return invalid("video.aspectRatio must be pixel or 4:3.");
+            }
+            const auto filter = pictureFilterFromId(video["filter"].get<std::string>());
+            if (!filter.has_value()) {
+                return invalid("video.filter must be nearest, smooth, sharp, or crt.");
+            }
+            if (!video["integerScale"].is_number_integer()) {
+                return invalid("video.integerScale must be an integer from 1 to 6.");
+            }
+            const auto integerScale = video["integerScale"].get<std::int64_t>();
+            if (integerScale < kMinimumIntegerScale || integerScale > kMaximumIntegerScale) {
+                return invalid("video.integerScale must be an integer from 1 to 6.");
+            }
+            if (!video["fullscreen"].is_boolean() || !video["vsync"].is_boolean() || !video["showPerformance"].is_boolean()) {
+                return invalid("Fullscreen, VSync, and performance must be true or false.");
+            }
+            const auto readGrade = [&](const char* key, const ParameterRange& parameter, float& destination) {
+                if (!video[key].is_number() || !acceptsParameter(parameter, video[key].get<double>())) {
+                    return false;
+                }
+                destination = clampParameter(parameter, video[key].get<double>());
+                return true;
+            };
+            if (!readGrade("brightness", kBrightness, config.brightness) ||
+                !readGrade("contrast", kContrast, config.contrast) ||
+                !readGrade("saturation", kSaturation, config.saturation) ||
+                !readGrade("gamma", kGamma, config.gamma) || !readGrade("sharpness", kSharpness, config.sharpness) ||
+                !readGrade("scanline", kScanline, config.scanline)) {
+                return invalid("A picture setting is outside its allowed range.");
+            }
+            config.scaleMode = *scaleMode;
+            config.integerScale = static_cast<int>(integerScale);
+            config.aspect = *aspect;
+            config.filter = *filter;
+            config.fullscreen = video["fullscreen"].get<bool>();
+            config.vsync = video["vsync"].get<bool>();
+            config.showPerformance = video["showPerformance"].get<bool>();
+        }
         return Result<Config>::success(std::move(config));
     } catch (const Json::exception&) {
         return invalid("Configuration values could not be read.");
@@ -186,10 +254,26 @@ std::string ConfigService::toJson(const Config& config) {
     Json logging = Json::object();
     logging["level"] = levelName(config.logLevel);
 
+    Json video = Json::object();
+    video["scaleMode"] = scaleModeId(config.scaleMode);
+    video["integerScale"] = config.integerScale;
+    video["aspectRatio"] = aspectModeId(config.aspect);
+    video["filter"] = pictureFilterId(config.filter);
+    video["fullscreen"] = config.fullscreen;
+    video["vsync"] = config.vsync;
+    video["showPerformance"] = config.showPerformance;
+    video["brightness"] = config.brightness;
+    video["contrast"] = config.contrast;
+    video["saturation"] = config.saturation;
+    video["gamma"] = config.gamma;
+    video["sharpness"] = config.sharpness;
+    video["scanline"] = config.scanline;
+
     Json document = Json::object();
-    document["version"] = config.version;
+    document["version"] = Config::kCurrentVersion;
     document["ui"] = std::move(ui);
     document["logging"] = std::move(logging);
+    document["video"] = std::move(video);
     return document.dump(2);
 }
 

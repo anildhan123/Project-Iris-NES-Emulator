@@ -42,9 +42,16 @@ Pattern bytes are not fetched dot by dot. Mappers beyond MMC3 wait for a later m
 - A damaged file, or a file for a different game, is refused and the running game stays as it was.
 - Battery-backed RAM is a separate `.sav` file, loaded with the game and written when the game closes or the program exits. Reset does not erase it.
 
-## Milestone 5 — Modern graphics
+## Milestone 5 — Modern graphics (implemented)
 
-Integer scaling, aspect ratio, fullscreen, shader interface, presentation filters, color settings, and performance diagnostics.
+- Integer scales from 1× through 6×, and fit. A requested scale that does not fit steps down, and the status bar says so.
+- Pixel aspect is the default. 4:3 is the television override. Neither mode stretches one axis to fill the window.
+- Borderless fullscreen from the View menu or Alt+Enter. VSync can be turned off.
+- Original, Smooth, Sharp, and CRT presets. Brightness, contrast, saturation, and gamma are a later color stage.
+- The presentation shader samples a copy of the PPU texture. Save thumbnails still use the unfiltered picture. If the shader cannot be created, the window shows crisp pixels.
+- Performance can show host fps, emulated fps, and the time spent in emulation and presentation.
+
+The game library, audio device settings, and other consoles wait for a later milestone.
 
 ## Milestone 6 — Complete desktop frontend
 

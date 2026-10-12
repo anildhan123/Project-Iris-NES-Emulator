@@ -16,6 +16,7 @@ public:
 
     [[nodiscard]] int windowWidth() const { return windowWidth_; }
     [[nodiscard]] int windowHeight() const { return windowHeight_; }
+    [[nodiscard]] const Config& config() const { return config_; }
 
 private:
     Config config_;

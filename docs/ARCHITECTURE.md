@@ -33,8 +33,8 @@ The desktop calls `IEmulatedSystem`. It does not read or write CPU, PPU, or mapp
 3. If a ROM path was passed on the command line, or the user chooses File → Open Game, parse it as iNES or NES 2.0.
 4. NROM, MMC1, UxROM, CNROM, and MMC3 run when the header sizes match that board. Anything else is reported and the previous game, if any, stays loaded.
 5. While the game is running, the window calls `runFrame` once per frame period reported by the system, not once per host refresh. NTSC is about 16.64 ms. PAL and Dendy are longer. Pause skips that call.
-6. The completed 256×240 RGBA picture is uploaded with nearest filtering. The host does not filter or reshape PPU pixels.
-7. Samples from that frame are queued to the audio device. A missing audio device does not stop the picture.
+6. The completed 256×240 RGBA picture is uploaded unchanged. A host shader samples that texture into a separate image. Nearest is the default. Smooth, sharp, and CRT sampling, then brightness, contrast, saturation, and gamma, never write back to the PPU. Save thumbnails use the PPU texture.
+7. The picture is integer-scaled to fit, or to a chosen 1×–6× size. If that size does not fit, the next smaller integer is used and the status bar explains it. Pixel aspect keeps each emulated pixel square in the window; 4:3 uses a four-by-three box. Fullscreen is borderless. Samples from that frame are queued to the audio device. A missing audio device does not stop the picture.
 
 Emulation still shares the UI thread. Moving it off that thread is a later milestone.
 
@@ -61,11 +61,11 @@ Files live under the data directory: `states/{content id}/slot-01.irstate` throu
 
 ## Configuration schema
 
-Schema version 1:
+Schema version 2. A version 1 file, which has no `video` object, is still accepted. The next save writes version 2 with the presentation defaults.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "ui": {
     "theme": "xp-blue",
     "windowWidth": 1024,
@@ -73,11 +73,28 @@ Schema version 1:
   },
   "logging": {
     "level": "info"
+  },
+  "video": {
+    "scaleMode": "fit",
+    "integerScale": 3,
+    "aspectRatio": "pixel",
+    "filter": "nearest",
+    "fullscreen": false,
+    "vsync": true,
+    "showPerformance": false,
+    "brightness": 0.0,
+    "contrast": 1.0,
+    "saturation": 1.0,
+    "gamma": 1.0,
+    "sharpness": 2.0,
+    "scanline": 0.5
   }
 }
 ```
 
-`theme` is `xp-blue`, `xp-olive`, or `xp-silver`. Window width is 640–7680 and height is 480–4320. `level` is `trace`, `debug`, `info`, `warn`, `error`, or `critical`. Unknown fields are rejected. Do not add a setting until the application implements it.
+`theme` is `xp-blue`, `xp-olive`, or `xp-silver`. Window width is 640–7680 and height is 480–4320. `level` is `trace`, `debug`, `info`, `warn`, `error`, or `critical`. `scaleMode` is `fit` or `integer`. `integerScale` is 1–6. `aspectRatio` is `pixel` or `4:3`. `filter` is `nearest`, `smooth`, `sharp`, or `crt`. Brightness is −0.5–0.5, contrast is 0.5–2, saturation is 0–2, gamma is 0.4–2.5, sharpness is 1–4, and scanlines are 0–1. Unknown fields are rejected. Do not add a setting until the application implements it.
+
+The built-in shaders are original and compiled into the frontend. Each one has an id, a display name, a version, a stage (`sampling` or `color`), a cost, and parameters. Sampling runs before color. A compile or link failure leaves the crisp-pixel path in place. The data directory's `shaders` folder is not read.
 
 ## Threading
 
