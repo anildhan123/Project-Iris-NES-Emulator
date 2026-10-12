@@ -519,7 +519,7 @@ int DesktopShell::run() {
         if (!appPaths.has_value() || system_.contentId().size() != 64) {
             return {};
         }
-        char name[24] = {};
+        char name[32] = {};
         std::snprintf(name, sizeof(name), "slot-%02d.irstate", slot + 1);
         return appPaths->states / system_.contentId() / name;
     };
