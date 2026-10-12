@@ -1,0 +1,25 @@
+name: Windows
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: MSVC debug
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset windows-msvc-debug
+
+      - name: Build
+        run: cmake --build --preset windows-msvc-debug
+
+      - name: Test
+        run: ctest --preset windows-msvc-debug --output-on-failure
+
+      - name: Version
+        run: .\build\windows-msvc-debug\bin\Debug\iris.exe --version
