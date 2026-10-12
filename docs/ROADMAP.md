@@ -81,4 +81,13 @@ Linux and macOS desktop builds, and the shared core, landed in Milestone 8. Full
 - `ports/android` is a JNI library and a Java class with native declarations. It is not an app. `ports/ios/iris_bridge.h` is the same C API for a future Swift or Objective-C caller. There is no touch control, audio-focus handling, Gradle screen, or Xcode app.
 - GitHub Actions builds the desktop on Ubuntu and macOS. This repository's development machine is Windows, so those two jobs are the platform check. The macOS build is not signed or notarized.
 
+The first portability run failed to configure on Ubuntu and failed to compile on macOS. Milestone 9 repaired those jobs. Full mobile frontends and other consoles wait.
+
+## Milestone 9 — Portability CI repair (implemented)
+
+- Ubuntu installs `libxtst-dev`. SDL 3.4.18 is built from source, and its X11 check requires XTEST. `SDL_X11_XTEST` stays on.
+- Picture-pass OpenGL pointers use `APIENTRY` from `SDL_opengl.h`. That is the Win32 calling convention on Windows and an empty macro for GCC and Apple Clang. `-Werror` stays on.
+- GCC also rejected a move of a const cartridge result, a Windows-style path treated as absolute on POSIX, and a save-slot name that could not fit the worst `snprintf` expansion. Those are host-build fixes. NES timing, mappers, and the picture hash are unchanged.
+- Version 0.9.0. On commit `0a1547c`, Windows run [38257147101](https://github.com/anildhan123/Project-Iris-NES-Emulator/actions/runs/38257147101) passed debug and release. Portability run [38257147297](https://github.com/anildhan123/Project-Iris-NES-Emulator/actions/runs/38257147297) passed Ubuntu debug and macOS debug: configure, build, `ctest`, and `iris --version`. Those jobs do not open a window. A green compile is not a visible desktop on Linux or macOS.
+
 Full mobile frontends and other consoles are not started.

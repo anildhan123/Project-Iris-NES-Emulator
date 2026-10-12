@@ -1,6 +1,6 @@
 # Compatibility
 
-Version 0.8.0 records what this Windows build was tested to do, and which other builds are defined but were not run on the development machine. It is not a catalogue of commercial games, and it does not include those games.
+Version 0.9.0 records what this Windows build was tested to do, and what the Ubuntu and macOS CI jobs compiled and tested. It is not a catalogue of commercial games, and it does not include those games.
 
 Run the suite from a configured build tree:
 
@@ -61,14 +61,16 @@ An unexpected C++ exception, or a Windows access violation, integer division by 
 
 ## Release candidate
 
-0.8.0 is an unsigned build. The Windows executable's version resource says 0.8.0. Build it with `cmake --build --preset windows-msvc-release`. Package it with `cpack -G ZIP -C Release` from the build directory. The zip contains the executable, Iris Demo, the readme, and the license files. It is not a signed installer.
+0.9.0 is an unsigned build. The Windows executable's version resource says 0.9.0. Build it with `cmake --build --preset windows-msvc-release`. Package it with `cpack -G ZIP -C Release` from the build directory. The zip contains the executable, Iris Demo, the readme, and the license files. It is not a signed installer.
 
-The frame-time numbers above were measured for 0.7.0 on this Windows 11 machine. A later `--profile` run prints `Iris Emulator 0.8.0` and its own host times. The target line stays the NTSC frame period.
+The frame-time numbers above were measured for 0.7.0 on this Windows 11 machine. A later `--profile` run prints `Iris Emulator 0.9.0` and its own host times. The target line stays the NTSC frame period. The 0.7.0 numbers were not remeasured for 0.9.0.
 
 ## Portability
 
-The development machine is Windows. The C API test and the Windows and XDG data-root tests ran here. `iris --version` on this machine prints `Iris Emulator 0.8.0`. A second configure with the desktop turned off built the core and passed the unit tests, and it did not produce the window executable.
+The development machine is Windows. The C API test and the Windows and XDG data-root tests ran here. `iris --version` on this machine prints `Iris Emulator 0.9.0`. A second configure with the desktop turned off built the core and passed the unit tests, and it did not produce the window executable.
 
-Linux and macOS desktop builds are the `linux-debug` and `macos-debug` presets, and GitHub Actions runs both. Those jobs had not been observed from this machine when 0.8.0 was assembled. Linux needs an OpenGL 3.3 Core driver. macOS requests OpenGL 3.2 compatibility; the picture shaders are still GLSL 330, and a shader failure shows crisp pixels. The macOS binary is not signed or notarized.
+Linux and macOS desktop builds are the `linux-debug` and `macos-debug` presets. SDL 3.4.18 is compiled from source. The Ubuntu job installs `libxtst-dev` because SDL's X11 backend requires XTEST. OpenGL function pointers use `APIENTRY` from SDL's OpenGL header, which is `__stdcall` on Win32 and empty for GCC and Apple Clang. Linux needs an OpenGL 3.3 Core driver. macOS requests OpenGL 3.2 compatibility; the picture shaders are still GLSL 330, and a shader failure shows crisp pixels. The macOS binary is not signed or notarized.
+
+On commit `0a1547c`, GitHub Actions run [38257147101](https://github.com/anildhan123/Project-Iris-NES-Emulator/actions/runs/38257147101) passed both Windows jobs: MSVC debug (configure, build, test, version) and MSVC release (configure, build, version, profile). Portability run [38257147297](https://github.com/anildhan123/Project-Iris-NES-Emulator/actions/runs/38257147297) passed Ubuntu debug and macOS debug. Each of those jobs configured, built, ran `ctest`, and printed the version. A passing compile and `ctest` is not a launched window. This machine did not open an Ubuntu or macOS window, and those jobs do not start one.
 
 `ports/android` is a JNI library compiled only by the Android NDK. `ports/ios/iris_bridge.h` is included by the Windows unit test so the C declarations compile. Neither port was run as an app, and this machine did not run the NDK or Xcode.
