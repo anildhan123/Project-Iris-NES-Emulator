@@ -97,7 +97,9 @@ TEST_CASE("joinRelative rejects absolute paths and parent traversal") {
     REQUIRE_FALSE(iris::joinRelative(root, "..").has_value());
     REQUIRE_FALSE(iris::joinRelative(root, "../secret").has_value());
     REQUIRE_FALSE(iris::joinRelative(root, "library/../../outside").has_value());
+#if defined(_WIN32)
     REQUIRE_FALSE(iris::joinRelative(root, "C:/Windows").has_value());
+#endif
     REQUIRE_FALSE(iris::joinRelative(root, "/absolute").has_value());
 }
 

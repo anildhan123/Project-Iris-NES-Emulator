@@ -17,7 +17,7 @@ bool NesSystem::loadContent(const std::filesystem::path& path, std::string& erro
         error = parsed.error().message;
         return false;
     }
-    return adopt(std::move(parsed.value()), error);
+    return adopt(parsed.value(), error);
 }
 
 bool NesSystem::loadBytes(const std::uint8_t* data, std::size_t size, const std::string& name, std::string& error) {
@@ -26,7 +26,7 @@ bool NesSystem::loadBytes(const std::uint8_t* data, std::size_t size, const std:
         error = parsed.error().message;
         return false;
     }
-    return adopt(std::move(parsed.value()), error);
+    return adopt(parsed.value(), error);
 }
 
 bool NesSystem::adopt(Cartridge cartridge, std::string& error) {
