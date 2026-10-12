@@ -85,7 +85,7 @@ TEST_CASE("CNROM bank selects 8 KiB CHR and submapper 0 has a bus conflict") {
     auto rom = makeRom(3, 0, 1, 2, 0, true);
     auto parsed = iris::systems::nes::Cartridge::fromBytes(rom.data(), rom.size(), "cnrom");
     REQUIRE(parsed.ok());
-    iris::systems::nes::Cartridge cart = std::move(parsed.value());
+    iris::systems::nes::Cartridge cart = parsed.value();
     cart.chr()[0] = 0x11;
     cart.chr()[8192] = 0x22;
     iris::systems::nes::Cnrom mapper(cart);
@@ -120,7 +120,7 @@ TEST_CASE("a second MMC1 write in the same instruction is ignored") {
     auto rom = makeRom(1, 0, 4, 1, 0, false);
     auto parsed = iris::systems::nes::Cartridge::fromBytes(rom.data(), rom.size(), "mmc1");
     REQUIRE(parsed.ok());
-    iris::systems::nes::Cartridge cart = std::move(parsed.value());
+    iris::systems::nes::Cartridge cart = parsed.value();
     cart.prg()[1 * 16384] = 0x11;
     cart.prg()[3 * 16384] = 0x33;
     iris::systems::nes::Mmc1 mapper(cart);
