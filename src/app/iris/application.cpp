@@ -2,23 +2,33 @@
 
 #include "iris/desktop_shell.hpp"
 #include "iris/log.hpp"
+#include "iris/nes/nes_system.hpp"
 #include "iris/paths.hpp"
 #include "iris/version.hpp"
 
 #include <cstring>
 #include <iostream>
+#include <memory>
 #include <string>
 
 namespace iris {
 
 int Application::run(int argc, char** argv) {
-    if (argc > 1) {
+    std::string initialRom;
+    if (argc > 2) {
+        std::cerr << "Usage: iris [--version] [rom.nes]\n";
+        return 1;
+    }
+    if (argc == 2) {
         if (std::strcmp(argv[1], "--version") == 0) {
             std::cout << kProductName << ' ' << kVersionString << '\n';
             return 0;
         }
-        std::cerr << "Unknown argument: " << argv[1] << '\n';
-        return 1;
+        if (argv[1][0] == '-') {
+            std::cerr << "Unknown argument: " << argv[1] << '\n';
+            return 1;
+        }
+        initialRom = argv[1];
     }
 
     const auto paths = resolveAppPaths();
@@ -56,7 +66,8 @@ int Application::run(int argc, char** argv) {
     }
 
     log::info(std::string("Data directory: ") + paths->root.string());
-    DesktopShell shell(config);
+    const auto system = systems::nes::createNesSystem();
+    DesktopShell shell(config, *system, initialRom);
     const int code = shell.run();
     if (code == 0 && persistConfig) {
         config.windowWidth = shell.windowWidth();

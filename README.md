@@ -1,8 +1,8 @@
 # Iris Emulator
 
-Iris Emulator is a desktop emulator platform. The first system will be the Nintendo Entertainment System. This repository currently contains Milestone 1: the Windows build, logging, configuration, tests, and a Windows XP-inspired window. It does not emulate a NES yet.
+Iris Emulator is a desktop emulator platform. The first system is the Nintendo Entertainment System. This version plays NROM (mapper 0) games: it loads an iNES or NES 2.0 ROM, runs the CPU and an initial PPU, reads the keyboard as a controller, and plays pulse, triangle, and noise audio.
 
-The project license is MIT. Third-party licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Iris does not include games or firmware. You may use only files you are legally entitled to use.
+The project license is MIT. Third-party licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Iris does not include commercial games or firmware. Iris Demo is an original program written for this project. You may use only files you are legally entitled to use.
 
 ## Requirements
 
@@ -36,11 +36,23 @@ ctest --preset windows-msvc-debug --output-on-failure
 
 The menu contains only commands that work:
 
-- File → Exit
-- Help → About
-- Help → Legal Notices
+- File → Open Game, Close Game, Exit
+- Emulation → Pause / Resume, Reset
+- Help → About, Legal Notices
 
-The status bar shows `No game loaded` and the version. Themes are `xp-blue`, `xp-olive`, and `xp-silver`, read from the configuration file.
+Open Game uses the system file dialog. A ROM path can also be passed on the command line. Escape pauses. The keyboard is controller 1: arrow keys, Z (A), X (B), Right Shift (Select), and Enter (Start).
+
+The picture is the PPU's 256×240 output, scaled by whole pixels with nearest filtering. The status bar names the loaded game. Themes are `xp-blue`, `xp-olive`, and `xp-silver`, read from the configuration file.
+
+After a build, the original demo is next to the executable:
+
+```powershell
+.\build\windows-msvc-debug\bin\Debug\iris.exe .\build\windows-msvc-debug\bin\Debug\iris_demo.nes
+```
+
+File → Open Game starts in that folder, so `iris_demo.nes` is there as well. The demo draws a tile grid and the word IRIS. The arrow keys move the sprite. Hold Z to play a tone.
+
+Only NROM is playable. Other mappers produce an error and are not treated as NROM. Battery-backed RAM is not saved yet.
 
 ## Data directory
 

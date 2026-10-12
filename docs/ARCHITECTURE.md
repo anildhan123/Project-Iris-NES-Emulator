@@ -1,13 +1,17 @@
 # Architecture
 
-Iris is an emulator platform. The NES core will be the first system module. This document describes the boundaries that keep that possible. Milestone 1 implements the application shell only.
+Iris is an emulator platform. The NES core is the first system module. This document describes the boundaries that keep additional systems possible.
 
 ## Layers
 
 ```text
 iris_app
   -> iris_frontend
+       -> iris_emulator
        -> iris_platform -> iris_common
+       -> iris_common
+  -> iris_nes
+       -> iris_emulator
        -> iris_common
 ```
 
@@ -15,18 +19,34 @@ iris_app
 |---|---|---|
 | `iris_common` | Version, errors, logging, configuration values and JSON validation | SDL, ImGui, Win32, a system core |
 | `iris_platform` | Data directories, safe path joins, atomic file replacement | SDL, ImGui, UI widgets |
-| `iris_frontend` | SDL3 window, OpenGL 3.3 context, ImGui presentation | CPU, PPU, APU, or mapper types |
-| `iris_app` | Process startup, `--version`, shutdown | Emulator internals |
+| `iris_emulator` | `IEmulatedSystem`, frame and audio views, controller button bits | SDL, ImGui, CPU, PPU, or mapper types |
+| `iris_nes` | iNES parsing, NROM, CPU, bus, PPU, minimal APU, controllers | SDL, ImGui, Win32 UI |
+| `iris_frontend` | SDL3 window, OpenGL 3.3 context, ImGui presentation, file dialog, audio queue | CPU, PPU, APU, or mapper types |
+| `iris_app` | Process startup, `--version`, optional ROM path, shutdown | Emulator internals |
 
-Later milestones add `iris_emulator` interfaces and `iris::systems::nes` behind those interfaces. The desktop UI calls application services. It does not read or write CPU, PPU, or mapper state.
+The desktop calls `IEmulatedSystem`. It does not read or write CPU, PPU, or mapper state. `iris_frontend` links the interface target only. `iris_app` is what links `iris_nes`.
 
-## Milestone 1 runtime
+## Milestone 2 runtime
 
-1. Resolve the data directory (`IRIS_DATA_DIR`, otherwise `%LOCALAPPDATA%\IrisEmulator`).
-2. Create directories for configuration, logs, states, battery saves, screenshots, shader presets, and library metadata.
-3. Start logging, then load `config/settings.json`.
-4. Open the window. A rejected configuration stays on disk and the process uses defaults for that session.
-5. On an orderly exit after a trusted configuration, save the current window size with a temporary file and replace.
+1. Resolve the data directory, start logging, and load configuration, as in Milestone 1.
+2. Create the NES system and open the window.
+3. If a ROM path was passed on the command line, or the user chooses File → Open Game, parse it as iNES or NES 2.0.
+4. Mapper 0 with 16 or 32 KiB of PRG and 8 KiB of CHR runs. Anything else is reported and the previous game, if any, stays loaded.
+5. While the game is running, the window calls `runFrame` once per NTSC frame (about 16.64 ms), not once per host refresh. Pause skips that call.
+6. The completed 256×240 RGBA picture is uploaded with nearest filtering. The host does not filter or reshape PPU pixels.
+7. Samples from that frame are queued to the audio device. A missing audio device does not stop the picture.
+
+Emulation still shares the UI thread. Moving it off that thread is a later milestone.
+
+## NES behavior in this version
+
+- Official 6502 opcodes, including the indirect JMP page-wrap bug. Unofficial opcodes are not implemented.
+- ADC and SBC stay binary even when the decimal flag is set.
+- NROM: 16 KiB PRG is mirrored at `$C000`. CHR may be ROM or RAM. A trainer, when present, is copied to `$7000`.
+- The PPU steps three dots per CPU cycle, renders a scanline from the loopy scroll registers, and raises NMI when vblank begins with NMI enabled. Pattern fetches inside a dot are not modeled yet.
+- The APU mixes pulse, triangle, and noise. DMC is not played. The frame counter is a quarter-frame approximation, not the full NTSC sequence.
+- Controller bits are A, B, Select, Start, Up, Down, Left, Right. Keyboard mapping lives in the shell.
+- Battery-backed RAM is allocated when the header asks for it and is not written to disk.
 
 ## Configuration schema
 
@@ -50,4 +70,4 @@ Schema version 1:
 
 ## Threading
 
-Milestone 1 runs on one thread. Later milestones will keep emulation off the UI thread and will cross that boundary only through an explicit synchronization point.
+Milestone 2 runs the NES on the UI thread and paces it to the NTSC frame period. Later milestones will keep emulation off the UI thread and will cross that boundary only through an explicit synchronization point.

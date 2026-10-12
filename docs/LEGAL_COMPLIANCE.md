@@ -1,6 +1,6 @@
 # Legal compliance
 
-Iris is an independently written emulator. Milestone 1 distributes no game, firmware, or copied interface artwork.
+Iris is an independently written emulator. It does not distribute commercial games, firmware, or copied interface artwork. Iris Demo is an original NROM program whose source is the assembler listing in `src/systems/nes/iris/nes/demo_rom.cpp`. The build writes `iris_demo.nes` next to the executable. Do not add other ROM images to the repository.
 
 ## Project rules
 

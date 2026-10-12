@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(IrisEmulator
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "Iris Emulator"
     LANGUAGES C CXX
 )
@@ -17,6 +17,8 @@ enable_testing()
 
 add_subdirectory(src/common)
 add_subdirectory(src/platform)
+add_subdirectory(src/emulator)
+add_subdirectory(src/systems/nes)
 add_subdirectory(src/frontend)
 add_subdirectory(src/app)
 add_subdirectory(tests)

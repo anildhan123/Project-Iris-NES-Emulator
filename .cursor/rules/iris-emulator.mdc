@@ -7,7 +7,7 @@ alwaysApply: true
 
 Read `docs/PRD.md`, `docs/ARCHITECTURE.md`, and `docs/ROADMAP.md` before changing architecture.
 
-- Implement one milestone at a time. Leave later milestones, including the NES core, unimplemented until that milestone starts.
+- Implement one milestone at a time. Milestone 2 (NROM) is implemented. Do not start later milestones: other mappers, a complete APU, save states, shaders, the game library, or other consoles.
 - The emulation core must not include SDL window types, ImGui, or Win32 UI types. Desktop code calls services and does not read CPU or PPU internals.
 - Do not add menu items, settings, or buttons that do not work.
 - Do not add commercial ROMs, proprietary firmware, copied UI assets, or a copy of Tahoma.

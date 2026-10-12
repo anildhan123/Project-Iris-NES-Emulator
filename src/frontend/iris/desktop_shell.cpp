@@ -20,26 +20,37 @@
 #endif
 
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_dialog.h>
 #include <SDL3/SDL_opengl.h>
 
 #include <imgui.h>
 #include <imgui_impl_opengl3.h>
 #include <imgui_impl_sdl3.h>
 
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
+#include <mutex>
 #include <string>
 
 namespace iris {
 namespace {
 
+constexpr std::int64_t kNesFrameNs = 16639266;
+
 struct SdlSession {
     SDL_Window* window = nullptr;
     SDL_GLContext context = nullptr;
+    SDL_AudioStream* audio = nullptr;
     bool sdlInitialized = false;
     bool imguiContext = false;
     bool imguiBackends = false;
 
     ~SdlSession() {
+        if (audio != nullptr) {
+            SDL_DestroyAudioStream(audio);
+        }
         if (imguiBackends) {
             ImGui_ImplOpenGL3_Shutdown();
             ImGui_ImplSDL3_Shutdown();
@@ -63,6 +74,43 @@ struct SdlSession {
     SdlSession() = default;
 };
 
+struct TextureGuard {
+    GLuint id = 0;
+    ~TextureGuard() {
+        if (id != 0) {
+            glDeleteTextures(1, &id);
+        }
+    }
+};
+
+struct PendingDialog {
+    std::mutex mutex;
+    bool active = false;
+    bool ready = false;
+    bool failed = false;
+    std::string path;
+    std::string error;
+};
+
+void SDLCALL onOpenFile(void* userdata, const char* const* filelist, int /*filter*/) {
+    auto* pending = static_cast<PendingDialog*>(userdata);
+    std::lock_guard lock(pending->mutex);
+    pending->active = false;
+    pending->ready = true;
+    pending->failed = false;
+    pending->path.clear();
+    pending->error.clear();
+    if (filelist == nullptr) {
+        pending->failed = true;
+        const char* message = SDL_GetError();
+        pending->error = (message == nullptr || message[0] == '\0') ? "The file dialog failed." : message;
+        return;
+    }
+    if (filelist[0] != nullptr) {
+        pending->path = filelist[0];
+    }
+}
+
 bool loadUiFont() {
     const auto windir = environmentValue("WINDIR");
     if (!windir.has_value()) {
@@ -76,7 +124,6 @@ bool loadUiFont() {
         return false;
     }
 
-    // The operating-system font is read in place and is not copied into the repository.
     ImFont* font = ImGui::GetIO().Fonts->AddFontFromFileTTF(fontPath.string().c_str());
     if (font == nullptr) {
         log::warn("Tahoma could not be loaded. Using the built-in UI font.");
@@ -88,8 +135,6 @@ bool loadUiFont() {
 
 void hideSpawnedConsole() {
 #if defined(_WIN32)
-    // A console-subsystem process shows a console when it is started from Explorer.
-    // Detach it for the windowed session. --version returns before this runs.
     FreeConsole();
 #endif
 }
@@ -123,10 +168,45 @@ void drawModal(const char* title, const char* body, bool& open) {
     ImGui::EndPopup();
 }
 
+std::filesystem::path pathFromUtf8(const std::string& text) {
+    return std::filesystem::path(reinterpret_cast<const char8_t*>(text.c_str()));
+}
+
+std::uint8_t controllerButtons() {
+    const bool* keys = SDL_GetKeyboardState(nullptr);
+    if (keys == nullptr) {
+        return 0;
+    }
+    std::uint8_t buttons = 0;
+    if (keys[SDL_SCANCODE_Z]) buttons = static_cast<std::uint8_t>(buttons | kButtonA);
+    if (keys[SDL_SCANCODE_X]) buttons = static_cast<std::uint8_t>(buttons | kButtonB);
+    if (keys[SDL_SCANCODE_RSHIFT]) buttons = static_cast<std::uint8_t>(buttons | kButtonSelect);
+    if (keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER]) buttons = static_cast<std::uint8_t>(buttons | kButtonStart);
+    if (keys[SDL_SCANCODE_UP]) buttons = static_cast<std::uint8_t>(buttons | kButtonUp);
+    if (keys[SDL_SCANCODE_DOWN]) buttons = static_cast<std::uint8_t>(buttons | kButtonDown);
+    if (keys[SDL_SCANCODE_LEFT]) buttons = static_cast<std::uint8_t>(buttons | kButtonLeft);
+    if (keys[SDL_SCANCODE_RIGHT]) buttons = static_cast<std::uint8_t>(buttons | kButtonRight);
+    return buttons;
+}
+
+void uploadFrame(GLuint& texture, const FrameView& frame) {
+    if (texture == 0) {
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    } else {
+        glBindTexture(GL_TEXTURE_2D, texture);
+    }
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, frame.width, frame.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame.rgba);
+}
+
 }  // namespace
 
-DesktopShell::DesktopShell(const Config& config)
-    : config_(config), windowWidth_(config.windowWidth), windowHeight_(config.windowHeight) {}
+DesktopShell::DesktopShell(const Config& config, IEmulatedSystem& system, std::string initialRom)
+    : config_(config), system_(system), initialRom_(std::move(initialRom)), windowWidth_(config.windowWidth),
+      windowHeight_(config.windowHeight) {}
 
 int DesktopShell::run() {
     hideSpawnedConsole();
@@ -136,6 +216,9 @@ int DesktopShell::run() {
         return 1;
     }
     session.sdlInitialized = true;
+    if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+        log::warn(std::string("Audio is unavailable: ") + SDL_GetError());
+    }
 
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
@@ -165,6 +248,17 @@ int DesktopShell::run() {
     }
     if (!SDL_GL_SetSwapInterval(1)) {
         log::warn(std::string("VSync was not enabled: ") + SDL_GetError());
+    }
+
+    SDL_AudioSpec audioSpec{};
+    audioSpec.format = SDL_AUDIO_F32;
+    audioSpec.channels = 1;
+    audioSpec.freq = 48000;
+    session.audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &audioSpec, nullptr, nullptr);
+    if (session.audio == nullptr) {
+        log::warn(std::string("Audio output was not opened: ") + SDL_GetError());
+    } else if (!SDL_ResumeAudioStreamDevice(session.audio)) {
+        log::warn(std::string("Audio output was not started: ") + SDL_GetError());
     }
 
     float contentScale = SDL_GetWindowDisplayScale(session.window);
@@ -202,10 +296,58 @@ int DesktopShell::run() {
     SDL_SetWindowPosition(session.window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     SDL_ShowWindow(session.window);
 
+    std::string basePath;
+    if (const char* base = SDL_GetBasePath()) {
+        basePath = base;
+    }
+    static const SDL_DialogFileFilter kFilters[] = {
+        {"NES ROM", "nes"},
+        {"All files", "*"},
+    };
+
     bool requestExit = false;
     bool openAbout = false;
     bool openLegal = false;
+    bool openError = false;
+    bool loadInitialRom = !initialRom_.empty();
+    std::string errorText;
+    PendingDialog dialog;
+    TextureGuard texture;
     const std::string versionLabel = std::string(kProductName) + " " + kVersionString;
+    const std::string aboutText = std::string(kProductName) + " " + kVersionString +
+                                   "\n\nThis build plays NROM (mapper 0) games on an NTSC timing model. "
+                                   "Iris Demo, written for this project, is generated beside the executable.\n\n"
+                                   "Open a ROM with File, Open Game. Arrow keys move, Z is A, X is B, "
+                                   "Right Shift is Select, and Enter is Start. Escape pauses.";
+    auto previous = std::chrono::steady_clock::now();
+    std::int64_t accumulated = kNesFrameNs;
+
+    const auto openRom = [&](const std::filesystem::path& path) {
+        std::string error;
+        if (!system_.loadContent(path, error)) {
+            errorText = error;
+            openError = true;
+            log::error(error);
+            return;
+        }
+        const SystemInfo info = system_.info();
+        log::info(std::string("Loaded ") + info.title + " (" + info.detail + ").");
+        if (info.batteryBacked) {
+            log::warn("Battery-backed RAM will not be saved in this version.");
+        }
+        accumulated = kNesFrameNs;
+    };
+
+    const auto showOpenDialog = [&]() {
+        std::lock_guard lock(dialog.mutex);
+        if (dialog.active) {
+            return;
+        }
+        dialog.active = true;
+        dialog.ready = false;
+        SDL_ShowOpenFileDialog(
+            onOpenFile, &dialog, session.window, kFilters, 2, basePath.empty() ? nullptr : basePath.c_str(), false);
+    };
 
     while (!requestExit) {
         SDL_Event event;
@@ -218,14 +360,77 @@ int DesktopShell::run() {
                 event.window.windowID == SDL_GetWindowID(session.window)) {
                 requestExit = true;
             }
+            if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
+                const bool ctrl = (event.key.mod & SDL_KMOD_CTRL) != 0;
+                if (ctrl && event.key.scancode == SDL_SCANCODE_O) {
+                    showOpenDialog();
+                } else if (event.key.scancode == SDL_SCANCODE_ESCAPE && system_.loaded() &&
+                           !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup)) {
+                    system_.setPaused(!system_.paused());
+                }
+            }
         }
         if (requestExit) {
             break;
         }
         if ((SDL_GetWindowFlags(session.window) & SDL_WINDOW_MINIMIZED) != 0) {
             SDL_Delay(10);
+            previous = std::chrono::steady_clock::now();
             continue;
         }
+
+        if (loadInitialRom) {
+            loadInitialRom = false;
+            openRom(std::filesystem::path(initialRom_));
+        }
+
+        {
+            std::string chosen;
+            bool failed = false;
+            std::string failure;
+            {
+                std::lock_guard lock(dialog.mutex);
+                if (dialog.ready) {
+                    chosen = dialog.path;
+                    failed = dialog.failed;
+                    failure = dialog.error;
+                    dialog.ready = false;
+                    dialog.path.clear();
+                }
+            }
+            if (failed) {
+                errorText = failure;
+                openError = true;
+                log::error(failure);
+            } else if (!chosen.empty()) {
+                openRom(pathFromUtf8(chosen));
+            }
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - previous).count();
+        previous = now;
+        if (system_.loaded() && !system_.paused()) {
+            accumulated += elapsed;
+            if (accumulated >= kNesFrameNs) {
+                system_.runFrame();
+                const AudioView audio = system_.audio();
+                if (session.audio != nullptr && audio.samples != nullptr && audio.count > 0 &&
+                    SDL_GetAudioStreamQueued(session.audio) < 48000 * static_cast<int>(sizeof(float))) {
+                    SDL_PutAudioStreamData(session.audio, audio.samples, audio.count * static_cast<int>(sizeof(float)));
+                }
+                accumulated -= kNesFrameNs;
+                if (accumulated > kNesFrameNs) {
+                    accumulated = 0;
+                }
+            }
+        } else {
+            accumulated = kNesFrameNs;
+        }
+
+        const bool uiOwnsInput = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup);
+        system_.setController(0, system_.loaded() && !uiOwnsInput ? controllerButtons() : 0);
+        system_.setController(1, 0);
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
@@ -240,8 +445,25 @@ int DesktopShell::run() {
         if (ImGui::Begin("##client", nullptr, windowFlags)) {
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("File")) {
+                    if (ImGui::MenuItem("Open Game...", "Ctrl+O")) {
+                        showOpenDialog();
+                    }
+                    if (ImGui::MenuItem("Close Game", nullptr, false, system_.loaded())) {
+                        system_.unload();
+                    }
+                    ImGui::Separator();
                     if (ImGui::MenuItem("Exit")) {
                         requestExit = true;
+                    }
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("Emulation")) {
+                    const char* pauseLabel = system_.paused() ? "Resume" : "Pause";
+                    if (ImGui::MenuItem(pauseLabel, "Esc", false, system_.loaded())) {
+                        system_.setPaused(!system_.paused());
+                    }
+                    if (ImGui::MenuItem("Reset", nullptr, false, system_.loaded())) {
+                        system_.reset();
                     }
                     ImGui::EndMenu();
                 }
@@ -279,8 +501,31 @@ int DesktopShell::run() {
                 ImVec2(0.0f, viewportHeight),
                 ImGuiChildFlags_Borders,
                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            const FrameView frame = system_.frame();
+            if (system_.loaded() && frame.rgba != nullptr && frame.width > 0 && frame.height > 0) {
+                uploadFrame(texture.id, frame);
+                const float availW = ImGui::GetContentRegionAvail().x;
+                const float availH = ImGui::GetContentRegionAvail().y;
+                float scale = std::min(availW / static_cast<float>(frame.width), availH / static_cast<float>(frame.height));
+                if (scale >= 1.0f) {
+                    scale = std::floor(scale);
+                }
+                const ImVec2 size(static_cast<float>(frame.width) * scale, static_cast<float>(frame.height) * scale);
+                const ImVec2 cursor = ImGui::GetCursorPos();
+                ImGui::SetCursorPos(ImVec2(cursor.x + (availW - size.x) * 0.5f, cursor.y + (availH - size.y) * 0.5f));
+                ImGui::Image(static_cast<ImTextureID>(texture.id), size);
+            }
             ImGui::EndChild();
             ImGui::PopStyleColor();
+
+            std::string status = "No game loaded";
+            if (system_.loaded()) {
+                const SystemInfo info = system_.info();
+                status = info.title + " - " + info.detail;
+                if (system_.paused()) {
+                    status += " - Paused";
+                }
+            }
 
             ImDrawList* draw = ImGui::GetWindowDrawList();
             const ImU32 face = ImGui::ColorConvertFloat4ToU32(
@@ -290,9 +535,10 @@ int DesktopShell::run() {
                 ImVec2(windowPos.x, statusTop),
                 ImVec2(windowPos.x + windowSize.x, windowPos.y + windowSize.y),
                 false);
-            draw->AddRectFilled(ImVec2(windowPos.x, statusTop), ImVec2(windowPos.x + windowSize.x, windowPos.y + windowSize.y), face);
+            draw->AddRectFilled(
+                ImVec2(windowPos.x, statusTop), ImVec2(windowPos.x + windowSize.x, windowPos.y + windowSize.y), face);
             draw->AddLine(ImVec2(windowPos.x, statusTop), ImVec2(windowPos.x + windowSize.x, statusTop), accent, 1.0f);
-            draw->AddText(ImVec2(windowPos.x + 8.0f, statusTop + 4.0f), text, "No game loaded");
+            draw->AddText(ImVec2(windowPos.x + 8.0f, statusTop + 4.0f), text, status.c_str());
             const ImVec2 versionSize = ImGui::CalcTextSize(versionLabel.c_str());
             draw->AddText(
                 ImVec2(windowPos.x + windowSize.x - versionSize.x - 8.0f, statusTop + 4.0f),
@@ -300,17 +546,16 @@ int DesktopShell::run() {
                 versionLabel.c_str());
             draw->PopClipRect();
 
-            drawModal(
-                "About Iris Emulator",
-                "Iris Emulator 0.1.0\n\nThis build is the project foundation. It does not include an emulation core.",
-                openAbout);
+            drawModal("About Iris Emulator", aboutText.c_str(), openAbout);
             drawModal(
                 "Legal Notices",
-                "Iris Emulator does not include commercial games and does not download ROMs.\n\n"
+                "Iris Emulator does not include commercial games and does not download ROMs. "
+                "Iris Demo is an original program written for this project.\n\n"
                 "Open only game files you have obtained and are legally entitled to use. "
                 "Owning an original cartridge does not by itself make every method of dumping or downloading a game lawful. "
                 "Those rules depend on jurisdiction and circumstance.",
                 openLegal);
+            drawModal("Could not open game", errorText.c_str(), openError);
         }
         ImGui::End();
 

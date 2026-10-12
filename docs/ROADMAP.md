@@ -11,11 +11,18 @@ Status is updated as milestones land. Later milestones are not in progress.
 - Catch2 tests
 - Windows CI
 
-No emulation core is included.
+## Milestone 2 — Minimal playable NES (implemented)
 
-## Milestone 2 — Minimal playable NES
+- iNES and NES 2.0 cartridge parsing
+- NROM (mapper 0) only; other mappers are rejected with an error
+- Official 6502 opcodes, with decimal mode ignored the way the NES does
+- CPU bus, controller ports, and OAM DMA
+- Initial PPU: registers, nametables, palettes, background, sprites, and vblank NMI
+- Minimal APU: pulse, triangle, and noise mixed to the host audio device
+- Keyboard controls, pause, reset, and a nearest-filtered 256×240 picture
+- Iris Demo, an original NROM program generated next to the executable
 
-Cartridge parser, NROM, CPU, bus, initial PPU, controller input, basic frame presentation, minimal APU, and one legally usable homebrew program.
+NTSC frame timing is paced on the UI thread. Dot-level PPU fetches, DMC, PAL, battery saves, and mappers other than NROM wait for later milestones.
 
 ## Milestone 3 — Accuracy and mapper expansion
 
