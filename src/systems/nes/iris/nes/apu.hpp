@@ -1,5 +1,7 @@
 #pragma once
 
+#include "iris/nes/timing.hpp"
+
 #include <cstdint>
 #include <vector>
 
@@ -11,9 +13,13 @@ public:
     static constexpr int kCpuClock = 1789773;
 
     void reset();
+    void setRegion(Region region);
     void write(std::uint16_t address, std::uint8_t value);
     [[nodiscard]] std::uint8_t readStatus();
     void clock(std::vector<float>& samples);
+    [[nodiscard]] bool irq() const { return frameIrq_ || dmcIrq_; }
+    [[nodiscard]] bool pollDmc(std::uint16_t& address);
+    void supplyDmc(std::uint8_t value);
 
 private:
     struct Envelope {
@@ -89,15 +95,43 @@ private:
 
     void clockQuarter();
     void clockHalf();
+    void clockFrame();
+    void clockDmc();
     [[nodiscard]] float mix() const;
 
     Pulse pulse1_;
     Pulse pulse2_;
     Triangle triangle_;
     Noise noise_;
-    int frameDivider_ = 0;
+    int cpuClock_ = kCpuClock;
+    const std::uint16_t* noisePeriods_ = nullptr;
+    const std::uint16_t* dmcPeriods_ = nullptr;
+    const int* frame4_ = nullptr;
+    const int* frame5_ = nullptr;
+    int frameCycle_ = 0;
     int samplePhase_ = 0;
+    bool evenCycle_ = true;
     bool fiveStep_ = false;
+    bool irqInhibit_ = false;
+    bool frameIrq_ = false;
+
+    bool dmcIrqEnable_ = false;
+    bool dmcLoop_ = false;
+    bool dmcIrq_ = false;
+    bool dmcSilence_ = true;
+    bool dmcSampleEmpty_ = true;
+    bool dmcFetch_ = false;
+    std::uint8_t dmcOutput_ = 0;
+    std::uint8_t dmcShift_ = 0;
+    std::uint8_t dmcSample_ = 0;
+    std::uint8_t dmcBits_ = 8;
+    std::uint8_t dmcRate_ = 0;
+    std::uint16_t dmcTimer_ = 428;
+    std::uint16_t dmcPeriod_ = 428;
+    std::uint16_t dmcAddress_ = 0xC000;
+    std::uint16_t dmcSampleAddress_ = 0xC000;
+    int dmcBytesRemaining_ = 0;
+    int dmcSampleLength_ = 1;
 };
 
 }  // namespace iris::systems::nes

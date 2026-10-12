@@ -1,5 +1,6 @@
 add_executable(iris_tests
     cartridge_tests.cpp
+    conformance_tests.cpp
     config_tests.cpp
     cpu_tests.cpp
     log_tests.cpp

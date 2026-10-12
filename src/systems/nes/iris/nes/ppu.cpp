@@ -8,7 +8,6 @@ namespace iris::systems::nes {
 namespace {
 
 constexpr int kDotsPerScanline = 341;
-constexpr int kScanlinesPerFrame = 262;
 
 }  // namespace
 
@@ -16,6 +15,13 @@ void Ppu::connect(Mapper* mapper, Mirroring mirroring) {
     mapper_ = mapper;
     mirroring_ = mirroring;
 }
+
+void Ppu::setTiming(int scanlines, bool oddFrameSkip) {
+    scanlines_ = scanlines < 262 ? 262 : scanlines;
+    oddFrameSkip_ = oddFrameSkip;
+}
+
+Mirroring Ppu::activeMirroring() const { return mapper_ != nullptr ? mapper_->mirroring() : mirroring_; }
 
 void Ppu::power() {
     vram_.fill(0);
@@ -25,6 +31,8 @@ void Ppu::power() {
     scanline_ = 0;
     dot_ = 0;
     frame_ = 0;
+    a12High_ = false;
+    a12LowDots_ = 0;
     v_ = 0;
     t_ = 0;
     oamAddr_ = 0;
@@ -41,28 +49,70 @@ void Ppu::reset() {
     readBuffer_ = 0;
 }
 
+void Ppu::noteA12(bool high) {
+    if (high) {
+        if (!a12High_ && a12LowDots_ >= 8 && mapper_ != nullptr) {
+            mapper_->onA12Rise();
+        }
+        a12LowDots_ = 0;
+        a12High_ = true;
+        return;
+    }
+    if (a12LowDots_ < 32) {
+        ++a12LowDots_;
+    }
+    a12High_ = false;
+}
+
+bool Ppu::renderingA12() const {
+    const int preRender = scanlines_ - 1;
+    const bool fetchedLine = scanline_ < kHeight || scanline_ == preRender;
+    if (!rendering() || !fetchedLine) {
+        return false;
+    }
+    if (dot_ >= 257 && dot_ <= 320) {
+        if (((dot_ - 257) & 7) < 4) {
+            return false;
+        }
+        if ((ctrl_ & 0x20) != 0) {
+            const int sprite = (dot_ - 257) >> 3;
+            return (oam_[static_cast<std::size_t>(sprite) * 4 + 1] & 0x01) != 0;
+        }
+        return (ctrl_ & 0x08) != 0;
+    }
+    if ((dot_ >= 1 && dot_ <= 256) || (dot_ >= 321 && dot_ <= 336)) {
+        if (((dot_ - 1) & 7) < 4) {
+            return false;
+        }
+        return (ctrl_ & 0x10) != 0;
+    }
+    return false;
+}
+
 void Ppu::clock() {
+    const int preRender = scanlines_ - 1;
     if (scanline_ == 241 && dot_ == 1) {
         status_ = static_cast<std::uint8_t>(status_ | 0x80);
     }
-    if (scanline_ == 261 && dot_ == 1) {
+    if (scanline_ == preRender && dot_ == 1) {
         status_ = static_cast<std::uint8_t>(status_ & ~0xE0);
     }
     if (scanline_ < kHeight && dot_ == 0) {
         renderScanline(scanline_);
     }
-    if (scanline_ == 261 && dot_ == 280 && rendering()) {
+    if (scanline_ == preRender && dot_ == 280 && rendering()) {
         copyVertical();
     }
+    noteA12(renderingA12());
 
     ++dot_;
-    if (scanline_ == 261 && dot_ == 340 && rendering() && (frame_ & 1U) == 1U) {
+    if (oddFrameSkip_ && scanline_ == preRender && dot_ == 340 && rendering() && (frame_ & 1U) == 1U) {
         dot_ = kDotsPerScanline;
     }
     if (dot_ == kDotsPerScanline) {
         dot_ = 0;
         ++scanline_;
-        if (scanline_ == kScanlinesPerFrame) {
+        if (scanline_ == scanlines_) {
             scanline_ = 0;
             ++frame_;
         }
@@ -193,15 +243,18 @@ void Ppu::writeVram(std::uint16_t address, std::uint8_t value) {
 std::uint16_t Ppu::nametableIndex(std::uint16_t address) const {
     const int offset = address & 0x03FF;
     int table = (address & 0x0FFF) >> 10;
-    switch (mirroring_) {
+    switch (activeMirroring()) {
     case Mirroring::Horizontal:
         table = table < 2 ? 0 : 1;
         break;
     case Mirroring::Vertical:
         table &= 1;
         break;
-    case Mirroring::SingleScreen:
+    case Mirroring::SingleScreenLower:
         table = 0;
+        break;
+    case Mirroring::SingleScreenUpper:
+        table = 1;
         break;
     case Mirroring::FourScreen:
         break;

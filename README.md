@@ -1,6 +1,6 @@
 # Iris Emulator
 
-Iris Emulator is a desktop emulator platform. The first system is the Nintendo Entertainment System. This version plays NROM (mapper 0) games: it loads an iNES or NES 2.0 ROM, runs the CPU and an initial PPU, reads the keyboard as a controller, and plays pulse, triangle, and noise audio.
+Iris Emulator is a desktop emulator platform. The first system is the Nintendo Entertainment System. This version plays NROM, MMC1, UxROM, CNROM, and MMC3: it loads an iNES or NES 2.0 ROM, runs the CPU and PPU, reads the keyboard as a controller, and plays pulse, triangle, noise, and DMC audio. A NES 2.0 header can select PAL timing.
 
 The project license is MIT. Third-party licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Iris does not include commercial games or firmware. Iris Demo is an original program written for this project. You may use only files you are legally entitled to use.
 
@@ -52,7 +52,7 @@ After a build, the original demo is next to the executable:
 
 File → Open Game starts in that folder, so `iris_demo.nes` is there as well. The demo draws a tile grid and the word IRIS. The arrow keys move the sprite. Hold Z to play a tone.
 
-Only NROM is playable. Other mappers produce an error and are not treated as NROM. Battery-backed RAM is not saved yet.
+Other mappers produce an error and leave the current game loaded. Battery-backed RAM is not saved yet. There is no region menu: NTSC is the default, and PAL or Dendy comes from the NES 2.0 header.
 
 ## Data directory
 

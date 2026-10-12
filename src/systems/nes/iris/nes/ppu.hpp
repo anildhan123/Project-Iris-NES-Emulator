@@ -14,6 +14,7 @@ public:
     static constexpr int kHeight = 240;
 
     void connect(Mapper* mapper, Mirroring mirroring);
+    void setTiming(int scanlines, bool oddFrameSkip);
     void power();
     void reset();
     void clock();
@@ -27,6 +28,9 @@ public:
 
 private:
     [[nodiscard]] bool rendering() const { return (mask_ & 0x18) != 0; }
+    [[nodiscard]] Mirroring activeMirroring() const;
+    [[nodiscard]] bool renderingA12() const;
+    void noteA12(bool high);
     void renderScanline(int scanline);
     void writeData(std::uint8_t value);
     [[nodiscard]] std::uint8_t readData();
@@ -58,6 +62,10 @@ private:
     bool w_ = false;
     int scanline_ = 0;
     int dot_ = 0;
+    int scanlines_ = 262;
+    bool oddFrameSkip_ = true;
+    bool a12High_ = false;
+    int a12LowDots_ = 0;
     std::uint64_t frame_ = 0;
 };
 

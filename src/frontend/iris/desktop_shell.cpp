@@ -37,8 +37,6 @@
 namespace iris {
 namespace {
 
-constexpr std::int64_t kNesFrameNs = 16639266;
-
 struct SdlSession {
     SDL_Window* window = nullptr;
     SDL_GLContext context = nullptr;
@@ -315,12 +313,13 @@ int DesktopShell::run() {
     TextureGuard texture;
     const std::string versionLabel = std::string(kProductName) + " " + kVersionString;
     const std::string aboutText = std::string(kProductName) + " " + kVersionString +
-                                   "\n\nThis build plays NROM (mapper 0) games on an NTSC timing model. "
+                                   "\n\nThis build plays NROM, MMC1, UxROM, CNROM, and MMC3. "
+                                   "A NES 2.0 header can select PAL timing. "
                                    "Iris Demo, written for this project, is generated beside the executable.\n\n"
                                    "Open a ROM with File, Open Game. Arrow keys move, Z is A, X is B, "
                                    "Right Shift is Select, and Enter is Start. Escape pauses.";
     auto previous = std::chrono::steady_clock::now();
-    std::int64_t accumulated = kNesFrameNs;
+    std::int64_t accumulated = system_.framePeriodNs();
 
     const auto openRom = [&](const std::filesystem::path& path) {
         std::string error;
@@ -335,7 +334,7 @@ int DesktopShell::run() {
         if (info.batteryBacked) {
             log::warn("Battery-backed RAM will not be saved in this version.");
         }
-        accumulated = kNesFrameNs;
+        accumulated = system_.framePeriodNs();
     };
 
     const auto showOpenDialog = [&]() {
@@ -410,22 +409,23 @@ int DesktopShell::run() {
         const auto now = std::chrono::steady_clock::now();
         const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - previous).count();
         previous = now;
+        const std::int64_t period = system_.framePeriodNs();
         if (system_.loaded() && !system_.paused()) {
             accumulated += elapsed;
-            if (accumulated >= kNesFrameNs) {
+            if (accumulated >= period) {
                 system_.runFrame();
                 const AudioView audio = system_.audio();
                 if (session.audio != nullptr && audio.samples != nullptr && audio.count > 0 &&
                     SDL_GetAudioStreamQueued(session.audio) < 48000 * static_cast<int>(sizeof(float))) {
                     SDL_PutAudioStreamData(session.audio, audio.samples, audio.count * static_cast<int>(sizeof(float)));
                 }
-                accumulated -= kNesFrameNs;
-                if (accumulated > kNesFrameNs) {
+                accumulated -= period;
+                if (accumulated > period) {
                     accumulated = 0;
                 }
             }
         } else {
-            accumulated = kNesFrameNs;
+            accumulated = period;
         }
 
         const bool uiOwnsInput = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup);

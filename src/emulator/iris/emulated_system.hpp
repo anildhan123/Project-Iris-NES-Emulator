@@ -52,6 +52,8 @@ public:
     [[nodiscard]] virtual AudioView audio() const = 0;
     virtual void setController(int port, std::uint8_t buttons) = 0;
     [[nodiscard]] virtual SystemInfo info() const = 0;
+    // Host pacing for one emulated frame. This is independent of the monitor refresh rate.
+    [[nodiscard]] virtual std::int64_t framePeriodNs() const = 0;
 };
 
 }  // namespace iris

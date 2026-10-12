@@ -27,7 +27,8 @@ std::uint8_t Bus::read(std::uint16_t address) {
     } else if (address < 0x4000) {
         value = ppu_.readRegister(address);
     } else if (address == 0x4015) {
-        value = static_cast<std::uint8_t>((openBus_ & 0xE0) | apu_.readStatus());
+        const std::uint8_t status = apu_.readStatus();
+        value = static_cast<std::uint8_t>((openBus_ & 0x20) | (status & 0xDF));
     } else if (address == 0x4016) {
         value = static_cast<std::uint8_t>((openBus_ & 0xE0) | port1_.read());
     } else if (address == 0x4017) {

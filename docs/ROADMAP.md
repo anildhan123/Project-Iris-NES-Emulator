@@ -22,11 +22,18 @@ Status is updated as milestones land. Later milestones are not in progress.
 - Keyboard controls, pause, reset, and a nearest-filtered 256×240 picture
 - Iris Demo, an original NROM program generated next to the executable
 
-NTSC frame timing is paced on the UI thread. Dot-level PPU fetches, DMC, PAL, battery saves, and mappers other than NROM wait for later milestones.
+NTSC frame timing in that version was paced on the UI thread. Mappers other than NROM, DMC, and PAL waited for Milestone 3.
 
-## Milestone 3 — Accuracy and mapper expansion
+## Milestone 3 — Accuracy and mapper expansion (implemented)
 
-PPU timing, APU completion, DMA and interrupts, more mappers, conformance tests, NTSC support, and PAL groundwork.
+- PPU A12 is tracked on each dot so a mapper can count scanlines. Pixels are still drawn once per scanline.
+- APU frame counter with its IRQ, plus DMC playback. A DMC fetch stalls the CPU for four cycles.
+- OAM DMA and interrupt lines stay in step with the CPU.
+- MMC1, UxROM, CNROM, and MMC3. Other mappers are rejected and leave the previous game loaded.
+- Original conformance tests for banking, frame IRQ, DMC, and MMC3 IRQ.
+- NTSC timing. A NES 2.0 header can select PAL clocks and 312 scanlines. Dendy is recognized with its own clock and scanline count.
+
+Battery-backed RAM is still not saved. Pattern bytes are not fetched dot by dot. Mappers beyond MMC3 wait for a later milestone.
 
 ## Milestone 4 — Save systems
 

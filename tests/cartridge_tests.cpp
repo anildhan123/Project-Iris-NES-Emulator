@@ -74,13 +74,30 @@ TEST_CASE("a missing ROM file is reported") {
     REQUIRE(parsed.error().code == iris::ErrorCode::NotFound);
 }
 
-TEST_CASE("mapper 1 is parsed and then refused by the NES system") {
-    auto bytes = nromHeader(1, 1, 0x10);
+TEST_CASE("an unsupported mapper is refused without dropping a loaded game") {
+    auto playable = nromHeader(1, 1);
     iris::systems::nes::NesSystem nes;
     std::string error;
-    REQUIRE_FALSE(nes.loadBytes(bytes.data(), bytes.size(), "mmc1", error));
-    REQUIRE(error.find("Mapper 1") != std::string::npos);
-    REQUIRE_FALSE(nes.loaded());
+    REQUIRE(nes.loadBytes(playable.data(), playable.size(), "nrom", error));
+
+    auto bytes = nromHeader(1, 1, 0x50);
+    REQUIRE_FALSE(nes.loadBytes(bytes.data(), bytes.size(), "mmc5", error));
+    REQUIRE(error.find("Mapper 5") != std::string::npos);
+    REQUIRE(nes.loaded());
+    REQUIRE(nes.info().detail == "NROM, NTSC");
+}
+
+TEST_CASE("NES 2.0 records the console region and rejects a non-NES console") {
+    auto pal = nromHeader(1, 1, 0, 0x08);
+    pal[12] = 1;
+    auto parsed = iris::systems::nes::Cartridge::fromBytes(pal.data(), pal.size(), "pal");
+    REQUIRE(parsed.ok());
+    REQUIRE(parsed.value().region() == iris::systems::nes::Region::Pal);
+
+    auto vs = nromHeader(1, 1, 0, 0x09);
+    auto rejected = iris::systems::nes::Cartridge::fromBytes(vs.data(), vs.size(), "vs");
+    REQUIRE_FALSE(rejected.ok());
+    REQUIRE(rejected.error().message.find("not a standard NES") != std::string::npos);
 }
 
 TEST_CASE("CHR RAM is inferred for an iNES ROM with no CHR") {

@@ -78,6 +78,10 @@ Result<Cartridge> Cartridge::fromBytes(const std::uint8_t* data, std::size_t siz
     }
     const bool nes20 = flag7Format == 0x08;
     const bool tailClean = data[12] == 0 && data[13] == 0 && data[14] == 0 && data[15] == 0;
+    if (nes20 && (flag7 & 0x03) != 0) {
+        return Result<Cartridge>::failure(
+            ErrorCode::ValidationFailure, "This ROM is not a standard NES or Famicom cartridge.");
+    }
 
     int mapper = flag6 >> 4;
     int submapper = 0;
@@ -151,6 +155,19 @@ Result<Cartridge> Cartridge::fromBytes(const std::uint8_t* data, std::size_t siz
     cart.mapper_ = mapper;
     cart.submapper_ = submapper;
     cart.nes20_ = nes20;
+    if (nes20) {
+        switch (data[12] & 0x03) {
+        case 1:
+            cart.region_ = Region::Pal;
+            break;
+        case 3:
+            cart.region_ = Region::Dendy;
+            break;
+        default:
+            cart.region_ = Region::Ntsc;
+            break;
+        }
+    }
     cart.battery_ = (flag6 & 0x02) != 0;
     cart.name_ = std::move(name);
     if ((flag6 & 0x08) != 0) {

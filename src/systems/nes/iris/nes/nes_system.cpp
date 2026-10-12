@@ -1,5 +1,7 @@
 #include "iris/nes/nes_system.hpp"
 
+#include "iris/nes/mapper_factory.hpp"
+
 namespace iris::systems::nes {
 namespace {
 
@@ -28,24 +30,21 @@ bool NesSystem::loadBytes(const std::uint8_t* data, std::size_t size, const std:
 }
 
 bool NesSystem::adopt(Cartridge cartridge, std::string& error) {
-    if (cartridge.mapper() != 0 || cartridge.submapper() != 0) {
-        error = "Mapper " + std::to_string(cartridge.mapper()) + " is not supported. This version plays NROM (mapper 0) only.";
-        return false;
-    }
-    const std::size_t prg = cartridge.prg().size();
-    if (prg != 16 * 1024 && prg != 32 * 1024) {
-        error = "NROM requires 16 KiB or 32 KiB of PRG ROM.";
-        return false;
-    }
-    if (cartridge.chr().size() != 8 * 1024) {
-        error = "NROM requires 8 KiB of CHR ROM or CHR RAM.";
+    if (!mapperSupported(cartridge, error)) {
         return false;
     }
 
+    const RegionTiming& timing = regionTiming(cartridge.region());
     cartridge_ = std::move(cartridge);
-    mapper_ = std::make_unique<Nrom>(cartridge_);
+    mapper_ = createMapper(cartridge_);
+    region_ = timing.region;
+    ppuNumerator_ = timing.ppuNumerator;
+    ppuDenominator_ = timing.ppuDenominator;
+    ppuAccum_ = 0;
+    dmcStall_ = 0;
     bus_.connect(mapper_.get());
     ppu_.connect(mapper_.get(), cartridge_.mirroring());
+    ppu_.setTiming(timing.scanlines, timing.oddFrameSkip);
     title_ = cartridge_.name();
     loaded_ = true;
     paused_ = false;
@@ -54,7 +53,9 @@ bool NesSystem::adopt(Cartridge cartridge, std::string& error) {
     audio_.clear();
     bus_.power();
     ppu_.power();
+    apu_.setRegion(region_);
     apu_.reset();
+    mapper_->reset();
     cpu_.reset(bus_);
     return true;
 }
@@ -75,23 +76,41 @@ void NesSystem::reset() {
     }
     paused_ = false;
     nmiLevel_ = false;
+    ppuAccum_ = 0;
+    dmcStall_ = 0;
     apu_.reset();
     bus_.reset();
     ppu_.reset();
+    if (mapper_) {
+        mapper_->reset();
+    }
     cpu_.reset(bus_);
 }
 
-void NesSystem::tick() {
+bool NesSystem::irqLine() const { return apu_.irq() || (mapper_ != nullptr && mapper_->irq()); }
+
+void NesSystem::clockCpuCycle() {
     ++cpuCycles_;
-    ppu_.clock();
-    ppu_.clock();
-    ppu_.clock();
-    const bool level = ppu_.nmiLine();
-    if (!nmiLevel_ && level) {
-        cpu_.signalNmi();
+    if (mapper_ != nullptr) {
+        mapper_->cpuCycle();
     }
-    nmiLevel_ = level;
+    ppuAccum_ += ppuNumerator_;
+    while (ppuAccum_ >= ppuDenominator_) {
+        ppuAccum_ -= ppuDenominator_;
+        ppu_.clock();
+        const bool level = ppu_.nmiLine();
+        if (!nmiLevel_ && level) {
+            cpu_.signalNmi();
+        }
+        nmiLevel_ = level;
+    }
     apu_.clock(audio_);
+    cpu_.setIrqLine(irqLine());
+    std::uint16_t sampleAddress = 0;
+    if (apu_.pollDmc(sampleAddress)) {
+        apu_.supplyDmc(bus_.read(sampleAddress));
+        dmcStall_ += 4;
+    }
 }
 
 void NesSystem::runFrame() {
@@ -102,6 +121,7 @@ void NesSystem::runFrame() {
     const std::uint64_t target = ppu_.frame() + 1;
     int budget = kMaxCyclesPerFrame;
     while (ppu_.frame() < target && budget > 0) {
+        cpu_.setIrqLine(irqLine());
         const bool levelBefore = ppu_.nmiLine();
         const int cycles = cpu_.step(bus_);
         if (!levelBefore && ppu_.nmiLine()) {
@@ -109,11 +129,15 @@ void NesSystem::runFrame() {
         }
         nmiLevel_ = ppu_.nmiLine();
         for (int index = 0; index < cycles; ++index) {
-            tick();
+            clockCpuCycle();
         }
         const int dma = bus_.takeDmaCycles(cpuCycles_);
         for (int index = 0; index < dma; ++index) {
-            tick();
+            clockCpuCycle();
+        }
+        while (dmcStall_ > 0) {
+            --dmcStall_;
+            clockCpuCycle();
         }
         --budget;
     }
@@ -141,10 +165,16 @@ void NesSystem::setController(int port, std::uint8_t buttons) {
 SystemInfo NesSystem::info() const {
     SystemInfo info;
     info.title = title_.empty() ? "NES" : title_;
-    info.detail = "NROM, NTSC";
+    if (loaded_) {
+        info.detail = std::string(mapperLabel(cartridge_.mapper())) + ", " + regionLabel(region_);
+    }
     info.batteryBacked = loaded_ && cartridge_.battery();
     return info;
 }
+
+std::int64_t NesSystem::framePeriodNs() const { return iris::systems::nes::framePeriodNs(loaded_ ? region_ : Region::Ntsc); }
+
+std::uint8_t NesSystem::debugRead(std::uint16_t address) { return bus_.read(address); }
 
 std::unique_ptr<IEmulatedSystem> createNesSystem() { return std::make_unique<NesSystem>(); }
 

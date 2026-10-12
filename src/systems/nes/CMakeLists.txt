@@ -12,10 +12,21 @@ add_library(iris_nes STATIC
     iris/nes/demo_rom.cpp
     iris/nes/demo_rom.hpp
     iris/nes/mapper.hpp
+    iris/nes/mapper_factory.cpp
+    iris/nes/mapper_factory.hpp
+    iris/nes/mmc1.cpp
+    iris/nes/mmc1.hpp
+    iris/nes/mmc3.cpp
+    iris/nes/mmc3.hpp
     iris/nes/nes_system.cpp
     iris/nes/nes_system.hpp
     iris/nes/nrom.cpp
     iris/nes/nrom.hpp
+    iris/nes/timing.hpp
+    iris/nes/uxrom.cpp
+    iris/nes/uxrom.hpp
+    iris/nes/cnrom.cpp
+    iris/nes/cnrom.hpp
     iris/nes/palette.hpp
     iris/nes/ppu.cpp
     iris/nes/ppu.hpp
