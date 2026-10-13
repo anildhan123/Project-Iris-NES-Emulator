@@ -1,5 +1,15 @@
+if(MSVC)
+    # Debug otherwise compiles this core with /Od and /RTC1. A frame then takes
+    # about 8 ms on AC power, and battery clocks miss the 16.6 ms NES frame.
+    string(REGEX REPLACE "(^| )/RTC(1|su|s|u|c)" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    string(REGEX REPLACE "(^| )/Od" " /O2" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    string(REGEX REPLACE "(^| )/Ob0" " /Ob2" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+endif()
+
 add_library(iris_nes STATIC
     iris/nes/apu.cpp
+    iris/nes/boards.cpp
+    iris/nes/boards.hpp
     iris/nes/apu.hpp
     iris/nes/bus.cpp
     iris/nes/bus.hpp

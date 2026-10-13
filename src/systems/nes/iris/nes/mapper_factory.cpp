@@ -1,5 +1,6 @@
 #include "iris/nes/mapper_factory.hpp"
 
+#include "iris/nes/boards.hpp"
 #include "iris/nes/cnrom.hpp"
 #include "iris/nes/mmc1.hpp"
 #include "iris/nes/mmc3.hpp"
@@ -9,7 +10,8 @@
 namespace iris::systems::nes {
 namespace {
 
-constexpr const char* kSupported = "This version plays NROM, MMC1, UxROM, CNROM, and MMC3.";
+constexpr const char* kSupported =
+    "This version plays NROM, MMC1, UxROM, CNROM, MMC3, AxROM, Color Dreams, BNROM, GxROM, and Camerica.";
 
 bool multipleOf(std::size_t size, std::size_t unit) { return unit != 0 && size % unit == 0; }
 
@@ -27,6 +29,16 @@ const char* mapperLabel(int mapper) {
         return "CNROM";
     case 4:
         return "MMC3";
+    case 7:
+        return "AxROM";
+    case 11:
+        return "Color Dreams";
+    case 34:
+        return "BNROM";
+    case 66:
+        return "GxROM";
+    case 71:
+        return "Camerica";
     default:
         return "NES";
     }
@@ -108,6 +120,76 @@ bool mapperSupported(const Cartridge& cartridge, std::string& error) {
             return false;
         }
         return true;
+    case 7:
+        if (submapper != 0) {
+            error = "AxROM submapper " + std::to_string(submapper) + " is not supported.";
+            return false;
+        }
+        if (prg < 32 * 1024 || prg > 256 * 1024 || !multipleOf(prg, 32 * 1024)) {
+            error = "AxROM requires 32 KiB to 256 KiB of PRG ROM in 32 KiB banks.";
+            return false;
+        }
+        if (chr != 8 * 1024) {
+            error = "AxROM requires 8 KiB of CHR ROM or CHR RAM.";
+            return false;
+        }
+        return true;
+    case 11:
+        if (submapper != 0) {
+            error = "Color Dreams submapper " + std::to_string(submapper) + " is not supported.";
+            return false;
+        }
+        if (prg < 32 * 1024 || !multipleOf(prg, 32 * 1024)) {
+            error = "Color Dreams requires PRG ROM in 32 KiB banks.";
+            return false;
+        }
+        if (chr < 8 * 1024 || !multipleOf(chr, 8 * 1024)) {
+            error = "Color Dreams requires CHR in 8 KiB banks.";
+            return false;
+        }
+        return true;
+    case 34:
+        if (submapper != 0 && submapper != 2) {
+            error = "BNROM submapper " + std::to_string(submapper) + " is not supported.";
+            return false;
+        }
+        if (prg < 32 * 1024 || !multipleOf(prg, 32 * 1024)) {
+            error = "BNROM requires PRG ROM in 32 KiB banks.";
+            return false;
+        }
+        if (chr != 8 * 1024) {
+            error = "BNROM requires 8 KiB of CHR ROM or CHR RAM.";
+            return false;
+        }
+        return true;
+    case 66:
+        if (submapper != 0) {
+            error = "GxROM submapper " + std::to_string(submapper) + " is not supported.";
+            return false;
+        }
+        if (prg < 32 * 1024 || !multipleOf(prg, 32 * 1024)) {
+            error = "GxROM requires PRG ROM in 32 KiB banks.";
+            return false;
+        }
+        if (chr < 8 * 1024 || !multipleOf(chr, 8 * 1024)) {
+            error = "GxROM requires CHR in 8 KiB banks.";
+            return false;
+        }
+        return true;
+    case 71:
+        if (submapper > 1) {
+            error = "Camerica submapper " + std::to_string(submapper) + " is not supported.";
+            return false;
+        }
+        if (prg < 16 * 1024 || !multipleOf(prg, 16 * 1024)) {
+            error = "Camerica requires PRG ROM in 16 KiB banks.";
+            return false;
+        }
+        if (chr != 8 * 1024) {
+            error = "Camerica requires 8 KiB of CHR ROM or CHR RAM.";
+            return false;
+        }
+        return true;
     default:
         error = "Mapper " + std::to_string(mapper) + " is not supported. " + kSupported;
         return false;
@@ -126,6 +208,16 @@ std::unique_ptr<Mapper> createMapper(Cartridge& cartridge) {
         return std::make_unique<Cnrom>(cartridge);
     case 4:
         return std::make_unique<Mmc3>(cartridge);
+    case 7:
+        return std::make_unique<Axrom>(cartridge);
+    case 11:
+        return std::make_unique<ColorDreams>(cartridge);
+    case 34:
+        return std::make_unique<Bnrom>(cartridge);
+    case 66:
+        return std::make_unique<Gxrom>(cartridge);
+    case 71:
+        return std::make_unique<Camerica>(cartridge);
     default:
         return nullptr;
     }

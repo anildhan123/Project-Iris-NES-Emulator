@@ -153,3 +153,31 @@ TEST_CASE("IRQ waits until the instruction after CLI") {
     REQUIRE(cpu.state().pc == 0x9000);
     REQUIRE(memory.data[0x0010] == 0);
 }
+
+TEST_CASE("unofficial opcodes are implemented") {
+    FlatMemory memory;
+    iris::systems::nes::Cpu cpu;
+    for (int opcode = 0; opcode < 256; ++opcode) {
+        memory.data.fill(0);
+        memory.data[0x8000] = static_cast<std::uint8_t>(opcode);
+        memory.data[0xFFFC] = 0x00;
+        memory.data[0xFFFD] = 0x80;
+        cpu.reset(memory);
+        cpu.step(memory);
+    }
+    REQUIRE(cpu.unknownOpcodes() == 0);
+
+    memory.program(0x8000, {0xA7, 0x10});
+    memory.data[0x0010] = 0x3C;
+    cpu.reset(memory);
+    cpu.step(memory);
+    REQUIRE(cpu.state().a == 0x3C);
+    REQUIRE(cpu.state().x == 0x3C);
+
+    memory.program(0x8000, {0xA9, 0x0F, 0xA2, 0xF0, 0x87, 0x10});
+    cpu.reset(memory);
+    cpu.step(memory);
+    cpu.step(memory);
+    cpu.step(memory);
+    REQUIRE(memory.data[0x0010] == 0x00);
+}

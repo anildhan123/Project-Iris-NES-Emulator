@@ -138,6 +138,81 @@ std::array<Cpu::Entry, 256> Cpu::makeTable() {
     add( 0x8A, OpKind::Txa, AddrMode::Implied, 2);
     add( 0x9A, OpKind::Txs, AddrMode::Implied, 2);
     add( 0x98, OpKind::Tya, AddrMode::Implied, 2);
+
+    const auto unofficial = [&](OpKind kind, std::uint8_t indx, std::uint8_t zp, std::uint8_t abs, std::uint8_t zpx,
+                                std::uint8_t absx, std::uint8_t absy, std::uint8_t indy) {
+        add(indx, kind, AddrMode::IndirectX, 8);
+        add(zp, kind, AddrMode::ZeroPage, 5);
+        add(abs, kind, AddrMode::Absolute, 6);
+        add(zpx, kind, AddrMode::ZeroPageX, 6);
+        add(absx, kind, AddrMode::AbsoluteX, 7);
+        add(absy, kind, AddrMode::AbsoluteY, 7);
+        add(indy, kind, AddrMode::IndirectY, 8);
+    };
+    unofficial(OpKind::Slo, 0x03, 0x07, 0x0F, 0x17, 0x1F, 0x1B, 0x13);
+    unofficial(OpKind::Rla, 0x23, 0x27, 0x2F, 0x37, 0x3F, 0x3B, 0x33);
+    unofficial(OpKind::Sre, 0x43, 0x47, 0x4F, 0x57, 0x5F, 0x5B, 0x53);
+    unofficial(OpKind::Rra, 0x63, 0x67, 0x6F, 0x77, 0x7F, 0x7B, 0x73);
+    unofficial(OpKind::Dcp, 0xC3, 0xC7, 0xCF, 0xD7, 0xDF, 0xDB, 0xD3);
+    unofficial(OpKind::Isc, 0xE3, 0xE7, 0xEF, 0xF7, 0xFF, 0xFB, 0xF3);
+
+    add(0xA3, OpKind::Lax, AddrMode::IndirectX, 6);
+    add(0xA7, OpKind::Lax, AddrMode::ZeroPage, 3);
+    add(0xAF, OpKind::Lax, AddrMode::Absolute, 4);
+    add(0xB3, OpKind::Lax, AddrMode::IndirectY, 5, true);
+    add(0xB7, OpKind::Lax, AddrMode::ZeroPageY, 4);
+    add(0xBF, OpKind::Lax, AddrMode::AbsoluteY, 4, true);
+    add(0xAB, OpKind::Lax, AddrMode::Immediate, 2);
+    add(0x83, OpKind::Sax, AddrMode::IndirectX, 6);
+    add(0x87, OpKind::Sax, AddrMode::ZeroPage, 3);
+    add(0x8F, OpKind::Sax, AddrMode::Absolute, 4);
+    add(0x97, OpKind::Sax, AddrMode::ZeroPageY, 4);
+    add(0xEB, OpKind::Sbc, AddrMode::Immediate, 2);
+    add(0x0B, OpKind::Anc, AddrMode::Immediate, 2);
+    add(0x2B, OpKind::Anc, AddrMode::Immediate, 2);
+    add(0x4B, OpKind::Alr, AddrMode::Immediate, 2);
+    add(0x6B, OpKind::Arr, AddrMode::Immediate, 2);
+    add(0xCB, OpKind::Axs, AddrMode::Immediate, 2);
+    add(0x8B, OpKind::Xaa, AddrMode::Immediate, 2);
+    add(0x93, OpKind::Sha, AddrMode::IndirectY, 6);
+    add(0x9F, OpKind::Sha, AddrMode::AbsoluteY, 5);
+    add(0x9E, OpKind::Shx, AddrMode::AbsoluteY, 5);
+    add(0x9C, OpKind::Shy, AddrMode::AbsoluteX, 5);
+    add(0x9B, OpKind::Tas, AddrMode::AbsoluteY, 5);
+    add(0xBB, OpKind::Las, AddrMode::AbsoluteY, 4, true);
+
+    add(0x1A, OpKind::Nop, AddrMode::Implied, 2);
+    add(0x3A, OpKind::Nop, AddrMode::Implied, 2);
+    add(0x5A, OpKind::Nop, AddrMode::Implied, 2);
+    add(0x7A, OpKind::Nop, AddrMode::Implied, 2);
+    add(0xDA, OpKind::Nop, AddrMode::Implied, 2);
+    add(0xFA, OpKind::Nop, AddrMode::Implied, 2);
+    add(0x80, OpKind::Nop, AddrMode::Immediate, 2);
+    add(0x82, OpKind::Nop, AddrMode::Immediate, 2);
+    add(0x89, OpKind::Nop, AddrMode::Immediate, 2);
+    add(0xC2, OpKind::Nop, AddrMode::Immediate, 2);
+    add(0xE2, OpKind::Nop, AddrMode::Immediate, 2);
+    add(0x04, OpKind::Nop, AddrMode::ZeroPage, 3);
+    add(0x44, OpKind::Nop, AddrMode::ZeroPage, 3);
+    add(0x64, OpKind::Nop, AddrMode::ZeroPage, 3);
+    add(0x14, OpKind::Nop, AddrMode::ZeroPageX, 4);
+    add(0x34, OpKind::Nop, AddrMode::ZeroPageX, 4);
+    add(0x54, OpKind::Nop, AddrMode::ZeroPageX, 4);
+    add(0x74, OpKind::Nop, AddrMode::ZeroPageX, 4);
+    add(0xD4, OpKind::Nop, AddrMode::ZeroPageX, 4);
+    add(0xF4, OpKind::Nop, AddrMode::ZeroPageX, 4);
+    add(0x0C, OpKind::Nop, AddrMode::Absolute, 4);
+    add(0x1C, OpKind::Nop, AddrMode::AbsoluteX, 4, true);
+    add(0x3C, OpKind::Nop, AddrMode::AbsoluteX, 4, true);
+    add(0x5C, OpKind::Nop, AddrMode::AbsoluteX, 4, true);
+    add(0x7C, OpKind::Nop, AddrMode::AbsoluteX, 4, true);
+    add(0xDC, OpKind::Nop, AddrMode::AbsoluteX, 4, true);
+    add(0xFC, OpKind::Nop, AddrMode::AbsoluteX, 4, true);
+
+    const std::uint8_t jam[] = {0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xB2, 0xD2, 0xF2};
+    for (const std::uint8_t opcode : jam) {
+        add(opcode, OpKind::Jam, AddrMode::Implied, 2);
+    }
     return table;
 }
 
@@ -149,6 +224,7 @@ void Cpu::reset(CpuMemory& memory) {
     p_ = kUnused | kInterrupt;
     nmiPending_ = false;
     irqDelay_ = false;
+    jammed_ = false;
     const std::uint8_t low = memory.read(0xFFFC);
     const std::uint8_t high = memory.read(0xFFFD);
     pc_ = static_cast<std::uint16_t>(low | (static_cast<unsigned>(high) << 8));
@@ -198,6 +274,7 @@ bool Cpu::applyState(ByteReader& reader) {
     irqDelay_ = irqDelay;
     unknownOpcodes_ = static_cast<int>(unknownOpcodes);
     loggedUnknown_ = loggedUnknown;
+    jammed_ = false;
     return true;
 }
 
@@ -264,7 +341,8 @@ Cpu::Operand Cpu::address(CpuMemory& memory, AddrMode mode, bool penalty) {
         pc_ = static_cast<std::uint16_t>(pc_ + 2);
         const std::uint8_t index = mode == AddrMode::AbsoluteX ? x_ : y_;
         operand.address = static_cast<std::uint16_t>(base + index);
-        if (penalty && (base & 0xFF00) != (operand.address & 0xFF00)) {
+        operand.pageCrossed = (base & 0xFF00) != (operand.address & 0xFF00);
+        if (penalty && operand.pageCrossed) {
             operand.penalty = 1;
         }
         break;
@@ -287,7 +365,8 @@ Cpu::Operand Cpu::address(CpuMemory& memory, AddrMode mode, bool penalty) {
         const std::uint8_t pointer = memory.read(pc_++);
         const std::uint16_t base = readZeroPage16(memory, pointer);
         operand.address = static_cast<std::uint16_t>(base + y_);
-        if (penalty && (base & 0xFF00) != (operand.address & 0xFF00)) {
+        operand.pageCrossed = (base & 0xFF00) != (operand.address & 0xFF00);
+        if (penalty && operand.pageCrossed) {
             operand.penalty = 1;
         }
         break;
@@ -570,6 +649,124 @@ int Cpu::execute(CpuMemory& memory, OpKind kind, const Operand& operand, int cyc
         return service(memory, 0xFFFE, true);
     case OpKind::Nop:
         return cycles;
+    case OpKind::Lax:
+        if (operand.immediateValue) {
+            a_ = static_cast<std::uint8_t>((a_ | 0xEE) & operand.immediate);
+        } else {
+            a_ = operand.read(memory);
+        }
+        x_ = a_;
+        setZN(a_);
+        return cycles + operand.penalty;
+    case OpKind::Sax:
+        memory.write(operand.address, static_cast<std::uint8_t>(a_ & x_));
+        return cycles;
+    case OpKind::Anc:
+        a_ = static_cast<std::uint8_t>(a_ & operand.immediate);
+        setZN(a_);
+        p_ = static_cast<std::uint8_t>((p_ & ~kCarry) | ((a_ & kNegative) != 0 ? kCarry : 0));
+        return cycles;
+    case OpKind::Alr: {
+        a_ = static_cast<std::uint8_t>(a_ & operand.immediate);
+        const std::uint8_t carry = static_cast<std::uint8_t>(a_ & kCarry);
+        a_ = static_cast<std::uint8_t>(a_ >> 1);
+        p_ = static_cast<std::uint8_t>((p_ & ~kCarry) | carry);
+        setZN(a_);
+        return cycles;
+    }
+    case OpKind::Arr: {
+        a_ = static_cast<std::uint8_t>(a_ & operand.immediate);
+        a_ = static_cast<std::uint8_t>((a_ >> 1) | ((p_ & kCarry) != 0 ? 0x80 : 0));
+        setZN(a_);
+        const std::uint8_t bit6 = static_cast<std::uint8_t>((a_ >> 6) & 0x01);
+        const std::uint8_t bit5 = static_cast<std::uint8_t>((a_ >> 5) & 0x01);
+        p_ = static_cast<std::uint8_t>((p_ & ~(kCarry | kOverflow)) | (bit6 != 0 ? kCarry : 0) | ((bit6 ^ bit5) != 0 ? kOverflow : 0));
+        return cycles;
+    }
+    case OpKind::Axs: {
+        const std::uint8_t value = static_cast<std::uint8_t>(a_ & x_);
+        const unsigned difference = static_cast<unsigned>(value) - operand.immediate;
+        x_ = static_cast<std::uint8_t>(difference);
+        p_ = static_cast<std::uint8_t>((p_ & ~kCarry) | (value >= operand.immediate ? kCarry : 0));
+        setZN(x_);
+        return cycles;
+    }
+    case OpKind::Slo:
+    case OpKind::Rla:
+    case OpKind::Sre:
+    case OpKind::Rra:
+    case OpKind::Dcp:
+    case OpKind::Isc: {
+        const std::uint8_t value = memory.read(operand.address);
+        memory.write(operand.address, value);
+        std::uint8_t result = value;
+        if (kind == OpKind::Slo || kind == OpKind::Rla) {
+            const std::uint8_t carryOut = static_cast<std::uint8_t>((value >> 7) & 0x01);
+            const std::uint8_t carryIn = kind == OpKind::Rla && (p_ & kCarry) != 0 ? 0x01 : 0;
+            result = static_cast<std::uint8_t>((value << 1) | carryIn);
+            p_ = static_cast<std::uint8_t>((p_ & ~kCarry) | (carryOut != 0 ? kCarry : 0));
+        } else if (kind == OpKind::Sre || kind == OpKind::Rra) {
+            const std::uint8_t carryOut = static_cast<std::uint8_t>(value & 0x01);
+            const std::uint8_t carryIn = kind == OpKind::Rra && (p_ & kCarry) != 0 ? 0x80 : 0;
+            result = static_cast<std::uint8_t>((value >> 1) | carryIn);
+            p_ = static_cast<std::uint8_t>((p_ & ~kCarry) | (carryOut != 0 ? kCarry : 0));
+        } else if (kind == OpKind::Dcp) {
+            result = static_cast<std::uint8_t>(value - 1);
+        } else {
+            result = static_cast<std::uint8_t>(value + 1);
+        }
+        memory.write(operand.address, result);
+        if (kind == OpKind::Slo) {
+            a_ = static_cast<std::uint8_t>(a_ | result);
+            setZN(a_);
+        } else if (kind == OpKind::Rla) {
+            a_ = static_cast<std::uint8_t>(a_ & result);
+            setZN(a_);
+        } else if (kind == OpKind::Sre) {
+            a_ = static_cast<std::uint8_t>(a_ ^ result);
+            setZN(a_);
+        } else if (kind == OpKind::Rra) {
+            adc(result);
+        } else if (kind == OpKind::Dcp) {
+            compare(a_, result);
+        } else {
+            adc(static_cast<std::uint8_t>(result ^ 0xFF));
+        }
+        return cycles;
+    }
+    case OpKind::Xaa:
+        a_ = static_cast<std::uint8_t>((a_ | 0xEE) & x_ & operand.immediate);
+        setZN(a_);
+        return cycles;
+    case OpKind::Las: {
+        const std::uint8_t value = static_cast<std::uint8_t>(operand.read(memory) & sp_);
+        a_ = value;
+        x_ = value;
+        sp_ = value;
+        setZN(value);
+        return cycles + operand.penalty;
+    }
+    case OpKind::Sha:
+    case OpKind::Shx:
+    case OpKind::Shy:
+    case OpKind::Tas: {
+        if (kind == OpKind::Tas) {
+            sp_ = static_cast<std::uint8_t>(a_ & x_);
+        }
+        const std::uint8_t mask = kind == OpKind::Shx ? x_ : kind == OpKind::Shy ? y_ : static_cast<std::uint8_t>(a_ & x_);
+        const std::uint8_t high = static_cast<std::uint8_t>((operand.address >> 8) + 1);
+        const std::uint8_t value = static_cast<std::uint8_t>(mask & high);
+        std::uint16_t address = operand.address;
+        if (operand.pageCrossed) {
+            address = static_cast<std::uint16_t>((address & 0x00FF) | (static_cast<unsigned>(value) << 8));
+        }
+        memory.write(address, value);
+        return cycles;
+    }
+    case OpKind::Jam:
+        jammed_ = true;
+        pc_ = static_cast<std::uint16_t>(pc_ - 1);
+        return cycles;
     case OpKind::Unknown:
         ++unknownOpcodes_;
         if (!loggedUnknown_) {
@@ -583,6 +780,9 @@ int Cpu::execute(CpuMemory& memory, OpKind kind, const Operand& operand, int cyc
 
 int Cpu::step(CpuMemory& memory) {
     const bool suppressIrq = irqDelay_;
+    if (jammed_) {
+        return 2;
+    }
     irqDelay_ = false;
     if (nmiPending_) {
         nmiPending_ = false;

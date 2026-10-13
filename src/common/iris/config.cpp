@@ -178,11 +178,11 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
         return invalid("Expected a JSON object.");
     }
     if (!document.contains("version") || !document["version"].is_number_integer()) {
-        return invalid("Unsupported configuration version. Expected version 1, 2, or 3.");
+        return invalid("Unsupported configuration version. Expected version 1, 2, 3, or 4.");
     }
     const auto version = document["version"].get<std::int64_t>();
-    if (version != 1 && version != 2 && version != 3) {
-        return invalid("Unsupported configuration version. Expected version 1, 2, or 3.");
+    if (version != 1 && version != 2 && version != 3 && version != 4) {
+        return invalid("Unsupported configuration version. Expected version 1, 2, 3, or 4.");
     }
 
     std::string message;
@@ -194,7 +194,12 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
         if (!hasOnly(document, {"version", "ui", "logging", "video"}, message)) {
             return invalid(std::move(message));
         }
-    } else if (!hasOnly(document, {"version", "ui", "logging", "video", "audio", "input", "library"}, message)) {
+    } else if (version == 3 &&
+               !hasOnly(document, {"version", "ui", "logging", "video", "audio", "input", "library"}, message)) {
+        return invalid(std::move(message));
+    } else if (version == 4 &&
+               !hasOnly(
+                   document, {"version", "ui", "logging", "video", "audio", "input", "library", "controllers"}, message)) {
         return invalid(std::move(message));
     }
 
@@ -240,11 +245,19 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
         config.logLevel = *level;
         if (version >= 2) {
             const Json& video = document["video"];
-            if (!hasOnly(
-                    video,
-                    {"scaleMode", "integerScale", "aspectRatio", "filter", "fullscreen", "vsync", "showPerformance",
-                     "brightness", "contrast", "saturation", "gamma", "sharpness", "scanline"},
-                    message)) {
+            if (version >= 4) {
+                if (!hasOnly(
+                        video,
+                        {"scaleMode", "integerScale", "aspectRatio", "filter", "fullscreen", "vsync", "showPerformance",
+                         "brightness", "contrast", "saturation", "gamma", "sharpness", "scanline", "overscan"},
+                        message)) {
+                    return invalid(std::move(message));
+                }
+            } else if (!hasOnly(
+                           video,
+                           {"scaleMode", "integerScale", "aspectRatio", "filter", "fullscreen", "vsync", "showPerformance",
+                            "brightness", "contrast", "saturation", "gamma", "sharpness", "scanline"},
+                           message)) {
                 return invalid(std::move(message));
             }
             if (!video["scaleMode"].is_string() || !video["aspectRatio"].is_string() || !video["filter"].is_string()) {
@@ -293,8 +306,14 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
             config.fullscreen = video["fullscreen"].get<bool>();
             config.vsync = video["vsync"].get<bool>();
             config.showPerformance = video["showPerformance"].get<bool>();
+            if (version >= 4) {
+                if (!video["overscan"].is_boolean()) {
+                    return invalid("video.overscan must be true or false.");
+                }
+                config.overscan = video["overscan"].get<bool>();
+            }
         }
-        if (version == 3) {
+        if (version >= 3) {
             const Json& audio = document["audio"];
             if (!hasOnly(audio, {"volume", "muted", "device", "latency"}, message)) {
                 return invalid(std::move(message));
@@ -365,6 +384,50 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
             config.input = bindings;
             config.showLibrary = library["show"].get<bool>();
         }
+        if (version >= 4) {
+            const Json& controllers = document["controllers"];
+            if (!hasOnly(controllers, {"port1", "port2", "pad1", "pad2"}, message)) {
+                return invalid(std::move(message));
+            }
+            if (!controllers["port1"].is_string() || !controllers["port2"].is_string()) {
+                return invalid("Controller ports must be strings.");
+            }
+            const std::string port1 = controllers["port1"].get<std::string>();
+            const std::string port2 = controllers["port2"].get<std::string>();
+            if (!acceptableDevice(port1) || !acceptableDevice(port2)) {
+                return invalid("A controller name is too long or contains a control character.");
+            }
+            const auto readPad = [&](const char* key, GamepadMap& pad) {
+                const Json& object = controllers[key];
+                if (!hasOnly(object, {"a", "b", "select", "start", "up", "down", "left", "right"}, message)) {
+                    return false;
+                }
+                const char* names[] = {"a", "b", "select", "start", "up", "down", "left", "right"};
+                int* fields[] = {&pad.a, &pad.b, &pad.select, &pad.start, &pad.up, &pad.down, &pad.left, &pad.right};
+                for (int index = 0; index < 8; ++index) {
+                    if (!object[names[index]].is_number_integer()) {
+                        message = std::string("controllers.") + key + "." + names[index] + " must be an integer.";
+                        return false;
+                    }
+                    const auto value = object[names[index]].get<std::int64_t>();
+                    if (value < 0 || value > 31) {
+                        message = std::string("controllers.") + key + "." + names[index] + " is outside the button range.";
+                        return false;
+                    }
+                    *fields[index] = static_cast<int>(value);
+                }
+                return true;
+            };
+            GamepadMap pad1;
+            GamepadMap pad2;
+            if (!readPad("pad1", pad1) || !readPad("pad2", pad2)) {
+                return invalid(std::move(message));
+            }
+            config.controllers.port1 = port1;
+            config.controllers.port2 = port2;
+            config.controllers.pad1 = pad1;
+            config.controllers.pad2 = pad2;
+        }
         return Result<Config>::success(std::move(config));
     } catch (const Json::exception&) {
         return invalid("Configuration values could not be read.");
@@ -394,6 +457,7 @@ std::string ConfigService::toJson(const Config& config) {
     video["gamma"] = config.gamma;
     video["sharpness"] = config.sharpness;
     video["scanline"] = config.scanline;
+    video["overscan"] = config.overscan;
 
     Json audio = Json::object();
     audio["volume"] = config.volume;
@@ -420,6 +484,24 @@ std::string ConfigService::toJson(const Config& config) {
     Json library = Json::object();
     library["show"] = config.showLibrary;
 
+    const auto padJson = [](const GamepadMap& pad) {
+        Json object = Json::object();
+        object["a"] = pad.a;
+        object["b"] = pad.b;
+        object["select"] = pad.select;
+        object["start"] = pad.start;
+        object["up"] = pad.up;
+        object["down"] = pad.down;
+        object["left"] = pad.left;
+        object["right"] = pad.right;
+        return object;
+    };
+    Json controllers = Json::object();
+    controllers["port1"] = config.controllers.port1;
+    controllers["port2"] = config.controllers.port2;
+    controllers["pad1"] = padJson(config.controllers.pad1);
+    controllers["pad2"] = padJson(config.controllers.pad2);
+
     Json document = Json::object();
     document["version"] = Config::kCurrentVersion;
     document["ui"] = std::move(ui);
@@ -428,6 +510,7 @@ std::string ConfigService::toJson(const Config& config) {
     document["audio"] = std::move(audio);
     document["input"] = std::move(input);
     document["library"] = std::move(library);
+    document["controllers"] = std::move(controllers);
     return document.dump(2);
 }
 

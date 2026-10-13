@@ -39,7 +39,6 @@ private:
     [[nodiscard]] Mirroring activeMirroring() const;
     [[nodiscard]] bool renderingA12() const;
     void noteA12(bool high);
-    void renderScanline(int scanline);
     void writeData(std::uint8_t value);
     [[nodiscard]] std::uint8_t readData();
     [[nodiscard]] std::uint8_t readVram(std::uint16_t address);
@@ -50,6 +49,22 @@ private:
     void copyHorizontal();
     void copyVertical();
     void writePixel(int x, int y, std::uint8_t paletteIndex);
+    void clearPicturePipeline();
+    void beginVisibleLine();
+    void drawVisibleDot(int x);
+    void fetchBackgroundTile();
+    void compositeSprites(int x);
+    void selectSprites(int line);
+    void fetchSpritePattern();
+
+    struct SpriteSlot {
+        int index = 0;
+        int x = 0;
+        std::uint8_t attribute = 0;
+        std::uint8_t low = 0;
+        std::uint8_t high = 0;
+        std::uint16_t pattern = 0;
+    };
 
     Mapper* mapper_ = nullptr;
     Mirroring mirroring_ = Mirroring::Horizontal;
@@ -75,6 +90,19 @@ private:
     bool a12High_ = false;
     int a12LowDots_ = 0;
     std::uint64_t frame_ = 0;
+
+    std::array<std::uint8_t, 256> background_{};
+    std::array<SpriteSlot, 8> lineSprites_{};
+    std::array<SpriteSlot, 8> nextSprites_{};
+    int lineSpriteCount_ = 0;
+    int nextSpriteCount_ = 0;
+    std::uint16_t walkV_ = 0;
+    int walkFineX_ = 0;
+    std::uint8_t tileLow_ = 0;
+    std::uint8_t tileHigh_ = 0;
+    int tilePalette_ = 0;
+    bool tileLoaded_ = false;
+    bool blankLine_ = true;
 };
 
 }  // namespace iris::systems::nes

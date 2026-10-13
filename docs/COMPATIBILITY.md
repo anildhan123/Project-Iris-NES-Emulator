@@ -1,6 +1,6 @@
 # Compatibility
 
-Version 0.10.0 records what this Windows build was tested to do. The Ubuntu and macOS jobs cited below compiled and tested 0.9.0. It is not a catalogue of commercial games, and it does not include those games.
+Version 0.11.0 records what this Windows build was tested to do. The Ubuntu and macOS jobs cited below compiled and tested 0.9.0. It is not a catalogue of commercial games, and it does not include those games.
 
 Run the suite from a configured build tree:
 
@@ -12,7 +12,7 @@ ctest --preset windows-msvc-debug --output-on-failure
 
 ## CPU
 
-The CPU tests cover official opcodes, ADC with the decimal flag ignored, a taken branch that crosses a page, JSR and RTS, the indirect JMP page-wrap bug, NMI before the next instruction, and IRQ waiting until the instruction after CLI. Unofficial opcodes are not implemented.
+The CPU tests cover official opcodes, the unofficial opcodes, ADC with the decimal flag ignored, a taken branch that crosses a page, JSR and RTS, the indirect JMP page-wrap bug, NMI before the next instruction, and IRQ waiting until the instruction after CLI.
 
 ## Cartridge and mappers
 
@@ -28,7 +28,7 @@ Original programs, not a third-party test ROM, check:
 - DMC playback fetches a sample and moves the mixer.
 - A NES 2.0 header selects PAL or Dendy frame length. NTSC is the default.
 
-Pattern bytes are still drawn once per scanline. Mappers other than NROM, MMC1, UxROM, CNROM, and MMC3 are rejected.
+Background pattern bytes are fetched while the dot that needs them is drawn. Sprite pattern bytes are fetched on dots 257–320 for the next line. Mappers other than NROM, MMC1, UxROM, CNROM, MMC3, AxROM, Color Dreams, BNROM, GxROM, and Camerica are rejected.
 
 ## Picture regression
 
@@ -61,13 +61,13 @@ An unexpected C++ exception, or a Windows access violation, integer division by 
 
 ## Release candidate
 
-0.10.0 is an unsigned build. The Windows executable's version resource says 0.10.0. Build it with `cmake --build --preset windows-msvc-release`. Package it with `cpack -G ZIP -C Release` from the build directory. The zip contains the executable, Iris Demo, the readme, and the license files. It is not a signed installer.
+0.11.0 is an unsigned build. The Windows executable's version resource says 0.11.0. Build it with `cmake --build --preset windows-msvc-release`. Package it with `cpack -G ZIP -C Release` from the build directory. The zip contains the executable, Iris Demo, the readme, and the license files. It is not a signed installer.
 
-The frame-time numbers above were measured for 0.7.0 on this Windows 11 machine. A later `--profile` run prints `Iris Emulator 0.10.0` and its own host times. The target line stays the NTSC frame period. The 0.7.0 numbers were not remeasured for 0.10.0.
+The frame-time numbers above were measured for 0.7.0 on this Windows 11 machine. A later `--profile` run prints `Iris Emulator 0.11.0` and its own host times. The target line stays the NTSC frame period. The 0.7.0 numbers were not remeasured for 0.10.0.
 
 ## Portability
 
-The development machine is Windows. The C API test and the Windows and XDG data-root tests ran here. `iris --version` on this machine prints `Iris Emulator 0.10.0`. A second configure with the desktop turned off built the core and passed the unit tests, and it did not produce the window executable.
+The development machine is Windows. The C API test and the Windows and XDG data-root tests ran here. `iris --version` on this machine prints `Iris Emulator 0.11.0`. A second configure with the desktop turned off built the core and passed the unit tests, and it did not produce the window executable.
 
 The desktop window draws its own title bar, caption buttons, and border. Themes are Blue, Olive, and Silver. Fullscreen hides that frame. This is the window chrome; it does not change the emulated picture.
 

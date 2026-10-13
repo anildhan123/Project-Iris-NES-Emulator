@@ -89,7 +89,7 @@ TEST_CASE("version 1 and 2 configuration migrates and version 3 keeps audio and 
     const auto version1 = iris::ConfigService::fromJson(
         R"({"version":1,"ui":{"theme":"xp-blue","windowWidth":1024,"windowHeight":768},"logging":{"level":"info"}})");
     REQUIRE(version1.ok());
-    REQUIRE(version1.value().version == 3);
+    REQUIRE(version1.value().version == 4);
     REQUIRE(version1.value().volume == 1.0f);
     REQUIRE(version1.value().showLibrary);
     REQUIRE(version1.value().input.a == 29);

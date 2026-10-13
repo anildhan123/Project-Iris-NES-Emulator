@@ -35,8 +35,30 @@ enum class AudioLatency {
     Long,
 };
 
+struct GamepadMap {
+    int a = 1;
+    int b = 0;
+    int select = 4;
+    int start = 6;
+    int up = 11;
+    int down = 12;
+    int left = 13;
+    int right = 14;
+
+    bool operator==(const GamepadMap&) const = default;
+};
+
+struct ControllerSetup {
+    std::string port1 = "keyboard";
+    std::string port2;
+    GamepadMap pad1{};
+    GamepadMap pad2{};
+
+    bool operator==(const ControllerSetup&) const = default;
+};
+
 struct Config {
-    static constexpr int kCurrentVersion = 3;
+    static constexpr int kCurrentVersion = 4;
 
     int version = kCurrentVersion;
     Theme theme = Theme::Blue;
@@ -62,6 +84,8 @@ struct Config {
     AudioLatency audioLatency = AudioLatency::Balanced;
     InputBindings input{};
     bool showLibrary = true;
+    bool overscan = false;
+    ControllerSetup controllers{};
 };
 
 [[nodiscard]] inline bool operator==(const Config& left, const Config& right) {
@@ -73,7 +97,8 @@ struct Config {
            left.contrast == right.contrast && left.saturation == right.saturation && left.gamma == right.gamma &&
            left.sharpness == right.sharpness && left.scanline == right.scanline && left.volume == right.volume &&
            left.muted == right.muted && left.audioDevice == right.audioDevice && left.audioLatency == right.audioLatency &&
-           left.input == right.input && left.showLibrary == right.showLibrary;
+           left.input == right.input && left.showLibrary == right.showLibrary && left.overscan == right.overscan &&
+           left.controllers == right.controllers;
 }
 
 class ConfigService {

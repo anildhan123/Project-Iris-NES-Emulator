@@ -26,7 +26,7 @@ struct CpuState {
     std::uint16_t pc = 0;
 };
 
-// Official 6502 opcodes. Decimal mode can be set, but ADC and SBC stay binary, matching the NES.
+// 6502 opcodes, including the unofficial NES opcodes. Decimal mode can be set, but ADC and SBC stay binary.
 class Cpu {
 public:
     void reset(CpuMemory& memory);
@@ -45,7 +45,8 @@ private:
         Clc, Cld, Cli, Clv, Cmp, Cpx, Cpy, Dec, Dex, Dey, Eor, Inc, Inx, Iny,
         Jmp, Jsr, Lda, Ldx, Ldy, Lsr, Nop, Ora, Pha, Php, Pla, Plp, Rol, Ror,
         Rti, Rts, Sbc, Sec, Sed, Sei, Sta, Stx, Sty, Tax, Tay, Tsx, Txa, Txs, Tya,
-        Unknown
+        Lax, Sax, Slo, Rla, Sre, Rra, Dcp, Isc, Anc, Alr, Arr, Axs,
+        Xaa, Sha, Shx, Shy, Tas, Las, Jam, Unknown,
     };
 
     enum class AddrMode : std::uint8_t {
@@ -65,6 +66,7 @@ private:
         std::uint8_t immediate = 0;
         bool immediateValue = false;
         int penalty = 0;
+        bool pageCrossed = false;
 
         [[nodiscard]] std::uint8_t read(CpuMemory& memory) const {
             return immediateValue ? immediate : memory.read(address);
@@ -96,6 +98,7 @@ private:
     bool irqDelay_ = false;
     int unknownOpcodes_ = 0;
     bool loggedUnknown_ = false;
+    bool jammed_ = false;
 };
 
 }  // namespace iris::systems::nes

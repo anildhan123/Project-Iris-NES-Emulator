@@ -33,7 +33,7 @@ NTSC frame timing in that version was paced on the UI thread. Mappers other than
 - Original conformance tests for banking, frame IRQ, DMC, and MMC3 IRQ.
 - NTSC timing. A NES 2.0 header can select PAL clocks and 312 scanlines. Dendy is recognized with its own clock and scanline count.
 
-Pattern bytes are not fetched dot by dot. Mappers beyond MMC3 wait for a later milestone.
+Pattern bytes were not fetched dot by dot in that version. That fetch, and the mappers after MMC3, landed in Milestone 11.
 
 ## Milestone 4 — Save systems (implemented)
 
@@ -98,5 +98,18 @@ Full mobile frontends and other consoles are not started.
 - The toolbar buttons are Open, Pause or Resume, Reset, Save, and Load. They call the same actions as the menus.
 - Themes are Blue, Olive, and Silver. Settings and the configuration file use `blue`, `olive`, and `silver`. A file that still contains `xp-blue`, `xp-olive`, or `xp-silver` loads, and the next save writes the current name.
 - Version 0.10.0. The picture hash, mappers, and timing are unchanged.
+
+Full mobile frontends and other consoles are not started.
+
+## Milestone 11 — Play, input, and picture timing (implemented)
+
+- Each visible dot fetches the background pattern for its tile and draws that pixel. Sprite patterns are read on dots 257–320 for the following line.
+- Unofficial 6502 opcodes run. A jam opcode stops the CPU.
+- AxROM, Color Dreams, BNROM, GxROM, and Camerica load beside the earlier mappers.
+- Options, Controllers chooses Keyboard, None, or a connected gamepad for port 1 and port 2, and maps that pad's buttons. The keyboard keys stay in Settings.
+- Emulation, Frame Step runs one frame and leaves the game paused. Fast Forward runs frames without waiting out the frame period, and it does not queue that audio.
+- Emulation runs on a worker thread. The window copies the finished picture and samples.
+- View, Screenshot writes an unfiltered bitmap into the screenshots folder. Overscan crops eight pixels from each edge of that copy. The PPU buffer stays 256×240.
+- Version 0.11.0. Configuration version 4 adds the controller ports and overscan. Versions 1, 2, and 3 still load.
 
 Full mobile frontends and other consoles are not started.

@@ -38,21 +38,21 @@ The desktop calls `IEmulatedSystem`. It does not read or write CPU, PPU, or mapp
 1. Resolve the data directory, start logging, and load configuration, as in Milestone 1.
 2. Create the NES system and open the window.
 3. If a ROM path was passed on the command line, or the user chooses File → Open Game, parse it as iNES or NES 2.0.
-4. NROM, MMC1, UxROM, CNROM, and MMC3 run when the header sizes match that board. Anything else is reported and the previous game, if any, stays loaded.
+4. NROM, MMC1, UxROM, CNROM, MMC3, AxROM, Color Dreams, BNROM, GxROM, and Camerica run when the header sizes match that board. Anything else is reported and the previous game, if any, stays loaded.
 5. While the game is running, the window calls `runFrame` once per frame period reported by the system, not once per host refresh. NTSC is about 16.64 ms. PAL and Dendy are longer. Pause skips that call.
 6. The completed 256×240 RGBA picture is uploaded unchanged. A host shader samples that texture into a separate image. Nearest is the default. Smooth, sharp, and CRT sampling, then brightness, contrast, saturation, and gamma, never write back to the PPU. Save thumbnails use the PPU texture.
 7. The picture is integer-scaled to fit, or to a chosen 1×–6× size. If that size does not fit, the next smaller integer is used and the status bar explains it. Pixel aspect keeps each emulated pixel square in the window; 4:3 uses a four-by-three box. Fullscreen is borderless. Samples from that frame are queued to the audio device. A missing audio device does not stop the picture.
 
-Emulation still shares the UI thread. Moving it off that thread is a later milestone.
+The desktop runs emulation on a worker thread and copies the finished picture and samples back to the window. Save, load, reset, and opening a game take the same lock.
 
 ## NES behavior in this version
 
-- Official 6502 opcodes, including the indirect JMP page-wrap bug. Unofficial opcodes are not implemented.
+- Official and unofficial 6502 opcodes, including the indirect JMP page-wrap bug. A jammed opcode stops the CPU. ADC and SBC stay binary when the decimal flag is set.
 - ADC and SBC stay binary even when the decimal flag is set.
 - NROM: 16 KiB PRG is mirrored at `$C000`. CHR may be ROM or RAM. A trainer, when present, is copied to `$7000`.
 - UxROM switches a 16 KiB bank at `$8000` and fixes the last bank at `$C000`. Submapper 0 ANDs the written value with the ROM byte at that address. CNROM switches 8 KiB CHR banks the same way.
 - MMC1 uses a five-write shift register. A second write before the next CPU cycle is ignored. MMC3 banks PRG and CHR and raises IRQ when PPU A12 rises after staying low.
-- The PPU steps three dots per NTSC or Dendy CPU cycle, and 3.2 dots per PAL CPU cycle. It renders a scanline from the loopy scroll registers and raises NMI when vblank begins with NMI enabled. A12 is tracked per dot for mapper IRQ. Pattern bytes inside a dot are not fetched yet.
+- The PPU steps three dots per NTSC or Dendy CPU cycle, and 3.2 dots per PAL CPU cycle. Visible dots fetch the background pattern for that tile and draw one pixel. Sprite patterns are fetched on dots 257–320 for the next line. A12 for mapper IRQ is still the filtered rendering signal. NMI is raised when vblank begins with NMI enabled.
 - NTSC is 262 scanlines and skips one dot on odd rendered frames. PAL and Dendy are 312 scanlines and do not skip that dot. The host frame period comes from `framePeriodNs()`.
 - The APU mixes pulse, triangle, noise, and DMC. The frame counter follows the NTSC or PAL step sequence, including the frame IRQ. Dendy uses the NTSC APU sequence with its own CPU clock. A DMC sample read stalls the CPU for four cycles.
 - Controller bits are A, B, Select, Start, Up, Down, Left, Right. Keyboard mapping lives in the shell.
@@ -68,11 +68,11 @@ Files live under the data directory: `states/{content id}/slot-01.irstate` throu
 
 ## Configuration schema
 
-Schema version 3. A version 1 file, which has no `video` object, and a version 2 file, which has `video` but no audio or input, are still accepted. The next save writes version 3.
+Schema version 4. A version 1 file, which has no `video` object, a version 2 file, which has `video` but no audio or input, and a version 3 file, which has no controller ports or overscan, are still accepted. The next save writes version 4.
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "ui": {
     "theme": "blue",
     "windowWidth": 1024,
@@ -94,7 +94,8 @@ Schema version 3. A version 1 file, which has no `video` object, and a version 2
     "saturation": 1.0,
     "gamma": 1.0,
     "sharpness": 2.0,
-    "scanline": 0.5
+    "scanline": 0.5,
+    "overscan": false
   },
   "audio": {
     "volume": 1.0,
@@ -120,11 +121,17 @@ Schema version 3. A version 1 file, which has no `video` object, and a version 2
   },
   "library": {
     "show": true
+  },
+  "controllers": {
+    "port1": "keyboard",
+    "port2": "",
+    "pad1": { "a": 1, "b": 0, "select": 4, "start": 6, "up": 11, "down": 12, "left": 13, "right": 14 },
+    "pad2": { "a": 1, "b": 0, "select": 4, "start": 6, "up": 11, "down": 12, "left": 13, "right": 14 }
   }
 }
 ```
 
-`theme` is `blue`, `olive`, or `silver`. A file that still contains `xp-blue`, `xp-olive`, or `xp-silver` loads, and the next save writes the current name. The desktop draws its own title bar, caption buttons, and border. Window width is 640–7680 and height is 480–4320. `level` is `trace`, `debug`, `info`, `warn`, `error`, or `critical`. `scaleMode` is `fit` or `integer`. `integerScale` is 1–6. `aspectRatio` is `pixel` or `4:3`. `filter` is `nearest`, `smooth`, `sharp`, or `crt`. Brightness is −0.5–0.5, contrast is 0.5–2, saturation is 0–2, gamma is 0.4–2.5, sharpness is 1–4, and scanlines are 0–1. `volume` is 0–1. `latency` is `short`, `balanced`, or `long`. An empty `device` selects the default playback device. Input values are key codes from 1 to 511. The eight controller keys are unique. Quick save, quick load, and pause are unique and are not controller keys. Open and Reset both use Ctrl, so they conflict only with each other. Fullscreen uses Alt, so it may reuse Return. Unknown fields are rejected. Do not add a setting until the application implements it.
+`theme` is `blue`, `olive`, or `silver`. A file that still contains `xp-blue`, `xp-olive`, or `xp-silver` loads, and the next save writes the current name. The desktop draws its own title bar, caption buttons, and border. Window width is 640–7680 and height is 480–4320. `level` is `trace`, `debug`, `info`, `warn`, `error`, or `critical`. `scaleMode` is `fit` or `integer`. `integerScale` is 1–6. `aspectRatio` is `pixel` or `4:3`. `filter` is `nearest`, `smooth`, `sharp`, or `crt`. Brightness is −0.5–0.5, contrast is 0.5–2, saturation is 0–2, gamma is 0.4–2.5, sharpness is 1–4, and scanlines are 0–1. `overscan` crops eight pixels from each edge of the picture the window shows. `volume` is 0–1. `latency` is `short`, `balanced`, or `long`. An empty `device` selects the default playback device. Input values are key codes from 1 to 511. The eight controller keys are unique. Quick save, quick load, and pause are unique and are not controller keys. Open and Reset both use Ctrl, so they conflict only with each other. Fullscreen uses Alt, so it may reuse Return. A controller port is `keyboard`, an empty string, or a gamepad name. Gamepad button numbers are 0–31. Unknown fields are rejected. Do not add a setting until the application implements it.
 
 The built-in shaders are original and compiled into the frontend. Each one has an id, a display name, a version, a stage (`sampling` or `color`), a cost, and parameters. Sampling runs before color. A compile or link failure leaves the crisp-pixel path in place. The data directory's `shaders` folder is not read.
 
@@ -134,7 +141,7 @@ The built-in shaders are original and compiled into the frontend. Each one has a
 
 ## Threading
 
-The NES still runs on the UI thread. The shell paces it with `framePeriodNs()`, which follows the cartridge region. Later milestones will keep emulation off the UI thread and will cross that boundary only through an explicit synchronization point.
+Emulation runs on a worker thread. The window copies the finished picture under the same lock used by save, load, reset, and opening a game. The worker waits until the next frame is due on `framePeriodNs()`, with one high-resolution sleep and a short yield for the last millisecond. Each frame's samples are queued unless fast forward is on, the sound is muted, or the queue is already past the latency target. A queue that is about to run dry runs that frame early so the picture and the samples stay together. Fast forward skips the wait and does not queue audio. On Windows the process opts out of battery execution-speed limits so a light workload is not parked on a throttled core.
 
 ## Process boundary
 

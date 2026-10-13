@@ -37,6 +37,7 @@ void Ppu::power() {
     v_ = 0;
     t_ = 0;
     oamAddr_ = 0;
+    clearPicturePipeline();
     reset();
 }
 
@@ -98,8 +99,17 @@ void Ppu::clock() {
     if (scanline_ == preRender && dot_ == 1) {
         status_ = static_cast<std::uint8_t>(status_ & ~0xE0);
     }
-    if (scanline_ < kHeight && dot_ == 0) {
-        renderScanline(scanline_);
+    if (scanline_ < kHeight) {
+        if (dot_ == 0) {
+            beginVisibleLine();
+        } else if (dot_ >= 1 && dot_ <= 256) {
+            drawVisibleDot(dot_ - 1);
+        } else if (dot_ == 257 && !blankLine_) {
+            copyHorizontal();
+        }
+    }
+    if ((scanline_ < kHeight || scanline_ == preRender) && dot_ >= 257 && dot_ <= 320) {
+        fetchSpritePattern();
     }
     if (scanline_ == preRender && dot_ == 280 && rendering()) {
         copyVertical();
@@ -322,113 +332,181 @@ void Ppu::writePixel(int x, int y, std::uint8_t paletteIndex) {
     frameBuffer_[offset + 3] = 255;
 }
 
-void Ppu::renderScanline(int scanline) {
-    std::uint8_t background[kWidth] = {};
+void Ppu::clearPicturePipeline() {
+    background_.fill(0);
+    lineSprites_.fill(SpriteSlot{});
+    nextSprites_.fill(SpriteSlot{});
+    lineSpriteCount_ = 0;
+    nextSpriteCount_ = 0;
+    walkV_ = 0;
+    walkFineX_ = 0;
+    tileLow_ = 0;
+    tileHigh_ = 0;
+    tilePalette_ = 0;
+    tileLoaded_ = false;
+    blankLine_ = true;
+}
+
+void Ppu::beginVisibleLine() {
+    background_.fill(0);
     if (!rendering()) {
-        for (int x = 0; x < kWidth; ++x) {
-            writePixel(x, scanline, 0);
-        }
+        blankLine_ = true;
+        lineSpriteCount_ = 0;
+        nextSpriteCount_ = 0;
         return;
     }
+    blankLine_ = false;
+    walkV_ = v_;
+    walkFineX_ = fineX_;
+    tileLoaded_ = false;
+    lineSpriteCount_ = nextSpriteCount_;
+    lineSprites_ = nextSprites_;
+    nextSpriteCount_ = 0;
+}
 
+void Ppu::fetchBackgroundTile() {
+    const std::uint16_t address = walkV_;
+    const std::uint16_t tileAddress = static_cast<std::uint16_t>(0x2000 | (address & 0x0FFF));
+    const std::uint8_t tile = readVram(tileAddress);
+    const int fineY = (address >> 12) & 0x07;
+    const std::uint16_t pattern =
+        static_cast<std::uint16_t>(((ctrl_ & 0x10) != 0 ? 0x1000 : 0) + tile * 16 + fineY);
+    tileLow_ = readVram(pattern);
+    tileHigh_ = readVram(static_cast<std::uint16_t>(pattern + 8));
+    const std::uint16_t attributeAddress = static_cast<std::uint16_t>(
+        0x23C0 | (address & 0x0C00) | ((address >> 4) & 0x38) | ((address >> 2) & 0x07));
+    const int shift = ((address >> 4) & 0x04) | (address & 0x02);
+    tilePalette_ = (readVram(attributeAddress) >> shift) & 0x03;
+}
+
+void Ppu::compositeSprites(int x) {
+    if ((mask_ & 0x10) == 0) {
+        return;
+    }
+    for (int slot = lineSpriteCount_ - 1; slot >= 0; --slot) {
+        const SpriteSlot& sprite = lineSprites_[static_cast<std::size_t>(slot)];
+        const int column = x - sprite.x;
+        if (column < 0 || column > 7 || ((mask_ & 0x04) == 0 && x < 8)) {
+            continue;
+        }
+        const int bit = (sprite.attribute & 0x40) != 0 ? column : 7 - column;
+        const int color = ((sprite.high >> bit) & 0x01) << 1 | ((sprite.low >> bit) & 0x01);
+        if (color == 0) {
+            continue;
+        }
+        if (sprite.index == 0 && background_[static_cast<std::size_t>(x)] != 0 && x != 255) {
+            status_ = static_cast<std::uint8_t>(status_ | 0x40);
+        }
+        if ((sprite.attribute & 0x20) != 0 && background_[static_cast<std::size_t>(x)] != 0) {
+            continue;
+        }
+        const int paletteEntry = 0x10 + (sprite.attribute & 0x03) * 4 + color;
+        writePixel(x, scanline_, static_cast<std::uint8_t>(paletteEntry));
+    }
+}
+
+void Ppu::drawVisibleDot(int x) {
+    if (blankLine_) {
+        writePixel(x, scanline_, 0);
+        return;
+    }
+    if (!tileLoaded_) {
+        fetchBackgroundTile();
+        tileLoaded_ = true;
+    }
     const bool showBackground = (mask_ & 0x08) != 0;
-    const bool showSprites = (mask_ & 0x10) != 0;
-    std::uint16_t address = v_;
-    int fineX = fineX_;
-    for (int x = 0; x < kWidth; ++x) {
-        int paletteEntry = 0;
-        if (showBackground && ((mask_ & 0x02) != 0 || x >= 8)) {
-            const std::uint16_t tileAddress = static_cast<std::uint16_t>(0x2000 | (address & 0x0FFF));
-            const std::uint8_t tile = readVram(tileAddress);
-            const int fineY = (address >> 12) & 0x07;
-            const std::uint16_t pattern = static_cast<std::uint16_t>(((ctrl_ & 0x10) != 0 ? 0x1000 : 0) + tile * 16 + fineY);
-            const std::uint8_t low = readVram(pattern);
-            const std::uint8_t high = readVram(static_cast<std::uint16_t>(pattern + 8));
-            const int bit = 7 - (fineX & 0x07);
-            const int color = ((high >> bit) & 0x01) << 1 | ((low >> bit) & 0x01);
-            const std::uint16_t attributeAddress = static_cast<std::uint16_t>(
-                0x23C0 | (address & 0x0C00) | ((address >> 4) & 0x38) | ((address >> 2) & 0x07));
-            const int shift = ((address >> 4) & 0x04) | (address & 0x02);
-            const int palette = (readVram(attributeAddress) >> shift) & 0x03;
-            background[x] = static_cast<std::uint8_t>(color);
-            paletteEntry = color == 0 ? 0 : palette * 4 + color;
-        }
-        writePixel(x, scanline, static_cast<std::uint8_t>(paletteEntry));
-        ++fineX;
-        if ((fineX & 0x07) == 0) {
-            v_ = address;
-            incrementCoarseX();
-            address = v_;
-        }
+    int paletteEntry = 0;
+    if (showBackground && ((mask_ & 0x02) != 0 || x >= 8)) {
+        const int bit = 7 - (walkFineX_ & 0x07);
+        const int color = ((tileHigh_ >> bit) & 0x01) << 1 | ((tileLow_ >> bit) & 0x01);
+        background_[static_cast<std::size_t>(x)] = static_cast<std::uint8_t>(color);
+        paletteEntry = color == 0 ? 0 : tilePalette_ * 4 + color;
     }
-
-    if (showSprites) {
-        const int height = (ctrl_ & 0x20) != 0 ? 16 : 8;
-        int visible[8] = {};
-        int count = 0;
-        for (int index = 0; index < 64; ++index) {
-            const int spriteY = oam_[index * 4];
-            const int row = scanline - (spriteY + 1);
-            if (row < 0 || row >= height) {
-                continue;
-            }
-            if (count == 8) {
-                status_ = static_cast<std::uint8_t>(status_ | 0x20);
-                break;
-            }
-            visible[count++] = index;
-        }
-        for (int slot = count - 1; slot >= 0; --slot) {
-            const int index = visible[slot];
-            const int spriteY = oam_[index * 4];
-            int row = scanline - (spriteY + 1);
-            const std::uint8_t tile = oam_[index * 4 + 1];
-            const std::uint8_t attribute = oam_[index * 4 + 2];
-            const int spriteX = oam_[index * 4 + 3];
-            if ((attribute & 0x80) != 0) {
-                row = height - 1 - row;
-            }
-            std::uint16_t pattern = 0;
-            if (height == 16) {
-                const int table = (tile & 0x01) != 0 ? 0x1000 : 0;
-                int tileIndex = tile & 0xFE;
-                int tileRow = row;
-                if (tileRow >= 8) {
-                    ++tileIndex;
-                    tileRow -= 8;
-                }
-                pattern = static_cast<std::uint16_t>(table + tileIndex * 16 + tileRow);
-            } else {
-                const int table = (ctrl_ & 0x08) != 0 ? 0x1000 : 0;
-                pattern = static_cast<std::uint16_t>(table + tile * 16 + row);
-            }
-            const std::uint8_t low = readVram(pattern);
-            const std::uint8_t high = readVram(static_cast<std::uint16_t>(pattern + 8));
-            for (int column = 0; column < 8; ++column) {
-                const int x = spriteX + column;
-                if (x > 255 || ((mask_ & 0x04) == 0 && x < 8)) {
-                    continue;
-                }
-                const int bit = (attribute & 0x40) != 0 ? column : 7 - column;
-                const int color = ((high >> bit) & 0x01) << 1 | ((low >> bit) & 0x01);
-                if (color == 0) {
-                    continue;
-                }
-                if (index == 0 && background[x] != 0 && x != 255) {
-                    status_ = static_cast<std::uint8_t>(status_ | 0x40);
-                }
-                if ((attribute & 0x20) != 0 && background[x] != 0) {
-                    continue;
-                }
-                const int paletteEntry = 0x10 + (attribute & 0x03) * 4 + color;
-                writePixel(x, scanline, static_cast<std::uint8_t>(paletteEntry));
-            }
-        }
+    writePixel(x, scanline_, static_cast<std::uint8_t>(paletteEntry));
+    compositeSprites(x);
+    ++walkFineX_;
+    if ((walkFineX_ & 0x07) == 0) {
+        v_ = walkV_;
+        incrementCoarseX();
+        walkV_ = v_;
+        tileLoaded_ = false;
     }
+    if (x == 255) {
+        v_ = walkV_;
+        incrementY();
+    }
+}
 
-    v_ = address;
-    incrementY();
-    copyHorizontal();
+void Ppu::selectSprites(int line) {
+    nextSpriteCount_ = 0;
+    if (line < 0 || line >= kHeight) {
+        return;
+    }
+    const int height = (ctrl_ & 0x20) != 0 ? 16 : 8;
+    for (int index = 0; index < 64; ++index) {
+        const int spriteY = oam_[static_cast<std::size_t>(index) * 4];
+        const int row = line - (spriteY + 1);
+        if (row < 0 || row >= height) {
+            continue;
+        }
+        if (nextSpriteCount_ == 8) {
+            status_ = static_cast<std::uint8_t>(status_ | 0x20);
+            break;
+        }
+        SpriteSlot& slot = nextSprites_[static_cast<std::size_t>(nextSpriteCount_++)];
+        slot.index = index;
+        slot.x = oam_[static_cast<std::size_t>(index) * 4 + 3];
+        slot.attribute = oam_[static_cast<std::size_t>(index) * 4 + 2];
+        int useRow = row;
+        if ((slot.attribute & 0x80) != 0) {
+            useRow = height - 1 - useRow;
+        }
+        const std::uint8_t tile = oam_[static_cast<std::size_t>(index) * 4 + 1];
+        if (height == 16) {
+            const int table = (tile & 0x01) != 0 ? 0x1000 : 0;
+            int tileIndex = tile & 0xFE;
+            int tileRow = useRow;
+            if (tileRow >= 8) {
+                ++tileIndex;
+                tileRow -= 8;
+            }
+            slot.pattern = static_cast<std::uint16_t>(table + tileIndex * 16 + tileRow);
+        } else {
+            const int table = (ctrl_ & 0x08) != 0 ? 0x1000 : 0;
+            slot.pattern = static_cast<std::uint16_t>(table + tile * 16 + useRow);
+        }
+        slot.low = 0;
+        slot.high = 0;
+    }
+}
+
+void Ppu::fetchSpritePattern() {
+    if (!rendering()) {
+        return;
+    }
+    const int preRender = scanlines_ - 1;
+    if (scanline_ >= kHeight && scanline_ != preRender) {
+        return;
+    }
+    if (dot_ < 257 || dot_ > 320) {
+        return;
+    }
+    const int nextLine = scanline_ == preRender ? 0 : scanline_ + 1;
+    if (dot_ == 257) {
+        selectSprites(nextLine);
+    }
+    const int phase = dot_ - 257;
+    const int slot = phase >> 3;
+    const int step = phase & 7;
+    if (slot >= nextSpriteCount_) {
+        return;
+    }
+    SpriteSlot& sprite = nextSprites_[static_cast<std::size_t>(slot)];
+    if (step == 4) {
+        sprite.low = readVram(sprite.pattern);
+    } else if (step == 6) {
+        sprite.high = readVram(static_cast<std::uint16_t>(sprite.pattern + 8));
+    }
 }
 
 void Ppu::captureState(ByteWriter& writer) const {
@@ -499,6 +577,7 @@ bool Ppu::applyState(ByteReader& reader) {
     palette_ = palette;
     oam_ = oam;
     frameBuffer_ = std::move(frameBuffer);
+    clearPicturePipeline();
     return true;
 }
 

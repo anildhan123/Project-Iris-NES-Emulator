@@ -81,6 +81,23 @@ TEST_CASE("UxROM switches the low PRG bank and leaves the last bank fixed") {
     REQUIRE(nes.debugRead(0xC000) == 0xAD);
 }
 
+TEST_CASE("AxROM selects a 32 KiB PRG bank and one nametable") {
+    auto rom = makeRom(7, 0, 4, 0, 0, true);
+    rom[11] = 7;
+    rom[16 + 32] = 0x11;
+    rom[16 + 32768 + 32] = 0x22;
+    putPrg(rom, 0, {0xAD, 0x20, 0x80, 0x85, 0x10, 0xA9, 0x11, 0x8D, 0x00, 0x80});
+    putPrg(rom, 32768 + 10, {0xAD, 0x20, 0x80, 0x85, 0x11, 0x4C, 0x0A, 0x80});
+    putVector(rom, 32768, 0x8000, 0x8000);
+    iris::systems::nes::NesSystem nes;
+    std::string error;
+    REQUIRE(nes.loadBytes(rom.data(), rom.size(), "axrom", error));
+    REQUIRE(nes.info().detail == "AxROM, NTSC");
+    nes.runFrame();
+    REQUIRE(nes.debugRead(0x10) == 0x11);
+    REQUIRE(nes.debugRead(0x11) == 0x22);
+}
+
 TEST_CASE("CNROM bank selects 8 KiB CHR and submapper 0 has a bus conflict") {
     auto rom = makeRom(3, 0, 1, 2, 0, true);
     auto parsed = iris::systems::nes::Cartridge::fromBytes(rom.data(), rom.size(), "cnrom");

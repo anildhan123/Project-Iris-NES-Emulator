@@ -20,6 +20,7 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#include <intrin.h>
 #endif
 
 #include <SDL3/SDL.h>
@@ -32,15 +33,18 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace iris {
@@ -355,6 +359,21 @@ int audioQueueSamples(AudioLatency latency) {
     return 48000;
 }
 
+int audioPaceSamples(AudioLatency latency) {
+    switch (latency) {
+    case AudioLatency::Short:
+        return 48000 * 20 / 1000;
+    case AudioLatency::Long:
+        return 48000 * 80 / 1000;
+    case AudioLatency::Balanced:
+        return 48000 * 40 / 1000;
+    }
+    return 48000 * 40 / 1000;
+}
+
+// Below this the device can run dry before the next paced frame.
+constexpr int kAudioRefillSamples = 400;
+
 const char* playbackDeviceItem(void* data, int index) {
     const auto* items = static_cast<const std::vector<std::string>*>(data);
     if (items == nullptr || index < 0 || index >= static_cast<int>(items->size())) {
@@ -397,6 +416,203 @@ std::uint8_t controllerButtons(const InputBindings& bindings) {
     return buttons;
 }
 
+const char* gamepadButtonName(int button) {
+    switch (button) {
+    case 0:
+        return "South";
+    case 1:
+        return "East";
+    case 2:
+        return "West";
+    case 3:
+        return "North";
+    case 4:
+        return "Back";
+    case 6:
+        return "Start";
+    case 11:
+        return "Up";
+    case 12:
+        return "Down";
+    case 13:
+        return "Left";
+    case 14:
+        return "Right";
+    default:
+        return "Button";
+    }
+}
+
+void cropPicture(
+    const std::vector<std::uint8_t>& source,
+    int sourceWidth,
+    int sourceHeight,
+    int crop,
+    std::vector<std::uint8_t>& destination,
+    int& width,
+    int& height) {
+    if (source.empty() || sourceWidth <= 0 || sourceHeight <= 0 || crop < 0 || crop * 2 >= sourceWidth ||
+        crop * 2 >= sourceHeight) {
+        destination = source;
+        width = sourceWidth;
+        height = sourceHeight;
+        return;
+    }
+    width = sourceWidth - crop * 2;
+    height = sourceHeight - crop * 2;
+    destination.resize(static_cast<std::size_t>(width * height * 4));
+    for (int y = 0; y < height; ++y) {
+        const std::size_t from = (static_cast<std::size_t>(y + crop) * static_cast<std::size_t>(sourceWidth) +
+                                  static_cast<std::size_t>(crop)) *
+                                 4;
+        std::memcpy(destination.data() + static_cast<std::size_t>(y * width * 4), source.data() + from, static_cast<std::size_t>(width * 4));
+    }
+}
+
+bool writeBmp(const std::filesystem::path& path, const std::uint8_t* rgba, int width, int height) {
+    if (rgba == nullptr || width <= 0 || height <= 0) {
+        return false;
+    }
+    const int rowStride = width * 3;
+    const int padded = (rowStride + 3) & ~3;
+    const std::uint32_t pixelBytes = static_cast<std::uint32_t>(padded * height);
+    const std::uint32_t fileBytes = 54u + pixelBytes;
+    std::vector<std::uint8_t> file(fileBytes, 0);
+    file[0] = 'B';
+    file[1] = 'M';
+    file[2] = static_cast<std::uint8_t>(fileBytes);
+    file[3] = static_cast<std::uint8_t>(fileBytes >> 8);
+    file[4] = static_cast<std::uint8_t>(fileBytes >> 16);
+    file[5] = static_cast<std::uint8_t>(fileBytes >> 24);
+    file[10] = 54;
+    file[14] = 40;
+    file[18] = static_cast<std::uint8_t>(width);
+    file[19] = static_cast<std::uint8_t>(width >> 8);
+    file[22] = static_cast<std::uint8_t>(height);
+    file[23] = static_cast<std::uint8_t>(height >> 8);
+    file[26] = 1;
+    file[28] = 24;
+    for (int y = 0; y < height; ++y) {
+        std::uint8_t* row = file.data() + 54 + static_cast<std::size_t>(height - 1 - y) * static_cast<std::size_t>(padded);
+        const std::uint8_t* source = rgba + static_cast<std::size_t>(y * width * 4);
+        for (int x = 0; x < width; ++x) {
+            row[x * 3] = source[x * 4 + 2];
+            row[x * 3 + 1] = source[x * 4 + 1];
+            row[x * 3 + 2] = source[x * 4];
+        }
+    }
+    std::ofstream output(path, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(file.data()), static_cast<std::streamsize>(file.size()));
+    return output.good();
+}
+
+void keepHostResponsive() {
+#if defined(_WIN32)
+    // Battery mode otherwise coalesces short sleeps and caps a light process.
+    // A plugged-in plan already leaves the timer at 1 ms, which hides that.
+    PROCESS_POWER_THROTTLING_STATE processPower{};
+    processPower.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    processPower.ControlMask =
+        PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
+    processPower.StateMask = 0;
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &processPower, sizeof(processPower));
+#endif
+}
+
+void keepWorkerResponsive() {
+#if defined(_WIN32)
+    THREAD_POWER_THROTTLING_STATE threadPower{};
+    threadPower.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+    threadPower.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+    threadPower.StateMask = 0;
+    SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &threadPower, sizeof(threadPower));
+#endif
+}
+
+#if defined(_WIN32)
+extern "C" {
+__declspec(dllimport) unsigned int __stdcall timeBeginPeriod(unsigned int);
+__declspec(dllimport) unsigned int __stdcall timeEndPeriod(unsigned int);
+}
+#if defined(_MSC_VER)
+#pragma comment(lib, "winmm.lib")
+#endif
+
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
+// One high-resolution wait for the bulk of the frame. The last millisecond is
+// yielded, and only the last fraction spins. A second 1 ms sleep is what the
+// battery timer stretches to about 15 ms, which is why a frame used to take
+// two ticks and the game ran at about half speed.
+class FrameClock {
+public:
+    FrameClock() {
+        timeBeginPeriod(1);
+        timer_ = CreateWaitableTimerExW(
+            nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        if (timer_ == nullptr) {
+            timer_ = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
+        }
+    }
+
+    ~FrameClock() {
+        if (timer_ != nullptr) {
+            CloseHandle(timer_);
+        }
+        timeEndPeriod(1);
+    }
+
+    FrameClock(const FrameClock&) = delete;
+    FrameClock& operator=(const FrameClock&) = delete;
+
+    void waitUntil(std::chrono::steady_clock::time_point deadline) {
+        using namespace std::chrono;
+        auto now = steady_clock::now();
+        if (now >= deadline) {
+            return;
+        }
+        constexpr auto kYieldTail = milliseconds(1);
+        constexpr auto kSpinTail = microseconds(200);
+        if (now + kYieldTail < deadline) {
+            sleepOnce(duration_cast<nanoseconds>(deadline - kYieldTail - now));
+        }
+        while (steady_clock::now() + kSpinTail < deadline) {
+            std::this_thread::yield();
+        }
+        while (steady_clock::now() < deadline) {
+#if defined(_M_IX86) || defined(_M_X64)
+            _mm_pause();
+#else
+            std::this_thread::yield();
+#endif
+        }
+    }
+
+    void sleepOnce(std::chrono::nanoseconds duration) {
+        if (duration.count() <= 0) {
+            return;
+        }
+        if (timer_ != nullptr) {
+            LARGE_INTEGER due{};
+            due.QuadPart = -static_cast<LONGLONG>(duration.count() / 100);
+            if (due.QuadPart == 0) {
+                due.QuadPart = -1;
+            }
+            if (SetWaitableTimer(timer_, &due, 0, nullptr, nullptr, FALSE) != FALSE) {
+                WaitForSingleObject(timer_, INFINITE);
+                return;
+            }
+        }
+        Sleep(static_cast<DWORD>((duration.count() + 999999) / 1000000));
+    }
+
+private:
+    HANDLE timer_ = nullptr;
+};
+#endif
+
 void uploadFrame(GLuint& texture, const FrameView& frame) {
     if (texture == 0) {
         glGenTextures(1, &texture);
@@ -418,6 +634,7 @@ DesktopShell::DesktopShell(const Config& config, IEmulatedSystem& system, std::s
 
 int DesktopShell::run() {
     hideSpawnedConsole();
+    keepHostResponsive();
     SdlSession session;
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         log::error(std::string("SDL_Init failed: ") + SDL_GetError());
@@ -426,6 +643,9 @@ int DesktopShell::run() {
     session.sdlInitialized = true;
     if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
         log::warn(std::string("Audio is unavailable: ") + SDL_GetError());
+    }
+    if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
+        log::warn(std::string("Gamepads are unavailable: ") + SDL_GetError());
     }
 
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
@@ -469,7 +689,9 @@ int DesktopShell::run() {
         log::warn(std::string("VSync was not changed: ") + SDL_GetError());
     }
 
+    std::mutex audioLock;
     const auto openPlayback = [&](const std::string& deviceName) {
+        std::lock_guard playback(audioLock);
         if (session.audio != nullptr) {
             SDL_DestroyAudioStream(session.audio);
             session.audio = nullptr;
@@ -581,7 +803,7 @@ int DesktopShell::run() {
     TextureGuard texture;
     const std::string versionLabel = std::string(kProductName) + " " + kVersionString;
     const std::string aboutText = std::string(kProductName) + " " + kVersionString +
-                                   "\n\nThis build plays NROM, MMC1, UxROM, CNROM, and MMC3. "
+                                   "\n\nThis build plays NROM, MMC1, UxROM, CNROM, MMC3, AxROM, Color Dreams, BNROM, GxROM, and Camerica. "
                                    "A NES 2.0 header can select PAL timing. "
                                    "Iris Demo, written for this project, is generated beside the executable.\n\n"
                                    "Open a ROM with File, Open Game, or from the library. "
@@ -594,13 +816,11 @@ int DesktopShell::run() {
                                    "View sets the scale, 4:3 aspect, and presentation filter. Alt+Enter toggles fullscreen. "
                                    "Filters and color settings do not change the emulated picture.";
     auto previous = std::chrono::steady_clock::now();
-    std::int64_t accumulated = system_.framePeriodNs();
     double hostFps = 0.0;
     double emulatedFps = 0.0;
     double lastEmulationMs = 0.0;
     double lastPresentMs = 0.0;
     int hostFrames = 0;
-    int emulatedFrames = 0;
     auto fpsWindow = previous;
     const auto setFullscreen = [&](bool enabled) {
         const bool active = (SDL_GetWindowFlags(session.window) & SDL_WINDOW_FULLSCREEN) != 0;
@@ -639,10 +859,292 @@ int DesktopShell::run() {
     bool refreshAudioList = false;
     Config settingsDraft = config_;
     int* captureBinding = nullptr;
+    int* capturePad = nullptr;
+    bool openControllers = false;
+    bool fastOn = false;
+    ControllerSetup controllerDraft = config_.controllers;
+    std::atomic<bool> stopWorker{false};
+    std::atomic<bool> fastForward{false};
+    std::atomic<bool> requestStep{false};
+    std::atomic<std::uint8_t> livePort0{0};
+    std::atomic<std::uint8_t> livePort1{0};
+    std::atomic<int> pacedFrames{0};
+    struct PublishedPicture {
+        std::vector<std::uint8_t> rgba;
+        std::vector<float> audio;
+        int width = 0;
+        int height = 0;
+        std::uint64_t serial = 0;
+    } published;
+    std::vector<std::uint8_t> viewPicture;
+    int viewWidth = 0;
+    int viewHeight = 0;
+    bool viewLoaded = false;
+    bool viewPaused = false;
+    SystemInfo viewInfo;
+    std::uint64_t queuedSerial = 0;
+    double shownEmulationMs = 0.0;
+    struct OpenPad {
+        SDL_JoystickID id = 0;
+        SDL_Gamepad* pad = nullptr;
+        std::string name;
+    };
+    std::vector<OpenPad> pads;
+    const auto closePads = [&]() {
+        for (OpenPad& pad : pads) {
+            if (pad.pad != nullptr) {
+                SDL_CloseGamepad(pad.pad);
+                pad.pad = nullptr;
+            }
+        }
+        pads.clear();
+    };
+    const auto refreshPads = [&]() {
+        int count = 0;
+        SDL_JoystickID* ids = SDL_GetGamepads(&count);
+        std::vector<SDL_JoystickID> live;
+        if (ids != nullptr) {
+            live.assign(ids, ids + count);
+            SDL_free(ids);
+        }
+        pads.erase(
+            std::remove_if(
+                pads.begin(),
+                pads.end(),
+                [&](OpenPad& pad) {
+                    const bool present = std::find(live.begin(), live.end(), pad.id) != live.end();
+                    if (!present && pad.pad != nullptr) {
+                        SDL_CloseGamepad(pad.pad);
+                        pad.pad = nullptr;
+                    }
+                    return !present;
+                }),
+            pads.end());
+        for (const SDL_JoystickID id : live) {
+            const bool known = std::any_of(pads.begin(), pads.end(), [&](const OpenPad& pad) { return pad.id == id; });
+            if (known) {
+                continue;
+            }
+            SDL_Gamepad* pad = SDL_OpenGamepad(id);
+            if (pad == nullptr) {
+                continue;
+            }
+            const char* name = SDL_GetGamepadName(pad);
+            pads.push_back(OpenPad{id, pad, name == nullptr ? "Controller" : name});
+        }
+    };
+    const auto padButtons = [&](const std::string& device, const GamepadMap& map) {
+        if (device.empty()) {
+            return static_cast<std::uint8_t>(0);
+        }
+        if (device == "keyboard") {
+            return controllerButtons(config_.input);
+        }
+        for (const OpenPad& pad : pads) {
+            if (pad.name != device || pad.pad == nullptr) {
+                continue;
+            }
+            const auto down = [&](int button) {
+                return button >= 0 && button < SDL_GAMEPAD_BUTTON_COUNT &&
+                       SDL_GetGamepadButton(pad.pad, static_cast<SDL_GamepadButton>(button));
+            };
+            std::uint8_t buttons = 0;
+            if (down(map.a)) buttons = static_cast<std::uint8_t>(buttons | kButtonA);
+            if (down(map.b)) buttons = static_cast<std::uint8_t>(buttons | kButtonB);
+            if (down(map.select)) buttons = static_cast<std::uint8_t>(buttons | kButtonSelect);
+            if (down(map.start)) buttons = static_cast<std::uint8_t>(buttons | kButtonStart);
+            if (down(map.up)) buttons = static_cast<std::uint8_t>(buttons | kButtonUp);
+            if (down(map.down)) buttons = static_cast<std::uint8_t>(buttons | kButtonDown);
+            if (down(map.left)) buttons = static_cast<std::uint8_t>(buttons | kButtonLeft);
+            if (down(map.right)) buttons = static_cast<std::uint8_t>(buttons | kButtonRight);
+            return buttons;
+        }
+        return static_cast<std::uint8_t>(0);
+    };
+    const auto saveScreenshot = [&]() {
+        if (viewPicture.empty() || viewWidth <= 0 || viewHeight <= 0 || !appPaths.has_value()) {
+            return;
+        }
+        std::vector<std::uint8_t> presented;
+        int width = 0;
+        int height = 0;
+        cropPicture(viewPicture, viewWidth, viewHeight, config_.overscan ? 8 : 0, presented, width, height);
+        std::error_code failure;
+        std::filesystem::create_directories(appPaths->screenshots, failure);
+        const auto stamp = std::chrono::system_clock::now();
+        const std::time_t time = std::chrono::system_clock::to_time_t(stamp);
+        std::tm local{};
+#if defined(_WIN32)
+        localtime_s(&local, &time);
+#else
+        localtime_r(&time, &local);
+#endif
+        char name[64] = {};
+        std::snprintf(
+            name,
+            sizeof(name),
+            "iris-%04d%02d%02d-%02d%02d%02d.bmp",
+            local.tm_year + 1900,
+            local.tm_mon + 1,
+            local.tm_mday,
+            local.tm_hour,
+            local.tm_min,
+            local.tm_sec);
+        const auto file = appPaths->screenshots / name;
+        if (failure || !writeBmp(file, presented.data(), width, height)) {
+            errorText = "The screenshot could not be written.";
+            errorTitle = "Could not save the screenshot";
+            openError = true;
+            return;
+        }
+        libraryNote = "Saved " + file.filename().string();
+    };
+    std::recursive_mutex gate;
+    std::thread emulation([&]() {
+        keepWorkerResponsive();
+#if defined(_WIN32)
+        FrameClock clock;
+#endif
+        auto nextDue = std::chrono::steady_clock::now();
+        while (!stopWorker.load()) {
+            std::chrono::steady_clock::time_point frameDeadline{};
+            std::chrono::nanoseconds idleWait{0};
+            bool waitForFrame = false;
+            std::vector<float> chunk;
+            bool clearPlayback = false;
+            {
+                int queuedSamples = -1;
+                {
+                    std::lock_guard playback(audioLock);
+                    if (session.audio != nullptr) {
+                        const int queuedBytes = SDL_GetAudioStreamQueued(session.audio);
+                        queuedSamples = queuedBytes > 0 ? queuedBytes / static_cast<int>(sizeof(float)) : 0;
+                    }
+                }
+                std::unique_lock lock(gate, std::try_to_lock);
+                if (!lock.owns_lock()) {
+                    idleWait = std::chrono::milliseconds(1);
+                } else {
+                    const bool step = requestStep.exchange(false);
+                    if (!system_.loaded() || (system_.paused() && !step)) {
+                        nextDue = std::chrono::steady_clock::now();
+                        idleWait = std::chrono::milliseconds(10);
+                    } else if (fastForward.load()) {
+                        clearPlayback = true;
+                        system_.setController(0, livePort0.load());
+                        system_.setController(1, livePort1.load());
+                        const auto started = std::chrono::steady_clock::now();
+                        system_.runFrame();
+                        shownEmulationMs = std::chrono::duration<double, std::milli>(
+                                               std::chrono::steady_clock::now() - started)
+                                               .count();
+                        pacedFrames.fetch_add(1);
+                        const FrameView frame = system_.frame();
+                        if (frame.rgba != nullptr && frame.width > 0 && frame.height > 0) {
+                            const std::size_t bytes = static_cast<std::size_t>(frame.width) *
+                                                      static_cast<std::size_t>(frame.height) * 4;
+                            published.rgba.assign(frame.rgba, frame.rgba + bytes);
+                            published.width = frame.width;
+                            published.height = frame.height;
+                        }
+                        ++published.serial;
+                        if (step) {
+                            system_.setPaused(true);
+                        }
+                        nextDue = std::chrono::steady_clock::now();
+                    } else {
+                        const bool followAudio = queuedSamples >= 0 && !config_.muted && config_.volume > 0.0f;
+                        const int paceTarget = audioPaceSamples(config_.audioLatency);
+                        const auto now = std::chrono::steady_clock::now();
+                        // Waiting out a full audio buffer is what made the picture miss
+                        // NTSC speed. The frame clock stays in charge. Audio only pulls
+                        // a frame forward when the device is about to starve.
+                        const bool refill = followAudio && queuedSamples < kAudioRefillSamples;
+                        if (!refill && now < nextDue) {
+                            frameDeadline = nextDue;
+                            waitForFrame = true;
+                        } else {
+                            system_.setController(0, livePort0.load());
+                            system_.setController(1, livePort1.load());
+                            const auto started = std::chrono::steady_clock::now();
+                            system_.runFrame();
+                            shownEmulationMs = std::chrono::duration<double, std::milli>(
+                                                   std::chrono::steady_clock::now() - started)
+                                                   .count();
+                            pacedFrames.fetch_add(1);
+                            const FrameView frame = system_.frame();
+                            if (frame.rgba != nullptr && frame.width > 0 && frame.height > 0) {
+                                const std::size_t bytes = static_cast<std::size_t>(frame.width) *
+                                                          static_cast<std::size_t>(frame.height) * 4;
+                                published.rgba.assign(frame.rgba, frame.rgba + bytes);
+                                published.width = frame.width;
+                                published.height = frame.height;
+                            }
+                            if (followAudio) {
+                                const AudioView audio = system_.audio();
+                                if (audio.samples != nullptr && audio.count > 0 && queuedSamples <= paceTarget &&
+                                    queuedSamples + audio.count < audioQueueSamples(config_.audioLatency)) {
+                                    const float volume = std::min(config_.volume, 1.0f);
+                                    chunk.resize(static_cast<std::size_t>(audio.count));
+                                    for (int index = 0; index < audio.count; ++index) {
+                                        chunk[static_cast<std::size_t>(index)] = audio.samples[index] * volume;
+                                    }
+                                }
+                            }
+                            ++published.serial;
+                            const auto period = std::chrono::nanoseconds(system_.framePeriodNs());
+                            if (step) {
+                                system_.setPaused(true);
+                            }
+                            if (now < nextDue) {
+                                nextDue = now + period;
+                            } else {
+                                nextDue += period;
+                                if (nextDue < now) {
+                                    nextDue = now + period;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (!chunk.empty() || clearPlayback) {
+                std::lock_guard playback(audioLock);
+                if (session.audio != nullptr) {
+                    if (clearPlayback) {
+                        SDL_ClearAudioStream(session.audio);
+                    } else {
+                        SDL_PutAudioStreamData(
+                            session.audio, chunk.data(), static_cast<int>(chunk.size() * sizeof(float)));
+                    }
+                }
+            }
+            if (waitForFrame) {
+#if defined(_WIN32)
+                clock.waitUntil(frameDeadline);
+#else
+                const auto coarse = frameDeadline - std::chrono::milliseconds(1);
+                const auto now = std::chrono::steady_clock::now();
+                if (now < coarse) {
+                    std::this_thread::sleep_for(coarse - now);
+                }
+                while (std::chrono::steady_clock::now() < frameDeadline) {
+                    std::this_thread::yield();
+                }
+#endif
+            } else if (idleWait.count() > 0) {
+#if defined(_WIN32)
+                clock.sleepOnce(idleWait);
+#else
+                std::this_thread::sleep_for(idleWait);
+#endif
+            }
+        }
+    });
     std::string removePath;
     std::vector<std::string> playbackNames;
-    std::vector<float> audioScratch;
     bool wasMuted = config_.muted;
+    bool focusPicture = false;
     if (appPaths.has_value()) {
         const auto loadedLibrary = loadLibraryFile(appPaths->library / "library.json");
         if (loadedLibrary.ok()) {
@@ -665,6 +1167,7 @@ int DesktopShell::run() {
     }
 
     const auto slotFile = [&](int slot) -> std::filesystem::path {
+        std::lock_guard lock(gate);
         if (!appPaths.has_value() || system_.contentId().size() != 64) {
             return {};
         }
@@ -697,6 +1200,7 @@ int DesktopShell::run() {
     };
 
     const auto flushBattery = [&]() {
+        std::lock_guard lock(gate);
         if (!appPaths.has_value()) {
             return;
         }
@@ -713,6 +1217,7 @@ int DesktopShell::run() {
     };
 
     const auto importBattery = [&]() {
+        std::lock_guard lock(gate);
         if (!appPaths.has_value() || !system_.info().batteryBacked) {
             return;
         }
@@ -732,6 +1237,7 @@ int DesktopShell::run() {
     };
 
     const auto saveSelectedSlot = [&]() {
+        std::lock_guard lock(gate);
         if (!system_.loaded()) {
             return;
         }
@@ -766,6 +1272,7 @@ int DesktopShell::run() {
     };
 
     const auto loadSelectedSlot = [&]() {
+        std::lock_guard lock(gate);
         if (!system_.loaded()) {
             return;
         }
@@ -808,7 +1315,8 @@ int DesktopShell::run() {
         return true;
     };
 
-    const auto openRom = [&](const std::filesystem::path& path) {
+    const auto openRom = [&](const std::filesystem::path& path) -> bool {
+        std::lock_guard lock(gate);
         flushBattery();
         std::string error;
         if (!system_.loadContent(path, error)) {
@@ -816,7 +1324,7 @@ int DesktopShell::run() {
             errorTitle = "Could not open game";
             openError = true;
             log::error(error);
-            return;
+            return false;
         }
         const SystemInfo info = system_.info();
         log::info(std::string("Loaded ") + info.title + " (" + info.detail + ").");
@@ -824,7 +1332,6 @@ int DesktopShell::run() {
             log::warn("Battery-backed RAM is stored separately from save states.");
         }
         importBattery();
-        accumulated = system_.framePeriodNs();
         LibraryEntry entry;
         entry.path = pathToUtf8(path);
         entry.title = info.title;
@@ -839,9 +1346,10 @@ int DesktopShell::run() {
             errorText = upsertError;
             errorTitle = "Could not update the library";
             openError = true;
-            return;
+            return true;
         }
         saveLibrary();
+        return true;
     };
 
     const auto showOpenDialog = [&]() {
@@ -937,15 +1445,26 @@ int DesktopShell::run() {
                 event.window.windowID == SDL_GetWindowID(session.window)) {
                 requestExit = true;
             }
-            if (event.type == SDL_EVENT_AUDIO_DEVICE_REMOVED && !event.adevice.recording && session.audio != nullptr &&
-                event.adevice.which == SDL_GetAudioStreamDevice(session.audio)) {
-                log::info("The audio device was disconnected. Switching to the default playback device.");
-                const std::string gone = config_.audioDevice;
-                config_.audioDevice.clear();
-                if (settingsDraft.audioDevice == gone) {
-                    settingsDraft.audioDevice.clear();
+            if (event.type == SDL_EVENT_AUDIO_DEVICE_REMOVED && !event.adevice.recording) {
+                bool disconnected = false;
+                {
+                    std::lock_guard playback(audioLock);
+                    disconnected = session.audio != nullptr &&
+                                   event.adevice.which == SDL_GetAudioStreamDevice(session.audio);
                 }
-                openPlayback("");
+                if (disconnected) {
+                    log::info("The audio device was disconnected. Switching to the default playback device.");
+                    const std::string gone = config_.audioDevice;
+                    config_.audioDevice.clear();
+                    if (settingsDraft.audioDevice == gone) {
+                        settingsDraft.audioDevice.clear();
+                    }
+                    openPlayback("");
+                }
+            }
+            if (event.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && capturePad != nullptr) {
+                *capturePad = static_cast<int>(event.gbutton.button);
+                capturePad = nullptr;
             }
             if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat) {
                 if (captureBinding != nullptr) {
@@ -962,10 +1481,12 @@ int DesktopShell::run() {
                     if (ctrl && !alt && code == config_.input.openGame) {
                         showOpenDialog();
                     } else if (ctrl && !alt && code == config_.input.reset && system_.loaded()) {
+                        std::lock_guard lock(gate);
                         system_.reset();
                     } else if (alt && !ctrl && code == config_.input.fullscreen) {
                         setFullscreen(!config_.fullscreen);
                     } else if (!ctrl && !alt && !shift && code == config_.input.pause && system_.loaded()) {
+                        std::lock_guard lock(gate);
                         system_.setPaused(!system_.paused());
                     } else if (!ctrl && !alt && !shift && code == config_.input.quickSave && system_.loaded()) {
                         saveSelectedSlot();
@@ -1029,49 +1550,33 @@ int DesktopShell::run() {
             }
         }
 
-        const auto now = std::chrono::steady_clock::now();
-        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - previous).count();
-        previous = now;
-        const std::int64_t period = system_.framePeriodNs();
-        if (system_.loaded() && !system_.paused()) {
-            accumulated += elapsed;
-            if (accumulated >= period) {
-                const auto emulationStart = std::chrono::steady_clock::now();
-                system_.runFrame();
-                lastEmulationMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - emulationStart).count();
-                ++emulatedFrames;
-                const AudioView audio = system_.audio();
-                if (session.audio != nullptr && config_.muted && !wasMuted) {
-                    SDL_ClearAudioStream(session.audio);
-                }
-                wasMuted = config_.muted;
-                if (session.audio != nullptr && audio.samples != nullptr && audio.count > 0 &&
-                    SDL_GetAudioStreamQueued(session.audio) <
-                        audioQueueSamples(config_.audioLatency) * static_cast<int>(sizeof(float))) {
-                    audioScratch.resize(static_cast<std::size_t>(audio.count));
-                    if (config_.muted || config_.volume <= 0.0f) {
-                        std::fill(audioScratch.begin(), audioScratch.end(), 0.0f);
-                    } else {
-                        const float volume = std::min(config_.volume, 1.0f);
-                        for (int index = 0; index < audio.count; ++index) {
-                            audioScratch[static_cast<std::size_t>(index)] = audio.samples[index] * volume;
-                        }
-                    }
-                    SDL_PutAudioStreamData(
-                        session.audio, audioScratch.data(), audio.count * static_cast<int>(sizeof(float)));
-                }
-                accumulated -= period;
-                if (accumulated > period) {
-                    accumulated = 0;
-                }
-            }
-        } else {
-            accumulated = period;
-        }
-
+        refreshPads();
         const bool uiOwnsInput = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopup);
-        system_.setController(0, system_.loaded() && !uiOwnsInput ? controllerButtons(config_.input) : 0);
-        system_.setController(1, 0);
+        if (uiOwnsInput) {
+            livePort0.store(0);
+            livePort1.store(0);
+        } else {
+            livePort0.store(padButtons(config_.controllers.port1, config_.controllers.pad1));
+            livePort1.store(padButtons(config_.controllers.port2, config_.controllers.pad2));
+        }
+        {
+            std::lock_guard lock(gate);
+            viewLoaded = system_.loaded();
+            viewPaused = system_.paused();
+            viewInfo = viewLoaded ? system_.info() : SystemInfo{};
+            lastEmulationMs = shownEmulationMs;
+            if (published.serial != queuedSerial) {
+                viewPicture = published.rgba;
+                viewWidth = published.width;
+                viewHeight = published.height;
+                queuedSerial = published.serial;
+            }
+        }
+        if (session.audio != nullptr && config_.muted && !wasMuted) {
+            std::lock_guard playback(audioLock);
+            SDL_ClearAudioStream(session.audio);
+        }
+        wasMuted = config_.muted;
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL3_NewFrame();
@@ -1159,6 +1664,10 @@ int DesktopShell::run() {
                 ImGuiChildFlags_None,
                 ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
             ImGui::PopStyleVar();
+            // The client window padding is zero. A menu popup copies the style
+            // when it opens, so the inset and the row gap have to be set here.
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f * uiScale, 6.0f * uiScale));
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f * uiScale, 6.0f * uiScale));
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("File")) {
                     if (ImGui::MenuItem("Open Game...", openShortcut.c_str())) {
@@ -1184,9 +1693,11 @@ int DesktopShell::run() {
                     }
                     ImGui::MenuItem("Library", nullptr, &config_.showLibrary);
                     ImGui::Separator();
-                    if (ImGui::MenuItem("Close Game", nullptr, false, system_.loaded())) {
+                    if (ImGui::MenuItem("Close Game", nullptr, false, viewLoaded)) {
                         flushBattery();
+                        std::lock_guard lock(gate);
                         system_.unload();
+                        viewLoaded = false;
                     }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Exit")) {
@@ -1195,21 +1706,34 @@ int DesktopShell::run() {
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Emulation")) {
-                    const char* pauseLabel = system_.paused() ? "Resume" : "Pause";
-                    if (ImGui::MenuItem(pauseLabel, pauseShortcut.c_str(), false, system_.loaded())) {
+                    const char* pauseLabel = viewPaused ? "Resume" : "Pause";
+                    if (ImGui::MenuItem(pauseLabel, pauseShortcut.c_str(), false, viewLoaded)) {
+                        std::lock_guard lock(gate);
                         system_.setPaused(!system_.paused());
+                        viewPaused = system_.paused();
                     }
-                    if (ImGui::MenuItem("Reset", resetShortcut.c_str(), false, system_.loaded())) {
+                    if (ImGui::MenuItem("Reset", resetShortcut.c_str(), false, viewLoaded)) {
+                        std::lock_guard lock(gate);
                         system_.reset();
                     }
+                    if (ImGui::MenuItem("Frame Step", nullptr, false, viewLoaded)) {
+                        std::lock_guard lock(gate);
+                        system_.setPaused(true);
+                        requestStep.store(true);
+                        viewPaused = true;
+                    }
+                    if (ImGui::MenuItem("Fast Forward", nullptr, fastOn, viewLoaded)) {
+                        fastOn = !fastOn;
+                        fastForward.store(fastOn);
+                    }
                     ImGui::Separator();
-                    if (ImGui::MenuItem("Save State", saveShortcut.c_str(), false, system_.loaded())) {
+                    if (ImGui::MenuItem("Save State", saveShortcut.c_str(), false, viewLoaded)) {
                         saveSelectedSlot();
                     }
-                    if (ImGui::MenuItem("Load State", loadShortcut.c_str(), false, system_.loaded())) {
+                    if (ImGui::MenuItem("Load State", loadShortcut.c_str(), false, viewLoaded)) {
                         loadSelectedSlot();
                     }
-                    if (ImGui::MenuItem("State Slots...", nullptr, false, system_.loaded())) {
+                    if (ImGui::MenuItem("State Slots...", nullptr, false, viewLoaded)) {
                         openStateSlots = true;
                     }
                     ImGui::EndMenu();
@@ -1289,6 +1813,10 @@ int DesktopShell::run() {
                     if (ImGui::MenuItem("Picture...")) {
                         openPicture = true;
                     }
+                    ImGui::MenuItem("Overscan", nullptr, &config_.overscan);
+                    if (ImGui::MenuItem("Screenshot", nullptr, false, viewLoaded && !viewPicture.empty())) {
+                        saveScreenshot();
+                    }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Fullscreen", fullscreenShortcut.c_str(), config_.fullscreen)) {
                         setFullscreen(!config_.fullscreen);
@@ -1311,6 +1839,9 @@ int DesktopShell::run() {
                     if (ImGui::MenuItem("Settings...")) {
                         openSettings = true;
                     }
+                    if (ImGui::MenuItem("Controllers...")) {
+                        openControllers = true;
+                    }
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Help")) {
@@ -1327,6 +1858,7 @@ int DesktopShell::run() {
                 }
                 ImGui::EndMenuBar();
             }
+            ImGui::PopStyleVar(2);
 
             const float toolbarHeight = ImGui::GetFrameHeight() + 10.0f;
             const ImVec2 bandMin = ImGui::GetCursorScreenPos();
@@ -1342,12 +1874,15 @@ int DesktopShell::run() {
                 showOpenDialog();
             }
             ImGui::SameLine();
-            ImGui::BeginDisabled(!system_.loaded());
-            if (ImGui::Button(system_.paused() ? "Resume" : "Pause")) {
+            ImGui::BeginDisabled(!viewLoaded);
+            if (ImGui::Button(viewPaused ? "Resume" : "Pause")) {
+                std::lock_guard lock(gate);
                 system_.setPaused(!system_.paused());
+                viewPaused = system_.paused();
             }
             ImGui::SameLine();
             if (ImGui::Button("Reset")) {
+                std::lock_guard lock(gate);
                 system_.reset();
             }
             ImGui::SameLine();
@@ -1398,14 +1933,30 @@ int DesktopShell::run() {
                     std::error_code missing;
                     const bool exists = std::filesystem::is_regular_file(pathFromUtf8(game.path), missing);
                     const std::string label = exists ? game.title : game.title + " (missing)";
-                    if (ImGui::Selectable(label.c_str(), selectedGame == game.path)) {
+                    const float line = ImGui::GetTextLineHeight();
+                    const bool hasDetail = !game.detail.empty();
+                    const float rowHeight = hasDetail ? line * 2.0f + 6.0f : line + 4.0f;
+                    const ImVec2 rowPos = ImGui::GetCursorScreenPos();
+                    if (ImGui::Selectable(
+                            "##game",
+                            selectedGame == game.path,
+                            ImGuiSelectableFlags_AllowDoubleClick,
+                            ImVec2(0.0f, rowHeight))) {
                         selectedGame = game.path;
-                        if (exists && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                            openRom(pathFromUtf8(game.path));
+                        if (exists && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) &&
+                            openRom(pathFromUtf8(game.path))) {
+                            focusPicture = true;
                         }
                     }
-                    if (!game.detail.empty()) {
-                        ImGui::TextDisabled("%s", game.detail.c_str());
+                    ImDrawList* listDraw = ImGui::GetWindowDrawList();
+                    const ImVec2 textPos(rowPos.x + 4.0f, rowPos.y + 2.0f);
+                    listDraw->AddText(
+                        textPos, ImGui::GetColorU32(exists ? ImGuiCol_Text : ImGuiCol_TextDisabled), label.c_str());
+                    if (hasDetail) {
+                        listDraw->AddText(
+                            ImVec2(textPos.x, textPos.y + line + 2.0f),
+                            ImGui::GetColorU32(ImGuiCol_TextDisabled),
+                            game.detail.c_str());
                     }
                     ImGui::PopID();
                 }
@@ -1415,7 +1966,9 @@ int DesktopShell::run() {
                     !selectedGame.empty() && std::filesystem::is_regular_file(pathFromUtf8(selectedGame), selectedError);
                 ImGui::BeginDisabled(!canPlay);
                 if (ImGui::Button("Play")) {
-                    openRom(pathFromUtf8(selectedGame));
+                    if (openRom(pathFromUtf8(selectedGame))) {
+                        focusPicture = true;
+                    }
                 }
                 ImGui::EndDisabled();
                 ImGui::SameLine();
@@ -1430,13 +1983,23 @@ int DesktopShell::run() {
                 ImGui::SameLine();
             }
             ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 1.0f));
+            if (focusPicture) {
+                ImGui::SetNextWindowFocus();
+                focusPicture = false;
+            }
             ImGui::BeginChild(
                 "##viewport",
                 ImVec2(0.0f, viewportHeight),
                 ImGuiChildFlags_Borders,
                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-            const FrameView frame = system_.frame();
-            if (system_.loaded() && frame.rgba != nullptr && frame.width > 0 && frame.height > 0) {
+            std::vector<std::uint8_t> presented;
+            int presentWidth = 0;
+            int presentHeight = 0;
+            if (!viewPicture.empty()) {
+                cropPicture(viewPicture, viewWidth, viewHeight, config_.overscan ? 8 : 0, presented, presentWidth, presentHeight);
+            }
+            if (viewLoaded && !presented.empty() && presentWidth > 0 && presentHeight > 0) {
+                const FrameView frame{presented.data(), presentWidth, presentHeight};
                 uploadFrame(texture.id, frame);
                 const float availW = ImGui::GetContentRegionAvail().x;
                 const float availH = ImGui::GetContentRegionAvail().y;
@@ -1481,11 +2044,13 @@ int DesktopShell::run() {
             ImGui::PopStyleColor();
 
             std::string status = "No game loaded";
-            if (system_.loaded()) {
-                const SystemInfo info = system_.info();
-                status = info.title + " - " + info.detail;
-                if (system_.paused()) {
+            if (viewLoaded) {
+                status = viewInfo.title + " - " + viewInfo.detail;
+                if (viewPaused) {
                     status += " - Paused";
+                }
+                if (fastOn) {
+                    status += " - Fast";
                 }
             }
             if (!scaleStatus.empty()) {
@@ -1530,6 +2095,74 @@ int DesktopShell::run() {
                 versionLabel.c_str());
             draw->PopClipRect();
 
+            if (openControllers) {
+                controllerDraft = config_.controllers;
+                capturePad = nullptr;
+                openControllers = false;
+                ImGui::OpenPopup("Controllers");
+            }
+            if (beginClassicPopup("Controllers", palette, ImGuiWindowFlags_AlwaysAutoResize)) {
+                const auto portRow = [&](const char* label, std::string& device, GamepadMap& map) {
+                    ImGui::SeparatorText(label);
+                    const char* current = device.empty() ? "None" : device.c_str();
+                    if (ImGui::BeginCombo((std::string("Device##") + label).c_str(), current)) {
+                        if (ImGui::Selectable("None", device.empty())) {
+                            device.clear();
+                        }
+                        if (ImGui::Selectable("Keyboard", device == "keyboard")) {
+                            device = "keyboard";
+                        }
+                        for (const OpenPad& pad : pads) {
+                            ImGui::PushID(static_cast<int>(pad.id));
+                            if (ImGui::Selectable(pad.name.c_str(), device == pad.name)) {
+                                device = pad.name;
+                            }
+                            ImGui::PopID();
+                        }
+                        ImGui::EndCombo();
+                    }
+                    if (device == "keyboard") {
+                        ImGui::TextUnformatted("Keyboard uses the keys in Settings.");
+                    } else if (!device.empty()) {
+                        const auto bind = [&](const char* name, int& button) {
+                            const std::string caption =
+                                std::string(name) + ": " + (capturePad == &button ? "..." : gamepadButtonName(button));
+                            if (ImGui::Button(caption.c_str())) {
+                                capturePad = &button;
+                            }
+                        };
+                        bind("A", map.a);
+                        ImGui::SameLine();
+                        bind("B", map.b);
+                        ImGui::SameLine();
+                        bind("Select", map.select);
+                        ImGui::SameLine();
+                        bind("Start", map.start);
+                        bind("Up", map.up);
+                        ImGui::SameLine();
+                        bind("Down", map.down);
+                        ImGui::SameLine();
+                        bind("Left", map.left);
+                        ImGui::SameLine();
+                        bind("Right", map.right);
+                        ImGui::TextUnformatted("Choose a button, then press it on the controller.");
+                    }
+                };
+                portRow("Port 1", controllerDraft.port1, controllerDraft.pad1);
+                portRow("Port 2", controllerDraft.port2, controllerDraft.pad2);
+                if (ImGui::Button("OK", ImVec2(75.0f, 0.0f))) {
+                    config_.controllers = controllerDraft;
+                    capturePad = nullptr;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(75.0f, 0.0f))) {
+                    capturePad = nullptr;
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndPopup();
+            }
+
             if (openSettings) {
                 settingsDraft = config_;
                 captureBinding = nullptr;
@@ -1554,6 +2187,8 @@ int DesktopShell::run() {
                     const bool fullscreenChanged = settingsDraft.fullscreen != wasFullscreen;
                     const int keptWidth = config_.windowWidth;
                     const int keptHeight = config_.windowHeight;
+                    settingsDraft.controllers = config_.controllers;
+                    settingsDraft.overscan = config_.overscan;
                     config_ = settingsDraft;
                     config_.windowWidth = keptWidth;
                     config_.windowHeight = keptHeight;
@@ -1580,6 +2215,7 @@ int DesktopShell::run() {
                         openPlayback(config_.audioDevice);
                     }
                     if (config_.muted && session.audio != nullptr) {
+                        std::lock_guard playback(audioLock);
                         SDL_ClearAudioStream(session.audio);
                     }
                     if (fullscreenChanged) {
@@ -1879,7 +2515,10 @@ int DesktopShell::run() {
                         std::string error;
                         if (!file.empty() && std::filesystem::is_regular_file(file, failure) &&
                             readFile(file, 4 * 1024 * 1024, bytes, error)) {
-                            system_.inspectState(bytes.data(), bytes.size(), preview);
+                            {
+                                std::lock_guard lock(gate);
+                                system_.inspectState(bytes.data(), bytes.size(), preview);
+                            }
                         }
                         slotPreviews[static_cast<std::size_t>(slot)] = preview;
                         const std::string description = preview.readable ? preview.description : std::string{};
@@ -2000,13 +2639,17 @@ int DesktopShell::run() {
         const double fpsElapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - fpsWindow).count();
         if (fpsElapsed >= 0.5) {
             hostFps = static_cast<double>(hostFrames) / fpsElapsed;
-            emulatedFps = static_cast<double>(emulatedFrames) / fpsElapsed;
+            emulatedFps = static_cast<double>(pacedFrames.exchange(0)) / fpsElapsed;
             hostFrames = 0;
-            emulatedFrames = 0;
             fpsWindow = std::chrono::steady_clock::now();
         }
     }
 
+    stopWorker.store(true);
+    if (emulation.joinable()) {
+        emulation.join();
+    }
+    closePads();
     flushBattery();
     if ((SDL_GetWindowFlags(session.window) & SDL_WINDOW_FULLSCREEN) == 0) {
         SDL_GetWindowSize(session.window, &windowWidth_, &windowHeight_);
