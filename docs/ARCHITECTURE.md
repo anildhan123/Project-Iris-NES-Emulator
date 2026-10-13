@@ -74,7 +74,7 @@ Schema version 3. A version 1 file, which has no `video` object, and a version 2
 {
   "version": 3,
   "ui": {
-    "theme": "xp-blue",
+    "theme": "blue",
     "windowWidth": 1024,
     "windowHeight": 768
   },
@@ -124,7 +124,7 @@ Schema version 3. A version 1 file, which has no `video` object, and a version 2
 }
 ```
 
-`theme` is `xp-blue`, `xp-olive`, or `xp-silver`. Window width is 640–7680 and height is 480–4320. `level` is `trace`, `debug`, `info`, `warn`, `error`, or `critical`. `scaleMode` is `fit` or `integer`. `integerScale` is 1–6. `aspectRatio` is `pixel` or `4:3`. `filter` is `nearest`, `smooth`, `sharp`, or `crt`. Brightness is −0.5–0.5, contrast is 0.5–2, saturation is 0–2, gamma is 0.4–2.5, sharpness is 1–4, and scanlines are 0–1. `volume` is 0–1. `latency` is `short`, `balanced`, or `long`. An empty `device` selects the default playback device. Input values are key codes from 1 to 511. The eight controller keys are unique. Quick save, quick load, and pause are unique and are not controller keys. Open and Reset both use Ctrl, so they conflict only with each other. Fullscreen uses Alt, so it may reuse Return. Unknown fields are rejected. Do not add a setting until the application implements it.
+`theme` is `blue`, `olive`, or `silver`. A file that still contains `xp-blue`, `xp-olive`, or `xp-silver` loads, and the next save writes the current name. The desktop draws its own title bar, caption buttons, and border. Window width is 640–7680 and height is 480–4320. `level` is `trace`, `debug`, `info`, `warn`, `error`, or `critical`. `scaleMode` is `fit` or `integer`. `integerScale` is 1–6. `aspectRatio` is `pixel` or `4:3`. `filter` is `nearest`, `smooth`, `sharp`, or `crt`. Brightness is −0.5–0.5, contrast is 0.5–2, saturation is 0–2, gamma is 0.4–2.5, sharpness is 1–4, and scanlines are 0–1. `volume` is 0–1. `latency` is `short`, `balanced`, or `long`. An empty `device` selects the default playback device. Input values are key codes from 1 to 511. The eight controller keys are unique. Quick save, quick load, and pause are unique and are not controller keys. Open and Reset both use Ctrl, so they conflict only with each other. Fullscreen uses Alt, so it may reuse Return. Unknown fields are rejected. Do not add a setting until the application implements it.
 
 The built-in shaders are original and compiled into the frontend. Each one has an id, a display name, a version, a stage (`sampling` or `color`), a cost, and parameters. Sampling runs before color. A compile or link failure leaves the crisp-pixel path in place. The data directory's `shaders` folder is not read.
 

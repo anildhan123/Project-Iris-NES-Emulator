@@ -1178,7 +1178,7 @@ Example conceptual settings:
     "rewindEnabled": false
   },
   "ui": {
-    "theme": "xp-blue",
+    "theme": "blue",
     "showLibrarySidebar": true
   }
 }

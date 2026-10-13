@@ -15,9 +15,9 @@ inline constexpr int kMaxWindowWidth = 7680;
 inline constexpr int kMaxWindowHeight = 4320;
 
 enum class Theme {
-    XpBlue,
-    XpOlive,
-    XpSilver,
+    Blue,
+    Olive,
+    Silver,
 };
 
 enum class LogLevel {
@@ -39,7 +39,7 @@ struct Config {
     static constexpr int kCurrentVersion = 3;
 
     int version = kCurrentVersion;
-    Theme theme = Theme::XpBlue;
+    Theme theme = Theme::Blue;
     int windowWidth = 1024;
     int windowHeight = 768;
     LogLevel logLevel = LogLevel::Info;

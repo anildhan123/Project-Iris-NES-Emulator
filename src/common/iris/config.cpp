@@ -15,25 +15,25 @@ using Json = nlohmann::ordered_json;
 
 const char* themeName(Theme theme) {
     switch (theme) {
-    case Theme::XpBlue:
-        return "xp-blue";
-    case Theme::XpOlive:
-        return "xp-olive";
-    case Theme::XpSilver:
-        return "xp-silver";
+    case Theme::Blue:
+        return "blue";
+    case Theme::Olive:
+        return "olive";
+    case Theme::Silver:
+        return "silver";
     }
-    return "xp-blue";
+    return "blue";
 }
 
 std::optional<Theme> themeFromName(std::string_view name) {
-    if (name == "xp-blue") {
-        return Theme::XpBlue;
+    if (name == "blue" || name == "xp-blue") {
+        return Theme::Blue;
     }
-    if (name == "xp-olive") {
-        return Theme::XpOlive;
+    if (name == "olive" || name == "xp-olive") {
+        return Theme::Olive;
     }
-    if (name == "xp-silver") {
-        return Theme::XpSilver;
+    if (name == "silver" || name == "xp-silver") {
+        return Theme::Silver;
     }
     return std::nullopt;
 }
@@ -209,7 +209,7 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
         }
         const auto theme = themeFromName(ui["theme"].get<std::string>());
         if (!theme.has_value()) {
-            return invalid("ui.theme must be xp-blue, xp-olive, or xp-silver.");
+            return invalid("ui.theme must be blue, olive, or silver.");
         }
         if (!ui["windowWidth"].is_number_integer() || !ui["windowHeight"].is_number_integer()) {
             return invalid("Window width and height must be integers.");

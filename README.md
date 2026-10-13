@@ -38,7 +38,7 @@ cmake --build --preset windows-msvc-release
 .\build\windows-msvc-debug\bin\Release\iris.exe --profile .\build\windows-msvc-debug\bin\Release\iris_demo.nes
 ```
 
-Version 0.9.0 is an unsigned build. It is not a signed installer, and the macOS app is not notarized. `cpack -G ZIP -C Release` from the Windows build directory packs the Release executable, Iris Demo, this readme, and the license files. What that build was measured to do, and what it does not claim, is in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+Version 0.10.0 is an unsigned build. It is not a signed installer, and the macOS app is not notarized. `cpack -G ZIP -C Release` from the Windows build directory packs the Release executable, Iris Demo, this readme, and the license files. What that build was measured to do, and what it does not claim, is in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 Linux and macOS use the same desktop sources:
 
@@ -83,7 +83,7 @@ Open Game uses the system file dialog. Scan Folder adds `*.nes` files from that 
 
 The default controls are the arrow keys, Z (A), X (B), Right Shift (Select), and Enter (Start). Numpad Enter also presses Start. Escape pauses. F5 saves the selected slot and F7 loads it. Ctrl+R resets. Shift+1 through Shift+9 select slots 1–9, and Shift+0 selects slot 10. Options → Settings can change those keys, the picture, and the audio device. State Slots shows a thumbnail, the game title, the time, and a description for each slot. Alt+Enter toggles borderless fullscreen.
 
-The picture is the PPU's 256×240 output. Fit uses the largest whole multiple that fits. A fixed 1×–6× scale that does not fit steps down, and the status bar says so. Pixel aspect is the default; 4:3 is the television shape. Original, Smooth, Sharp, and CRT are presentation presets. Picture changes brightness, contrast, saturation, and gamma. Performance adds frame rate and timing to the status bar. None of these rewrite the emulated picture, so save thumbnails stay unfiltered. If the presentation shader cannot start, the window shows crisp pixels. The status bar names the loaded game. Themes are `xp-blue`, `xp-olive`, and `xp-silver`, read from the configuration file.
+The picture is the PPU's 256×240 output. Fit uses the largest whole multiple that fits. A fixed 1×–6× scale that does not fit steps down, and the status bar says so. Pixel aspect is the default; 4:3 is the television shape. Original, Smooth, Sharp, and CRT are presentation presets. Picture changes brightness, contrast, saturation, and gamma. Performance adds frame rate and timing to the status bar. None of these rewrite the emulated picture, so save thumbnails stay unfiltered. If the presentation shader cannot start, the window shows crisp pixels. The status bar names the loaded game. The window draws its own title bar, caption buttons, and border. Themes are `blue`, `olive`, and `silver`.
 
 After a build, the original demo is next to the executable:
 
@@ -103,7 +103,7 @@ Configuration, logs, the game library, save states, and battery RAM are stored o
 {
   "version": 3,
   "ui": {
-    "theme": "xp-blue",
+    "theme": "blue",
     "windowWidth": 1024,
     "windowHeight": 768
   },

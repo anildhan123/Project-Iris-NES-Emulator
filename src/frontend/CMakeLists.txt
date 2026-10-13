@@ -3,8 +3,8 @@ add_library(iris_frontend STATIC
     iris/desktop_shell.hpp
     iris/picture_pass.cpp
     iris/picture_pass.hpp
-    iris/xp_theme.cpp
-    iris/xp_theme.hpp
+    iris/shell_theme.cpp
+    iris/shell_theme.hpp
 )
 
 target_include_directories(iris_frontend PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

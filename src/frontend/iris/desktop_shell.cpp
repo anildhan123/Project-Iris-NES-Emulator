@@ -5,7 +5,7 @@
 #include "iris/paths.hpp"
 #include "iris/picture_pass.hpp"
 #include "iris/version.hpp"
-#include "iris/xp_theme.hpp"
+#include "iris/shell_theme.hpp"
 
 #ifndef SDL_MAIN_HANDLED
 #define SDL_MAIN_HANDLED
@@ -152,7 +152,140 @@ void hideSpawnedConsole() {
 #endif
 }
 
-void drawModal(const char* title, const char* body, bool& open) {
+struct WindowChrome {
+    int width = 0;
+    int height = 0;
+    int border = 0;
+    int titleBottom = 0;
+    int grab = 8;
+    SDL_Rect buttons[3]{};
+    int buttonCount = 0;
+    bool resizable = false;
+};
+
+bool containsPoint(const SDL_Rect& rect, int x, int y) {
+    return x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h;
+}
+
+void updateTopCornerShape(SDL_Window* window, int radius) {
+#if defined(_WIN32)
+    if (window == nullptr) {
+        return;
+    }
+    SDL_PropertiesID properties = SDL_GetWindowProperties(window);
+    auto* hwnd = static_cast<HWND>(SDL_GetPointerProperty(properties, SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+    if (hwnd == nullptr) {
+        return;
+    }
+    RECT client{};
+    if (GetClientRect(hwnd, &client) == FALSE) {
+        return;
+    }
+    const int width = client.right - client.left;
+    const int height = client.bottom - client.top;
+    static HWND appliedWindow = nullptr;
+    static int appliedWidth = -1;
+    static int appliedHeight = -1;
+    static int appliedRadius = -1;
+    if (hwnd == appliedWindow && width == appliedWidth && height == appliedHeight && radius == appliedRadius) {
+        return;
+    }
+    appliedWindow = hwnd;
+    appliedWidth = width;
+    appliedHeight = height;
+    appliedRadius = radius;
+    if (radius <= 1 || width <= radius * 2 || height <= radius * 2) {
+        SetWindowRgn(hwnd, nullptr, TRUE);
+        return;
+    }
+    const int diameter = radius * 2;
+    HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, diameter, diameter);
+    if (region == nullptr) {
+        return;
+    }
+    // The round region curves every corner. Cover the bottom corners so only the top stays round.
+    HRGN squareBottom = CreateRectRgn(0, height - radius, width + 1, height + 1);
+    if (squareBottom != nullptr) {
+        CombineRgn(region, region, squareBottom, RGN_OR);
+        DeleteObject(squareBottom);
+    }
+    if (SetWindowRgn(hwnd, region, TRUE) == 0) {
+        DeleteObject(region);
+    }
+#else
+    (void)window;
+    (void)radius;
+#endif
+}
+
+SDL_HitTestResult SDLCALL chromeHitTest(SDL_Window*, const SDL_Point* area, void* data) {
+    const auto* chrome = static_cast<const WindowChrome*>(data);
+    if (chrome == nullptr || area == nullptr || chrome->border <= 0 || chrome->width <= 0 || chrome->height <= 0) {
+        return SDL_HITTEST_NORMAL;
+    }
+    const int x = area->x;
+    const int y = area->y;
+    for (int index = 0; index < chrome->buttonCount; ++index) {
+        if (containsPoint(chrome->buttons[index], x, y)) {
+            return SDL_HITTEST_NORMAL;
+        }
+    }
+    const int band = std::max(chrome->border, chrome->grab);
+    const bool left = x < band;
+    const bool right = x >= chrome->width - band;
+    const bool top = y < band;
+    const bool bottom = y >= chrome->height - band;
+    if (chrome->resizable) {
+        if (top && left) {
+            return SDL_HITTEST_RESIZE_TOPLEFT;
+        }
+        if (top && right) {
+            return SDL_HITTEST_RESIZE_TOPRIGHT;
+        }
+        if (bottom && left) {
+            return SDL_HITTEST_RESIZE_BOTTOMLEFT;
+        }
+        if (bottom && right) {
+            return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+        }
+        if (top) {
+            return SDL_HITTEST_RESIZE_TOP;
+        }
+        if (bottom) {
+            return SDL_HITTEST_RESIZE_BOTTOM;
+        }
+        if (left) {
+            return SDL_HITTEST_RESIZE_LEFT;
+        }
+        if (right) {
+            return SDL_HITTEST_RESIZE_RIGHT;
+        }
+    }
+    if (y < chrome->titleBottom && x >= chrome->border && x < chrome->width - chrome->border) {
+        return SDL_HITTEST_DRAGGABLE;
+    }
+    return SDL_HITTEST_NORMAL;
+}
+
+bool beginClassicPopup(const char* title, const ShellPalette& palette, ImGuiWindowFlags flags = 0) {
+    const ImVec4 bar(palette.titleBottom.red, palette.titleBottom.green, palette.titleBottom.blue, 1.0f);
+    const ImVec4 edge(palette.frame.red, palette.frame.green, palette.frame.blue, 1.0f);
+    const float scale = ImGui::GetStyle().FontScaleDpi > 1.0f ? ImGui::GetStyle().FontScaleDpi : 1.0f;
+    ImGui::PushStyleColor(ImGuiCol_TitleBg, bar);
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, bar);
+    ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed, bar);
+    ImGui::PushStyleColor(ImGuiCol_Border, edge);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 4.0f * scale);
+    const bool shown = ImGui::BeginPopupModal(title, nullptr, flags);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(4);
+    if (shown) {
+        paintDialogTitle(title, palette);
+    }
+    return shown;
+}
+
+void drawModal(const char* title, const char* body, bool& open, const ShellPalette& palette) {
     if (open) {
         ImGui::OpenPopup(title);
         open = false;
@@ -168,9 +301,21 @@ void drawModal(const char* title, const char* body, bool& open) {
     }
     ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowContentSize(ImVec2(wrapWidth, 0.0f));
-    if (!ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    const ImVec4 bar(palette.titleBottom.red, palette.titleBottom.green, palette.titleBottom.blue, 1.0f);
+    const ImVec4 edge(palette.frame.red, palette.frame.green, palette.frame.blue, 1.0f);
+    const float scale = ImGui::GetStyle().FontScaleDpi > 1.0f ? ImGui::GetStyle().FontScaleDpi : 1.0f;
+    ImGui::PushStyleColor(ImGuiCol_TitleBg, bar);
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, bar);
+    ImGui::PushStyleColor(ImGuiCol_TitleBgCollapsed, bar);
+    ImGui::PushStyleColor(ImGuiCol_Border, edge);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 4.0f * scale);
+    const bool shown = ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(4);
+    if (!shown) {
         return;
     }
+    paintDialogTitle(title, palette);
     ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + wrapWidth);
     ImGui::TextUnformatted(body);
     ImGui::PopTextWrapPos();
@@ -299,13 +444,17 @@ int DesktopShell::run() {
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
     const SDL_WindowFlags flags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIDDEN |
-                                  SDL_WINDOW_HIGH_PIXEL_DENSITY;
+                                  SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_BORDERLESS;
     session.window = SDL_CreateWindow(kProductName, windowWidth_, windowHeight_, flags);
     if (session.window == nullptr) {
         log::error(std::string("SDL_CreateWindow failed: ") + SDL_GetError());
         return 1;
     }
     SDL_SetWindowMinimumSize(session.window, kMinWindowWidth, kMinWindowHeight);
+    WindowChrome chrome;
+    if (!SDL_SetWindowHitTest(session.window, chromeHitTest, &chrome)) {
+        log::warn(std::string("The window frame cannot be dragged: ") + SDL_GetError());
+    }
 
     session.context = SDL_GL_CreateContext(session.window);
     if (session.context == nullptr) {
@@ -379,7 +528,7 @@ int DesktopShell::run() {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.IniFilename = nullptr;
 
-    applyXpTheme(config_.theme, contentScale);
+    applyShellTheme(config_.theme, contentScale);
 
     if (!ImGui_ImplSDL3_InitForOpenGL(session.window, session.context)) {
         log::error("ImGui SDL3 backend failed to initialize.");
@@ -398,7 +547,7 @@ int DesktopShell::run() {
     session.imguiBackends = true;
     loadUiFont();
 
-    XpPalette palette = xpPalette(config_.theme);
+    ShellPalette palette = shellPalette(config_.theme);
     const auto* glVersion = reinterpret_cast<const char*>(glGetString(GL_VERSION));
     if (glVersion != nullptr) {
         log::info(std::string("OpenGL ") + glVersion);
@@ -929,11 +1078,21 @@ int DesktopShell::run() {
         ImGui::NewFrame();
 
         const ImGuiViewport* viewport = ImGui::GetMainViewport();
+        const SDL_WindowFlags frameFlags = SDL_GetWindowFlags(session.window);
+        const bool fullscreen = (frameFlags & SDL_WINDOW_FULLSCREEN) != 0;
+        const bool maximized = (frameFlags & SDL_WINDOW_MAXIMIZED) != 0;
+        const float uiScale = contentScale < 1.0f ? 1.0f : contentScale;
+        const float frameBorder = fullscreen ? 0.0f : 4.0f * uiScale;
+        const float titleHeight = fullscreen ? 0.0f : std::max(26.0f, 28.0f * uiScale);
         ImGui::SetNextWindowPos(viewport->Pos);
         ImGui::SetNextWindowSize(viewport->Size);
         constexpr ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                                  ImGuiWindowFlags_NoSavedSettings |
-                                                 ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_MenuBar;
+                                                 ImGuiWindowFlags_NoBringToFrontOnFocus;
+        ImGui::PushStyleColor(
+            ImGuiCol_WindowBg, ImVec4(palette.frame.red, palette.frame.green, palette.frame.blue, 1.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
         if (ImGui::Begin("##client", nullptr, windowFlags)) {
             const auto chord = [](const char* prefix, int code) {
                 return prefix == nullptr ? scancodeLabel(code) : std::string(prefix) + scancodeLabel(code);
@@ -944,6 +1103,62 @@ int DesktopShell::run() {
             const std::string loadShortcut = scancodeLabel(config_.input.quickLoad);
             const std::string pauseShortcut = scancodeLabel(config_.input.pause);
             const std::string fullscreenShortcut = chord("Alt+", config_.input.fullscreen);
+            chrome.width = static_cast<int>(std::lround(viewport->Size.x));
+            chrome.height = static_cast<int>(std::lround(viewport->Size.y));
+            chrome.border = static_cast<int>(std::lround(frameBorder));
+            chrome.titleBottom = static_cast<int>(std::lround(frameBorder + titleHeight));
+            chrome.grab = static_cast<int>(std::lround(std::max(8.0f, 8.0f * uiScale)));
+            chrome.resizable = !fullscreen && !maximized;
+            chrome.buttonCount = 0;
+            const int cornerRadius =
+                fullscreen || maximized ? 0 : static_cast<int>(std::lround(std::max(8.0f, 8.0f * uiScale)));
+            updateTopCornerShape(session.window, cornerRadius);
+            if (!fullscreen) {
+                const ImVec2 titleMin(viewport->Pos.x + frameBorder, viewport->Pos.y + frameBorder);
+                const ImVec2 titleMax(viewport->Pos.x + viewport->Size.x - frameBorder, titleMin.y + titleHeight);
+                const TitleBar titleBar =
+                    drawTitleBar(titleMin, titleMax, kProductName, maximized, palette, frameBorder);
+                chrome.buttonCount = 3;
+                for (int index = 0; index < 3; ++index) {
+                    chrome.buttons[index].x =
+                        static_cast<int>(std::lround(titleBar.buttons[index].x - viewport->Pos.x));
+                    chrome.buttons[index].y =
+                        static_cast<int>(std::lround(titleBar.buttons[index].y - viewport->Pos.y));
+                    chrome.buttons[index].w = static_cast<int>(std::lround(titleBar.buttons[index].width));
+                    chrome.buttons[index].h = static_cast<int>(std::lround(titleBar.buttons[index].height));
+                }
+                if (titleBar.command == CaptionCommand::Minimize) {
+                    SDL_MinimizeWindow(session.window);
+                } else if (titleBar.command == CaptionCommand::Maximize) {
+                    SDL_MaximizeWindow(session.window);
+                } else if (titleBar.command == CaptionCommand::Restore) {
+                    SDL_RestoreWindow(session.window);
+                } else if (titleBar.command == CaptionCommand::Close) {
+                    requestExit = true;
+                }
+                ImGui::GetWindowDrawList()->AddRect(
+                    ImVec2(viewport->Pos.x + frameBorder, viewport->Pos.y + frameBorder),
+                    ImVec2(
+                        viewport->Pos.x + viewport->Size.x - frameBorder,
+                        viewport->Pos.y + viewport->Size.y - frameBorder),
+                    IM_COL32(255, 255, 255, 70),
+                    0.0f,
+                    0,
+                    1.0f);
+            }
+            ImGui::SetCursorPos(ImVec2(frameBorder, frameBorder + titleHeight));
+            const ImVec2 bodySize(
+                std::max(1.0f, viewport->Size.x - frameBorder * 2.0f),
+                std::max(1.0f, viewport->Size.y - frameBorder * 2.0f - titleHeight));
+            ImGui::PushStyleColor(
+                ImGuiCol_ChildBg, ImVec4(palette.face.red, palette.face.green, palette.face.blue, 1.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+            ImGui::BeginChild(
+                "##body",
+                bodySize,
+                ImGuiChildFlags_None,
+                ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            ImGui::PopStyleVar();
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("File")) {
                     if (ImGui::MenuItem("Open Game...", openShortcut.c_str())) {
@@ -1113,13 +1328,38 @@ int DesktopShell::run() {
                 ImGui::EndMenuBar();
             }
 
-            const ImVec2 accentStart = ImGui::GetCursorScreenPos();
-            const float accentWidth = ImGui::GetContentRegionAvail().x;
-            const ImU32 accent = ImGui::ColorConvertFloat4ToU32(
-                ImVec4(palette.accentRed, palette.accentGreen, palette.accentBlue, 1.0f));
-            ImGui::GetWindowDrawList()->AddRectFilled(
-                accentStart, ImVec2(accentStart.x + accentWidth, accentStart.y + 3.0f), accent);
-            ImGui::Dummy(ImVec2(0.0f, 3.0f));
+            const float toolbarHeight = ImGui::GetFrameHeight() + 10.0f;
+            const ImVec2 bandMin = ImGui::GetCursorScreenPos();
+            const float bandWidth = ImGui::GetContentRegionAvail().x;
+            const ImVec2 bandMax(bandMin.x + bandWidth, bandMin.y + toolbarHeight);
+            drawShadedBand(bandMin, bandMax, palette.toolbarTop, palette.toolbarBottom);
+            ImGui::GetWindowDrawList()->AddLine(
+                ImVec2(bandMin.x, bandMax.y - 1.0f),
+                ImVec2(bandMax.x, bandMax.y - 1.0f),
+                IM_COL32(140, 136, 120, 255));
+            ImGui::SetCursorScreenPos(ImVec2(bandMin.x + 8.0f, bandMin.y + 4.0f));
+            if (ImGui::Button("Open")) {
+                showOpenDialog();
+            }
+            ImGui::SameLine();
+            ImGui::BeginDisabled(!system_.loaded());
+            if (ImGui::Button(system_.paused() ? "Resume" : "Pause")) {
+                system_.setPaused(!system_.paused());
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset")) {
+                system_.reset();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Save")) {
+                saveSelectedSlot();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Load")) {
+                loadSelectedSlot();
+            }
+            ImGui::EndDisabled();
+            ImGui::SetCursorScreenPos(ImVec2(bandMin.x, bandMax.y));
 
             const float statusHeight = ImGui::GetFrameHeight() + 6.0f;
             const ImVec2 windowPos = ImGui::GetWindowPos();
@@ -1131,7 +1371,11 @@ int DesktopShell::run() {
             }
             std::string scaleStatus;
             if (config_.showLibrary) {
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
                 ImGui::BeginChild("##library", ImVec2(220.0f, viewportHeight), ImGuiChildFlags_Borders);
+                ImGui::PopStyleVar();
+                drawSectionHeader("Library", palette);
+                ImGui::Indent(6.0f);
                 ImGui::SetNextItemWidth(-1.0f);
                 ImGui::InputTextWithHint("##find", "Find", libraryQuery, sizeof(libraryQuery));
                 int sortIndex = librarySort == LibrarySort::LastPlayed ? 1 : 0;
@@ -1181,6 +1425,7 @@ int DesktopShell::run() {
                     openRemove = true;
                 }
                 ImGui::EndDisabled();
+                ImGui::Unindent(6.0f);
                 ImGui::EndChild();
                 ImGui::SameLine();
             }
@@ -1263,7 +1508,7 @@ int DesktopShell::run() {
 
             ImDrawList* draw = ImGui::GetWindowDrawList();
             const ImU32 face = ImGui::ColorConvertFloat4ToU32(
-                ImVec4(palette.faceRed, palette.faceGreen, palette.faceBlue, 1.0f));
+                ImVec4(palette.face.red, palette.face.green, palette.face.blue, 1.0f));
             const ImU32 text = IM_COL32(0, 0, 0, 255);
             draw->PushClipRect(
                 ImVec2(windowPos.x, statusTop),
@@ -1271,7 +1516,12 @@ int DesktopShell::run() {
                 false);
             draw->AddRectFilled(
                 ImVec2(windowPos.x, statusTop), ImVec2(windowPos.x + windowSize.x, windowPos.y + windowSize.y), face);
-            draw->AddLine(ImVec2(windowPos.x, statusTop), ImVec2(windowPos.x + windowSize.x, statusTop), accent, 1.0f);
+            draw->AddLine(
+                ImVec2(windowPos.x, statusTop), ImVec2(windowPos.x + windowSize.x, statusTop), IM_COL32(255, 255, 255, 180));
+            draw->AddLine(
+                ImVec2(windowPos.x, statusTop + 1.0f),
+                ImVec2(windowPos.x + windowSize.x, statusTop + 1.0f),
+                IM_COL32(140, 136, 120, 255));
             draw->AddText(ImVec2(windowPos.x + 8.0f, statusTop + 4.0f), text, status.c_str());
             const ImVec2 versionSize = ImGui::CalcTextSize(versionLabel.c_str());
             draw->AddText(
@@ -1291,7 +1541,7 @@ int DesktopShell::run() {
             const ImGuiViewport* settingsViewport = ImGui::GetMainViewport();
             ImGui::SetNextWindowPos(settingsViewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
             ImGui::SetNextWindowSize(ImVec2(560.0f, 520.0f), ImGuiCond_Appearing);
-            if (ImGui::BeginPopupModal("Settings", nullptr)) {
+            if (beginClassicPopup("Settings", palette)) {
                 const auto applyDraft = [&]() {
                     if (bindingConflict(settingsDraft.input).has_value()) {
                         return;
@@ -1310,8 +1560,8 @@ int DesktopShell::run() {
                     settingsDraft.windowWidth = keptWidth;
                     settingsDraft.windowHeight = keptHeight;
                     if (themeChanged) {
-                        applyXpTheme(config_.theme, contentScale);
-                        palette = xpPalette(config_.theme);
+                        applyShellTheme(config_.theme, contentScale);
+                        palette = shellPalette(config_.theme);
                     }
                     if (logChanged) {
                         log::setLevel(config_.logLevel);
@@ -1356,8 +1606,10 @@ int DesktopShell::run() {
                 if (ImGui::BeginTabBar("settings-tabs")) {
                     if (ImGui::BeginTabItem("General")) {
                         int theme = static_cast<int>(settingsDraft.theme);
-                        if (ImGui::Combo("Theme", &theme, "XP Blue\0Olive Green\0Silver\0")) {
+                        if (ImGui::Combo("Theme", &theme, "Blue\0Olive\0Silver\0")) {
                             settingsDraft.theme = static_cast<Theme>(theme);
+                            applyShellTheme(settingsDraft.theme, contentScale);
+                            palette = shellPalette(settingsDraft.theme);
                         }
                         int level = static_cast<int>(settingsDraft.logLevel);
                         if (ImGui::Combo("Log level", &level, "Trace\0Debug\0Info\0Warn\0Error\0Critical\0")) {
@@ -1514,6 +1766,10 @@ int DesktopShell::run() {
                 ImGui::EndDisabled();
                 ImGui::SameLine();
                 if (ImGui::Button("Cancel", ImVec2(75.0f, 0.0f))) {
+                    if (settingsDraft.theme != config_.theme) {
+                        applyShellTheme(config_.theme, contentScale);
+                        palette = shellPalette(config_.theme);
+                    }
                     captureBinding = nullptr;
                     ImGui::CloseCurrentPopup();
                 }
@@ -1525,17 +1781,19 @@ int DesktopShell::run() {
                     ImGui::OpenPopup("Reset settings");
                     confirmReset = false;
                 }
-                if (ImGui::BeginPopupModal("Reset settings", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                if (beginClassicPopup("Reset settings", palette, ImGuiWindowFlags_AlwaysAutoResize)) {
                     ImGui::TextWrapped(
                         "Theme, picture, audio, and controls return to their defaults. The window size stays as it is.");
                     if (ImGui::Button("Reset", ImVec2(75.0f, 0.0f))) {
                         const int width = settingsDraft.windowWidth;
                         const int height = settingsDraft.windowHeight;
-                        const bool fullscreen = settingsDraft.fullscreen;
+                        const bool keepFullscreen = settingsDraft.fullscreen;
                         settingsDraft = ConfigService::defaults();
                         settingsDraft.windowWidth = width;
                         settingsDraft.windowHeight = height;
-                        settingsDraft.fullscreen = fullscreen;
+                        settingsDraft.fullscreen = keepFullscreen;
+                        applyShellTheme(settingsDraft.theme, contentScale);
+                        palette = shellPalette(settingsDraft.theme);
                         captureBinding = nullptr;
                         ImGui::CloseCurrentPopup();
                     }
@@ -1551,7 +1809,7 @@ int DesktopShell::run() {
                 ImGui::OpenPopup("Remove from library");
                 openRemove = false;
             }
-            if (ImGui::BeginPopupModal("Remove from library", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            if (beginClassicPopup("Remove from library", palette, ImGuiWindowFlags_AlwaysAutoResize)) {
                 ImGui::TextWrapped("Remove this game from the library? The file stays where it is.");
                 if (ImGui::Button("Remove", ImVec2(75.0f, 0.0f))) {
                     if (LibraryService::remove(library, removePath)) {
@@ -1568,12 +1826,12 @@ int DesktopShell::run() {
                 }
                 ImGui::EndPopup();
             }
-            drawModal("About Iris Emulator", aboutText.c_str(), openAbout);
+            drawModal("About Iris Emulator", aboutText.c_str(), openAbout, palette);
             if (openPicture) {
                 ImGui::OpenPopup("Picture");
                 openPicture = false;
             }
-            if (ImGui::BeginPopupModal("Picture", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            if (beginClassicPopup("Picture", palette, ImGuiWindowFlags_AlwaysAutoResize)) {
                 ImGui::TextUnformatted("These settings change how the picture is shown. The emulated image stays as the PPU drew it.");
                 ImGui::Text("Filter: %s", pictureFilterName(config_.filter));
                 ImGui::Spacing();
@@ -1610,7 +1868,7 @@ int DesktopShell::run() {
                 openStateSlots = false;
                 refreshStateSlots = true;
             }
-            if (ImGui::BeginPopupModal("State Slots", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            if (beginClassicPopup("State Slots", palette, ImGuiWindowFlags_AlwaysAutoResize)) {
                 if (refreshStateSlots) {
                     refreshStateSlots = false;
                     for (int slot = 0; slot < kStateSlots; ++slot) {
@@ -1710,7 +1968,8 @@ int DesktopShell::run() {
                 "Open only game files you have obtained and are legally entitled to use. "
                 "Owning an original cartridge does not by itself make every method of dumping or downloading a game lawful. "
                 "Those rules depend on jurisdiction and circumstance.",
-                openLegal);
+                openLegal,
+                palette);
             drawModal(
                 "Open Source Licenses",
                 "This build uses the following open-source libraries. Full license texts are in THIRD_PARTY_NOTICES.md beside the program.\n\n"
@@ -1720,14 +1979,20 @@ int DesktopShell::run() {
                 "nlohmann/json 3.12.0 — MIT License\n"
                 "Catch2 3.16.1 — Boost Software License 1.0. Test builds only. Not part of the application.\n\n"
                 "Iris does not include Tahoma. On Windows it reads the copy installed with the operating system.",
-                openLicenses);
-            drawModal(errorTitle.c_str(), errorText.c_str(), openError);
+                openLicenses,
+                palette);
+            drawModal(errorTitle.c_str(), errorText.c_str(), openError, palette);
+            ImGui::EndChild();
+            ImGui::PopStyleColor();
         }
         ImGui::End();
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor();
 
         ImGui::Render();
         glViewport(0, 0, static_cast<int>(io.DisplaySize.x), static_cast<int>(io.DisplaySize.y));
-        glClearColor(palette.faceRed, palette.faceGreen, palette.faceBlue, 1.0f);
+        const ShellColor& clearColor = fullscreen ? palette.face : palette.frame;
+        glClearColor(clearColor.red, clearColor.green, clearColor.blue, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(session.window);

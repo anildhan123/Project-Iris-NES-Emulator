@@ -91,3 +91,12 @@ The first portability run failed to configure on Ubuntu and failed to compile on
 - Version 0.9.0. On commit `0a1547c`, Windows run [38257147101](https://github.com/anildhan123/Project-Iris-NES-Emulator/actions/runs/38257147101) passed debug and release. Portability run [38257147297](https://github.com/anildhan123/Project-Iris-NES-Emulator/actions/runs/38257147297) passed Ubuntu debug and macOS debug: configure, build, `ctest`, and `iris --version`. Those jobs do not open a window. A green compile is not a visible desktop on Linux or macOS.
 
 Full mobile frontends and other consoles are not started.
+
+## Milestone 10 — Classic desktop shell (implemented)
+
+- The window draws its own frame: a shaded title bar, caption buttons, a border, a menu, and a toolbar. Minimize, maximize, restore, and close work. Drag the title to move the window, and drag the border to resize it. Fullscreen hides that frame.
+- The toolbar buttons are Open, Pause or Resume, Reset, Save, and Load. They call the same actions as the menus.
+- Themes are Blue, Olive, and Silver. Settings and the configuration file use `blue`, `olive`, and `silver`. A file that still contains `xp-blue`, `xp-olive`, or `xp-silver` loads, and the next save writes the current name.
+- Version 0.10.0. The picture hash, mappers, and timing are unchanged.
+
+Full mobile frontends and other consoles are not started.

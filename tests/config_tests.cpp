@@ -21,7 +21,8 @@ TEST_CASE("configuration defaults round-trip through JSON") {
     const auto parsed = iris::ConfigService::fromJson(iris::ConfigService::toJson(defaults));
     REQUIRE(parsed.ok());
     REQUIRE(parsed.value() == defaults);
-    REQUIRE(parsed.value().theme == iris::Theme::XpBlue);
+    REQUIRE(parsed.value().theme == iris::Theme::Blue);
+    REQUIRE(iris::ConfigService::toJson(defaults).find("\"blue\"") != std::string::npos);
     REQUIRE(parsed.value().windowWidth == 1024);
     REQUIRE(parsed.value().windowHeight == 768);
     REQUIRE(parsed.value().logLevel == iris::LogLevel::Info);
@@ -32,7 +33,7 @@ TEST_CASE("configuration accepts each theme and log level") {
         R"({
   "version": 1,
   "ui": {
-    "theme": "xp-olive",
+    "theme": "olive",
     "windowWidth": 7680,
     "windowHeight": 4320
   },
@@ -42,7 +43,7 @@ TEST_CASE("configuration accepts each theme and log level") {
 })";
     const auto parsed = iris::ConfigService::fromJson(json);
     REQUIRE(parsed.ok());
-    REQUIRE(parsed.value().theme == iris::Theme::XpOlive);
+    REQUIRE(parsed.value().theme == iris::Theme::Olive);
     REQUIRE(parsed.value().windowWidth == 7680);
     REQUIRE(parsed.value().windowHeight == 4320);
     REQUIRE(parsed.value().logLevel == iris::LogLevel::Critical);
@@ -50,6 +51,16 @@ TEST_CASE("configuration accepts each theme and log level") {
     const auto saved = iris::ConfigService::fromJson(iris::ConfigService::toJson(parsed.value()));
     REQUIRE(saved.ok());
     REQUIRE(saved.value() == parsed.value());
+}
+
+TEST_CASE("configuration still reads the previous theme ids") {
+    const auto parsed = iris::ConfigService::fromJson(
+        R"({"version":1,"ui":{"theme":"xp-silver","windowWidth":1024,"windowHeight":768},"logging":{"level":"info"}})");
+    REQUIRE(parsed.ok());
+    REQUIRE(parsed.value().theme == iris::Theme::Silver);
+    const std::string saved = iris::ConfigService::toJson(parsed.value());
+    REQUIRE(saved.find("\"silver\"") != std::string::npos);
+    REQUIRE(saved.find("xp-") == std::string::npos);
 }
 
 TEST_CASE("configuration rejects malformed JSON, unknown fields, themes, and sizes") {
@@ -91,7 +102,7 @@ TEST_CASE("configuration files save atomically and malformed files are left unch
     REQUIRE(missing.error().code == iris::ErrorCode::NotFound);
 
     iris::Config config = iris::ConfigService::defaults();
-    config.theme = iris::Theme::XpSilver;
+    config.theme = iris::Theme::Silver;
     config.windowWidth = 1280;
     config.windowHeight = 720;
     config.logLevel = iris::LogLevel::Warn;

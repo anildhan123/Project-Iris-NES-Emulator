@@ -26,7 +26,7 @@ TEST_CASE("a null core handle is ignored") {
     REQUIRE(iris_audio(nullptr, nullptr, nullptr) == nullptr);
     REQUIRE(iris_frame_period_ns(nullptr) == 0);
     REQUIRE(iris_content_id(nullptr, error, sizeof(error)) == 0);
-    REQUIRE(std::string(iris_version()) == "0.9.0");
+    REQUIRE(std::string(iris_version()) == "0.10.0");
 }
 
 TEST_CASE("the C core reproduces the pinned demo picture") {
