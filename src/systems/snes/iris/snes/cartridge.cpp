@@ -32,6 +32,22 @@ bool scoredHeader(const std::uint8_t* rom, std::size_t romSize, std::size_t base
     return (complement ^ checksum) == 0xFFFF && (rom[base + 0x15] & 0x0F) == expectMap;
 }
 
+Chip chipFor(int mapNibble, int type) {
+    if (mapNibble == 3 && (type == 0x32 || type == 0x33 || type == 0x34 || type == 0x35)) {
+        return Chip::Sa1;
+    }
+    if (mapNibble == 0 && (type == 0x13 || type == 0x14 || type == 0x15 || type == 0x1A)) {
+        return Chip::SuperFx;
+    }
+    if ((mapNibble == 0 || mapNibble == 1) && (type == 0x03 || type == 0x04)) {
+        return Chip::Dsp1;
+    }
+    return Chip::None;
+}
+
+constexpr const char* kUnsupported =
+    "This Super NES mapping is not supported yet. This build plays LoROM, HiROM, ExHiROM, DSP-1, Super FX, and SA-1.";
+
 }  // namespace
 
 Result<Cartridge> parseCartridge(const std::uint8_t* data, std::size_t size) {
@@ -52,26 +68,44 @@ Result<Cartridge> parseCartridge(const std::uint8_t* data, std::size_t size) {
     const std::uint8_t* rom = data + offset;
     const bool loHeader = scoredHeader(rom, romSize, 0x7FC0, 0);
     const bool hiHeader = scoredHeader(rom, romSize, 0xFFC0, 1);
-    bool hiRom = hiHeader && !loHeader;
-    if (!loHeader && !hiHeader) {
+    const bool saHeader = scoredHeader(rom, romSize, 0x7FC0, 3);
+    const bool exHeaderLow = scoredHeader(rom, romSize, 0xFFC0, 5);
+    const bool exHeaderHigh = romSize >= 0x40FFC0 + 0x20 && scoredHeader(rom, romSize, 0x40FFC0, 5);
+    bool exHiRom = (exHeaderLow || exHeaderHigh) && !loHeader && !saHeader;
+    bool hiRom = exHiRom || (hiHeader && !loHeader && !saHeader);
+    if (!loHeader && !hiHeader && !saHeader && !exHiRom) {
         const int loMap = romSize > 0x7FD5 ? (rom[0x7FD5] & 0x0F) : -1;
-        if (loMap == 1) {
+        const int hiMap = romSize > 0xFFD5 ? (rom[0xFFD5] & 0x0F) : -1;
+        const int loType = romSize > 0x7FD6 ? rom[0x7FD6] : -1;
+        if (hiMap == 5 && romSize >= 0xFFC0 + 0x30) {
+            exHiRom = true;
+            hiRom = true;
+        } else if (loMap == 1) {
             return Result<Cartridge>::failure(
                 ErrorCode::ValidationFailure, "HiROM header does not fit in this file.");
-        }
-        if (loMap != 0) {
-            return Result<Cartridge>::failure(
-                ErrorCode::ValidationFailure,
-                "This Super NES mapping is not supported yet. This build plays LoROM and HiROM.");
+        } else if (loMap == 3) {
+            if (chipFor(3, loType) != Chip::Sa1) {
+                return Result<Cartridge>::failure(ErrorCode::ValidationFailure, kUnsupported);
+            }
+        } else if (loMap != 0) {
+            return Result<Cartridge>::failure(ErrorCode::ValidationFailure, kUnsupported);
         }
     }
-    const std::size_t header = hiRom ? 0xFFC0 : 0x7FC0;
+    std::size_t header = hiRom ? 0xFFC0 : 0x7FC0;
+    if (exHiRom && exHeaderHigh && (!exHeaderLow || romSize > 0x400000)) {
+        header = 0x40FFC0;
+    }
     if (romSize < header + 0x30) {
         return Result<Cartridge>::failure(ErrorCode::ParseFailure, "The file has no Super NES header.");
     }
     Cartridge cartridge;
     cartridge.rom.assign(rom, rom + romSize);
     cartridge.hiRom = hiRom;
+    cartridge.exHiRom = exHiRom;
+    cartridge.chip = chipFor(rom[header + 0x15] & 0x0F, rom[header + 0x16]);
+    if ((rom[header + 0x15] & 0x0F) == 3 && cartridge.chip != Chip::Sa1) {
+        return Result<Cartridge>::failure(ErrorCode::ValidationFailure, kUnsupported);
+    }
     cartridge.title = titleAt(rom + header);
     if (cartridge.title.empty()) {
         cartridge.title = "Super NES";
@@ -83,6 +117,17 @@ Result<Cartridge> parseCartridge(const std::uint8_t* data, std::size_t size) {
     const int country = rom[header + 0x19];
     cartridge.standard = country >= 2 && country <= 12 ? TvStandard::Pal : TvStandard::Ntsc;
     return Result<Cartridge>::success(std::move(cartridge));
+}
+
+std::string boardText(const Cartridge& cartridge) {
+    std::string text = cartridge.chip == Chip::Sa1 ? "SA-1, " : (cartridge.exHiRom ? "ExHiROM, " : (cartridge.hiRom ? "HiROM, " : "LoROM, "));
+    text += cartridge.standard == TvStandard::Pal ? "PAL" : "NTSC";
+    if (cartridge.chip == Chip::Dsp1) {
+        text += ", DSP-1";
+    } else if (cartridge.chip == Chip::SuperFx) {
+        text += ", Super FX";
+    }
+    return text;
 }
 
 }  // namespace iris::systems::snes

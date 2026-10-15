@@ -70,7 +70,7 @@ bool SnesSystem::adopt(Cartridge cartridge, std::string& error) {
     contentId_ = sha256Hex(cartridge_.rom.data(), cartridge_.rom.size());
     standard_ = cartridge_.standard;
     bus_.power();
-    bus_.map(cartridge_.rom, cartridge_.hiRom, cartridge_.sramBytes);
+    bus_.map(cartridge_.rom, cartridge_.hiRom, cartridge_.exHiRom, cartridge_.sramBytes, cartridge_.chip);
     applyRegion();
     cpu_.reset(bus_);
     loaded_ = true;
@@ -93,6 +93,9 @@ void SnesSystem::reset() {
     }
     cpu_.reset(bus_);
     bus_.ppu().reset();
+    bus_.resetApu();
+    bus_.resetChips();
+    sa1_.resetTo(0);
 }
 
 void SnesSystem::powerCycle() {
@@ -102,7 +105,7 @@ void SnesSystem::powerCycle() {
     std::vector<std::uint8_t> saved;
     bus_.copySram(saved);
     bus_.power();
-    bus_.map(cartridge_.rom, cartridge_.hiRom, cartridge_.sramBytes);
+    bus_.map(cartridge_.rom, cartridge_.hiRom, cartridge_.exHiRom, cartridge_.sramBytes, cartridge_.chip);
     if (!saved.empty()) {
         (void)bus_.restoreSram(saved.data(), saved.size());
     }
@@ -134,28 +137,83 @@ void SnesSystem::runFrame() {
     const int lines = standard_ == TvStandard::Pal ? 312 : 262;
     const int frameCycles = kDotsPerLine * lines;
     const int nmiCycle = kDotsPerLine * kVblankLine;
+    const int clock = standard_ == TvStandard::Pal ? 21281370 : 21477272;
+    bus_.beginFrame();
     int cycles = 0;
     bool signaled = false;
-    bool irqSignaled = false;
-    while (cycles < frameCycles && !cpu_.stopped()) {
-        bus_.setCycle(cycles);
-        if (!signaled && cycles >= nmiCycle && bus_.nmiEnabled()) {
+    bool vIrqDone = false;
+    bool hdmaStarted = false;
+    int hIrqLine = -1;
+    for (int line = 0; line < lines; ++line) {
+        const int lineEnd = (line + 1) * kDotsPerLine;
+        bool hIrqDone = false;
+        while (cycles < lineEnd && cycles < frameCycles && !cpu_.stopped()) {
+            bus_.setCycle(cycles);
+            if (!signaled && cycles >= nmiCycle) {
+                bus_.raiseNmi();
+                if (bus_.nmiEnabled()) {
+                    cpu_.signalNmi();
+                }
+                signaled = true;
+            }
+            const int dot = cycles - line * kDotsPerLine;
+            const bool vOn = bus_.virqEnabled();
+            const bool hOn = bus_.hirqEnabled();
+            if (hIrqLine != line) {
+                hIrqDone = false;
+                hIrqLine = line;
+            }
+            if (vOn && !hOn && !vIrqDone && line >= bus_.irqLine()) {
+                bus_.raiseIrq();
+                cpu_.signalIrq();
+                vIrqDone = true;
+            } else if (hOn && !vOn && !hIrqDone && dot >= bus_.irqDot() * 4) {
+                bus_.raiseIrq();
+                cpu_.signalIrq();
+                hIrqDone = true;
+            } else if (vOn && hOn && !vIrqDone && line >= bus_.irqLine() && dot >= bus_.irqDot() * 4) {
+                bus_.raiseIrq();
+                cpu_.signalIrq();
+                vIrqDone = true;
+            }
+            const int used = cpu_.step(bus_);
+            if (used == 0 && cpu_.stopped()) {
+                break;
+            }
+            cycles += used > 0 ? used : 1;
+            cycles += bus_.takeDmaStall();
+            const int caught = cycles < frameCycles ? cycles : frameCycles;
+            bus_.catchUpApu(caught, clock);
+            if (bus_.takeSa1Start()) {
+                sa1_.resetTo(bus_.sa1ResetVector());
+            }
+            if (bus_.sa1Running() && !sa1_.stopped()) {
+                bus_.setSa1Access(true);
+                for (int step = 0; step < 4 && !sa1_.stopped(); ++step) {
+                    sa1_.step(bus_);
+                }
+                bus_.setSa1Access(false);
+            }
+            bus_.stepGsu(8);
+        }
+        if (!signaled && cycles >= nmiCycle) {
             bus_.raiseNmi();
-            cpu_.signalNmi();
+            if (bus_.nmiEnabled()) {
+                cpu_.signalNmi();
+            }
             signaled = true;
         }
-        if (!irqSignaled && bus_.virqEnabled() && cycles >= kDotsPerLine * bus_.irqLine()) {
-            bus_.raiseIrq();
-            cpu_.signalIrq();
-            irqSignaled = true;
+        if (line < Ppu::kHeight) {
+            if (!hdmaStarted) {
+                cycles += bus_.beginHdma();
+                hdmaStarted = true;
+            }
+            cycles += bus_.transferHdma();
+            bus_.drawLine(line);
         }
-        const int used = cpu_.step(bus_);
-        if (used == 0 && cpu_.stopped()) {
-            break;
-        }
-        cycles += used > 0 ? used : 1;
     }
-    bus_.present();
+    bus_.catchUpApu(frameCycles, clock);
+    bus_.finishAudio(frameCycles, clock);
 }
 
 FrameView SnesSystem::frame() const {
@@ -167,7 +225,10 @@ FrameView SnesSystem::frame() const {
 }
 
 AudioView SnesSystem::audio() const {
-    return {};
+    if (bus_.audioCount() <= 0 || bus_.audioSamples() == nullptr) {
+        return {};
+    }
+    return AudioView{bus_.audioSamples(), bus_.audioCount(), Apu::kOutputRate};
 }
 
 void SnesSystem::setController(int port, std::uint8_t buttons) {
@@ -177,8 +238,15 @@ void SnesSystem::setController(int port, std::uint8_t buttons) {
 }
 
 std::string SnesSystem::detailText() const {
-    std::string detail = cartridge_.hiRom ? "HiROM, " : "LoROM, ";
+    std::string detail = cartridge_.chip == Chip::Sa1
+                             ? "SA-1, "
+                             : (cartridge_.exHiRom ? "ExHiROM, " : (cartridge_.hiRom ? "HiROM, " : "LoROM, "));
     detail += standard_ == TvStandard::Pal ? "PAL" : "NTSC";
+    if (cartridge_.chip == Chip::Dsp1) {
+        detail += ", DSP-1";
+    } else if (cartridge_.chip == Chip::SuperFx) {
+        detail += ", Super FX";
+    }
     if (cpu_.stopped()) {
         char opcode[8] = {};
         std::snprintf(opcode, sizeof(opcode), "$%02X", cpu_.stopOpcode());
@@ -211,8 +279,7 @@ bool SnesSystem::describeContent(
         return false;
     }
     description.title = parsed.value().title;
-    description.detail = std::string(parsed.value().hiRom ? "HiROM, " : "LoROM, ") +
-                          (parsed.value().standard == TvStandard::Pal ? "PAL" : "NTSC");
+    description.detail = boardText(parsed.value());
     description.contentId = sha256Hex(parsed.value().rom.data(), parsed.value().rom.size());
     return true;
 }

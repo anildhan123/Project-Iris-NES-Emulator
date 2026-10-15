@@ -145,9 +145,63 @@ Full mobile frontends and other consoles are not started.
 
 - The startup screen offers NES and Super NES. Each card can continue into the window or play Iris Demo. A `.sfc` or `.smc` path selects Super NES. The NES core is unchanged.
 - Super NES loads LoROM and HiROM, with or without a 512-byte copier header. Other mappings are refused.
-- The CPU runs in emulation mode or native mode. REP can widen the accumulator to 16 bits. XCE switches modes. NMI is raised at vblank. An opcode that is still missing stops the CPU and the status line names it.
+- The CPU runs in emulation mode or native mode. REP can widen the accumulator to 16 bits. XCE switches modes. NMI is raised at vblank. The 65816 instruction set runs. STP stops the CPU.
 - Background modes 0 through 7 and 8×8 sprites are drawn into a 256×224 picture. Mode 2 does not apply its offset layer, and modes 5 and 6 stay 256 pixels wide. General DMA and direct or indirect HDMA can write video registers. Window 1 can mask a background or sprite, and color math can add or subtract a fixed color. The CPU runs the 65816 instruction set. A game can wait on vblank, use the multiply and divide registers, and keep LoROM or HiROM save RAM. Controller port 1 is live. The sound chip is silent. Iris Demo draws stripes and a marker moved with the direction keys. Enhancement chips and Super NES save states are not in this build.
 - The startup cards use original console drawings. Battery mode uses the same process and thread opt-out as NES, and the Super NES interpreter is optimized in debug builds so a frame still finishes on battery.
 - Version 0.15.0. The configuration schema stays at version 7.
+
+Full mobile frontends and other consoles are not started.
+
+## Milestone 16 — Super NES picture layers (implemented)
+
+- Background 2 draws behind background 1 in modes 0 through 5. Mosaic can repeat a background pixel across a block of 2 to 16 pixels. Sprites use the eight size pairs, from 8×8 up to 64×64.
+- Mode 2 still does not apply its offset layer. Modes 5 and 6 stay 256 pixels wide. Backgrounds 3 and 4, subscreen color math, and tile priority are not in this build.
+- The sound chip, enhancement chips, and Super NES save states are not in this build.
+- Version 0.16.0. The configuration schema stays at version 7.
+
+Full mobile frontends and other consoles are not started.
+
+## Milestone 17 — Super NES picture completion (implemented)
+
+- Background map and character addresses follow the cartridge's video memory steps. All four backgrounds scroll. Backgrounds 3 and 4 draw in the modes that have them. A tile's priority bit, and a sprite's priority, decide which pixel is in front. Modes 2, 4, and 6 apply the per-column offset from background 3. Color math can add the subscreen instead of the fixed color.
+- Modes 5 and 6 stay 256 pixels wide. The sound chip, enhancement chips, and Super NES save states are not in this build.
+- Version 0.17.0. The configuration schema stays at version 7.
+
+Full mobile frontends and other consoles are not started.
+
+## Milestone 18 — Super NES sound (implemented)
+
+- The SPC700 runs a program the cartridge uploads through ports `$2140`–`$2143`. The Nintendo IPL ROM is not in this build. A jump to `$FFC0` returns to that upload protocol.
+- The DSP plays BRR samples, with direct gain, a simplified envelope, noise, and pitch modulation. Echo uses a buffer inside the DSP, not APU RAM. Samples are not Gaussian-interpolated. The mix is mono and resampled to 48000 Hz for the host.
+- Iris Demo does not upload a sound program, so it stays silent. A cartridge that needs an enhancement chip, or scanline-accurate HDMA, can still fail. Modes 5 and 6 stay 256 pixels wide. Super NES save states are not in this build.
+- Version 0.18.0. The configuration schema stays at version 7.
+
+Full mobile frontends and other consoles are not started.
+
+## Milestone 19 — Super NES enhancement chips (implemented)
+
+- A DSP-1 board answers multiply, inverse, triangle, and rotate on its data port. Other DSP-1 commands return no words. DSP-2, DSP-3, and DSP-4 are not in this build. Inverse and the angle commands use host arithmetic, not a coefficient ROM.
+- A Super FX board runs a GSU program from Game Pak RAM. The program can load and store bytes and words, add, branch, and plot an 8-bit pixel. The pixel cache, packed 2-bit and 4-bit screens, and the opcodes this build does not include are absent. The GSU runs when GO is set, up to a budget, rather than on the scanline.
+- An SA-1 board runs a second 65816 from the vector at `$2203` when `$2200` bit 5 is set. I-RAM and BW-RAM are visible to both CPUs. Bitmap mode, character conversion, SA-1 DMA, and variable-length bit data are not in this build.
+- A chip this build does not include still will not play. ExHiROM is still refused. Modes 5 and 6 stay 256 pixels wide. Super NES save states are not in this build.
+- Version 0.19.0. The configuration schema stays at version 7.
+
+Full mobile frontends and other consoles are not started.
+
+## Milestone 20 — Super NES cycle timing (implemented)
+
+- A DMA started by `$420B` costs 8 cycles plus 8 per byte, in the same unit as a CPU instruction, and that cost is charged when the channel starts. A transfer larger than the rest of the frame delays the following instruction. HDMA is initialized at the end of the first visible scanline from the current `$420C`, then each visible line transfers before it is drawn. Init, transfer, and reload each cost 8 cycles per channel.
+- A vertical IRQ fires once on the line in `$4209`. A horizontal IRQ fires once per line when the line counter reaches the dot in `$4207`, counted as four cycle units per dot. Both together fire once. The picture of a frame is drawn before that frame's vblank, so a sprite update in the NMI handler appears on the next frame.
+- This is not dot-accurate inside an instruction. There is no DRAM refresh and no short scanline. Modes 5 and 6 stay 256 pixels wide. ExHiROM, DSP-2, DSP-3, DSP-4, the rest of each enhancement chip, and Super NES save states are not in this build. The Nintendo IPL ROM is not included.
+- Version 0.20.0. The configuration schema stays at version 7.
+
+Full mobile frontends and other consoles are not started.
+
+## Milestone 21 — Super NES ExHiROM (implemented)
+
+- An ExHiROM board loads. Banks `$C0`–`$FF` read the first 4 MB, and banks `$40`–`$7D` plus the system-bank mirror read the second 4 MB. A header past 4 MB is the one the CPU sees.
+- Banks `$7E` and `$7F` stay work RAM. Banks `$FE` and `$FF` stay ROM on LoROM, HiROM, and ExHiROM, so a write to work RAM does not show up in those ROM banks.
+- DSP-2, DSP-3, DSP-4, and the other enhancement chips are still refused. Modes 5 and 6 stay 256 pixels wide. Timing inside an instruction is still approximate. Super NES save states are not in this build. The Nintendo IPL ROM is not included. A cartridge this build does not cover still will not play.
+- Version 0.21.0. The configuration schema stays at version 7.
 
 Full mobile frontends and other consoles are not started.

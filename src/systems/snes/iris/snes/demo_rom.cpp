@@ -97,12 +97,12 @@ std::vector<std::uint8_t> makeIrisSnesDemo() {
     store(program, 0x80, 0x2115);
 
     store(program, 0x00, 0x2116);
-    store(program, 0x10, 0x2117);
+    store(program, 0x20, 0x2117);
     fillWords(0xFF, 0x00, 8);
     fillWords(0x00, 0x00, 8);
 
     store(program, 0x00, 0x2116);
-    store(program, 0x08, 0x2117);
+    store(program, 0x10, 0x2117);
     fillWords(0xFF, 0x00, 8);
     fillWords(0x00, 0xFF, 8);
 
@@ -145,7 +145,7 @@ std::vector<std::uint8_t> makeIrisSnesDemo() {
     program.page(0xA5, 0x01);
     program.absolute(0x8D, 0x2104);
     store(program, 0x00, 0x2104);
-    store(program, 0x00, 0x2104);
+    store(program, 0x20, 0x2104);
     store(program, 0x11, 0x212C);
     store(program, 0x0F, 0x2100);
     store(program, 0x81, 0x4200);
@@ -191,7 +191,7 @@ std::vector<std::uint8_t> makeIrisSnesDemo() {
     program.page(0xA5, 0x01);
     program.absolute(0x8D, 0x2104);
     store(program, 0x00, 0x2104);
-    store(program, 0x00, 0x2104);
+    store(program, 0x20, 0x2104);
     program.byte(0x68);
     program.byte(0x40);
 

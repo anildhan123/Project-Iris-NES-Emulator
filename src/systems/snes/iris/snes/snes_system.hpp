@@ -52,6 +52,7 @@ private:
     Cartridge cartridge_;
     Bus bus_;
     Cpu cpu_;
+    Cpu sa1_;
     std::string contentId_;
     TvStandard standard_ = TvStandard::Ntsc;
     iris::RegionChoice regionChoice_ = iris::RegionChoice::Automatic;

@@ -11,6 +11,7 @@ namespace iris::systems::snes {
 class Cpu {
 public:
     void reset(Bus& bus);
+    void resetTo(std::uint16_t pc);
     void signalNmi();
     void signalIrq();
     int step(Bus& bus);

@@ -765,7 +765,7 @@ StartupPick pickSystem(
         ImGui::SetCursorPosX(startX);
         ImGui::Dummy(ImVec2(0.0f, 10.0f));
         ImGui::PushTextWrapPos(startX + contentWidth);
-        ImGui::TextUnformatted("Super NES sound, enhancement chips, and save states are not in this build.");
+        ImGui::TextUnformatted("Super NES sound is the SPC700 and DSP. LoROM, HiROM, ExHiROM, DSP-1, Super FX, and SA-1 are in this build. DMA, HDMA, and IRQs take cycles on the scanline. Timing inside an instruction is still approximate. The Nintendo IPL ROM, other enhancement chips, and save states are not.");
         ImGui::PopTextWrapPos();
         ImGui::EndChild();
 
@@ -1006,7 +1006,7 @@ int DesktopShell::run() {
     const std::string aboutText = std::string(kProductName) + " " + kVersionString +
                                    "\n\nThis build plays NES cartridges on NROM, MMC1, UxROM, CNROM, MMC3, AxROM, Color Dreams, BNROM, GxROM, and Camerica. "
                                    "A NES 2.0 header can select PAL timing. "
-                                   "Super NES plays a LoROM or HiROM board, including save RAM, DMA, HDMA, windows, color math, and background modes 0 through 7. Iris Demo moves a marker with the arrow keys. The sound chip, enhancement chips, and save states are not in this build. "
+                                   "Super NES plays a LoROM, HiROM, or ExHiROM board, including save RAM, four backgrounds, scroll, priority, mosaic, DMA, HDMA, windows, and color math. DMA, HDMA, and IRQs take their cycles on the scanline. Timing inside an instruction is still approximate. A cartridge can upload an SPC700 program, and the DSP mixes it to mono at 48000 Hz. DSP-1, Super FX, and SA-1 boards run in this build. The Nintendo IPL ROM is not included. Iris Demo moves a marker with the arrow keys and stays silent because it does not upload a program. Other enhancement chips, high resolution, and save states are not in this build. "
                                    "Iris Demo, written for this project, is generated beside the executable.\n\n"
                                    "Open a ROM with File, Open Game, or from the library. "
                                    "The default controls are the arrow keys, Z for A, X for B, A for Turbo A, S for Turbo B, Right Shift for Select, and Enter for Start. "

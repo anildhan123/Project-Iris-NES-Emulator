@@ -13,6 +13,11 @@ constexpr std::uint8_t kNegative = 0x80;
 }  // namespace
 
 void Cpu::reset(Bus& bus) {
+    const std::uint16_t vector = static_cast<std::uint16_t>(bus.read(0, 0xFFFC) | (bus.read(0, 0xFFFD) << 8));
+    resetTo(vector);
+}
+
+void Cpu::resetTo(std::uint16_t pc) {
     stopped_ = false;
     stopOpcode_ = 0;
     nmiPending_ = false;
@@ -28,8 +33,7 @@ void Cpu::reset(Bus& bus) {
     sp_ = 0x01FF;
     p_ = static_cast<std::uint8_t>(p_ | kIrqDisable | 0x30);
     p_ = static_cast<std::uint8_t>(p_ & static_cast<std::uint8_t>(~kDecimal));
-    const std::uint16_t vector = static_cast<std::uint16_t>(bus.read(0, 0xFFFC) | (bus.read(0, 0xFFFD) << 8));
-    pc_ = vector;
+    pc_ = pc;
 }
 
 void Cpu::stop(std::uint8_t opcode) {
@@ -330,6 +334,13 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
         const auto addIndex = [&](std::uint16_t base, std::uint16_t index) {
             return static_cast<std::uint16_t>(base + index);
         };
+        const auto addIndexed = [&](std::uint16_t base, std::uint16_t index) {
+            const unsigned sum = static_cast<unsigned>(base) + index;
+            if (sum > 0xFFFF) {
+                bank = static_cast<std::uint8_t>(bank + 1);
+            }
+            return static_cast<std::uint16_t>(sum);
+        };
         switch (mode) {
         case Mode::ImmA:
             immediate = true;
@@ -360,11 +371,11 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
             break;
         case Mode::AbsX:
             bank = dbr_;
-            address = addIndex(static_cast<std::uint16_t>(fetch(bus) | (fetch(bus) << 8)), indexValue());
+            address = addIndexed(static_cast<std::uint16_t>(fetch(bus) | (fetch(bus) << 8)), indexValue());
             break;
         case Mode::AbsY:
             bank = dbr_;
-            address = addIndex(static_cast<std::uint16_t>(fetch(bus) | (fetch(bus) << 8)), indexY());
+            address = addIndexed(static_cast<std::uint16_t>(fetch(bus) | (fetch(bus) << 8)), indexY());
             break;
         case Mode::Long:
             address = static_cast<std::uint16_t>(fetch(bus) | (fetch(bus) << 8));
@@ -392,8 +403,8 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
         }
         case Mode::IndY: {
             const std::uint16_t pointer = static_cast<std::uint16_t>(directBase() + fetch(bus));
-            address = addIndex(read16(bus, pointer), indexY());
             bank = dbr_;
+            address = addIndexed(read16(bus, pointer), indexY());
             break;
         }
         case Mode::IndL: {
@@ -414,8 +425,8 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
             break;
         case Mode::SrY: {
             const std::uint16_t pointer = static_cast<std::uint16_t>(sp_ + fetch(bus));
-            address = addIndex(read16(bus, pointer), indexY());
             bank = dbr_;
+            address = addIndexed(read16(bus, pointer), indexY());
             break;
         }
         case Mode::Acc:
@@ -686,11 +697,11 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
         return 2;
     case 0xAA:
         if (index8()) { x_ = static_cast<std::uint16_t>((x_ & 0xFF00) | (a_ & 0xFF)); setZN(static_cast<std::uint8_t>(x_)); }
-        else { x_ = accumulator8() ? static_cast<std::uint16_t>(static_cast<std::uint8_t>(a_)) : a_; setZN16(x_); }
+        else { x_ = a_; setZN16(x_); }
         return 2;
     case 0xA8:
         if (index8()) { y_ = static_cast<std::uint16_t>((y_ & 0xFF00) | (a_ & 0xFF)); setZN(static_cast<std::uint8_t>(y_)); }
-        else { y_ = accumulator8() ? static_cast<std::uint16_t>(static_cast<std::uint8_t>(a_)) : a_; setZN16(y_); }
+        else { y_ = a_; setZN16(y_); }
         return 2;
     case 0x8A:
         if (accumulator8()) { a_ = static_cast<std::uint16_t>((a_ & 0xFF00) | (x_ & 0xFF)); setZN(static_cast<std::uint8_t>(a_)); }
@@ -709,17 +720,14 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
         else { x_ = y_; setZN16(x_); }
         return 2;
     case 0x9A:
-        if (emulation_) sp_ = static_cast<std::uint16_t>(0x0100 | (x_ & 0xFF));
-        else if (index8()) sp_ = static_cast<std::uint16_t>((sp_ & 0xFF00) | (x_ & 0xFF));
-        else sp_ = x_;
+        sp_ = emulation_ ? static_cast<std::uint16_t>(0x0100 | (x_ & 0xFF)) : x_;
         return 2;
     case 0xBA:
         if (index8()) { x_ = static_cast<std::uint16_t>((x_ & 0xFF00) | (sp_ & 0xFF)); setZN(static_cast<std::uint8_t>(x_)); }
         else { x_ = sp_; setZN16(x_); }
         return 2;
     case 0x1B:
-        sp_ = accumulator8() ? static_cast<std::uint16_t>((sp_ & 0xFF00) | (a_ & 0xFF)) : a_;
-        if (emulation_) sp_ = static_cast<std::uint16_t>(0x0100 | (sp_ & 0xFF));
+        sp_ = emulation_ ? static_cast<std::uint16_t>(0x0100 | (a_ & 0xFF)) : a_;
         return 2;
     case 0x3B: a_ = sp_; if (accumulator8()) setZN(static_cast<std::uint8_t>(a_)); else setZN16(a_); return 2;
     case 0x5B: d_ = a_; if (emulation_) d_ = 0; if (accumulator8()) setZN(static_cast<std::uint8_t>(a_)); else setZN16(a_); return 2;

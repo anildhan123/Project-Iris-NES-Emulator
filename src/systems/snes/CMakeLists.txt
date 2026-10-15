@@ -8,12 +8,18 @@ if(MSVC)
 endif()
 
 add_library(iris_snes STATIC
+    iris/snes/apu.cpp
+    iris/snes/apu.hpp
     iris/snes/bus.cpp
     iris/snes/bus.hpp
     iris/snes/cartridge.cpp
     iris/snes/cartridge.hpp
     iris/snes/cpu.cpp
     iris/snes/cpu.hpp
+    iris/snes/dsp1.cpp
+    iris/snes/dsp1.hpp
+    iris/snes/gsu.cpp
+    iris/snes/gsu.hpp
     iris/snes/demo_rom.cpp
     iris/snes/demo_rom.hpp
     iris/snes/ppu.cpp
