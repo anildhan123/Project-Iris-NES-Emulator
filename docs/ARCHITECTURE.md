@@ -13,6 +13,9 @@ iris_app
   -> iris_nes
        -> iris_emulator
        -> iris_common
+  -> iris_snes
+       -> iris_emulator
+       -> iris_common
 iris_core
   -> iris_nes
 iris_jni (Android only)
@@ -25,13 +28,14 @@ iris_jni (Android only)
 | `iris_platform` | Data directories, safe path joins, atomic file replacement | SDL, ImGui, UI widgets |
 | `iris_emulator` | `IEmulatedSystem`, frame and audio views, controller button bits | SDL, ImGui, CPU, PPU, or mapper types |
 | `iris_nes` | iNES parsing, NROM, MMC1, UxROM, CNROM, MMC3, CPU, bus, PPU, APU, controllers | SDL, ImGui, Win32 UI |
+| `iris_snes` | LoROM and HiROM, 65816, SRAM, DMA, HDMA, windows, color math, modes 0–7, 8×8 sprites | SDL, ImGui, Win32 UI, the NES core |
 | `iris_core` | C functions around the NES system: load, run, frame, audio, and save state | SDL, ImGui, CPU, PPU, or mapper types in the header |
 | `iris_frontend` | SDL3 window, OpenGL context, ImGui presentation, file dialog, audio queue | CPU, PPU, APU, or mapper types |
 | `iris_app` | Process startup, `--version`, optional ROM path, shutdown | Emulator internals |
 
 `IRIS_DESKTOP` defaults to on. Android and iOS configure it off, so those builds do not fetch SDL or Dear ImGui and do not build the window. `iris_core` stays in every build. Its header, `src/core/iris.h`, is the stable boundary: an opaque `IrisSystem`, integer results, and caller-owned error buffers. The picture and sample pointers stay valid until the next load, unload, run, or destroy on that handle. `ports/android/iris_jni.cpp` is the JNI bridge and is compiled only when `ANDROID` is set. `ports/ios/iris_bridge.h` is the same C API for a future Swift or Objective-C caller. Neither port has a screen, a touch control, or an audio-focus policy.
 
-The desktop calls `IEmulatedSystem`. It does not read or write CPU, PPU, or mapper state. `describeContent` reads a ROM's title, detail, and content id without replacing the running game. That content id is the same SHA-256 stored for a loaded cartridge. `iris_frontend` links the interface target only. `iris_app` is what links `iris_nes`.
+The desktop calls `IEmulatedSystem`. It does not read or write CPU, PPU, or mapper state. `describeContent` reads a ROM's title, detail, and content id without replacing the running game. That content id is the same SHA-256 stored for a loaded cartridge. `iris_frontend` links the interface target only. `iris_app` is what links `iris_nes` and `iris_snes`. With no ROM on the command line, the window shows a system screen for NES or Super NES before the worker starts. A `.sfc` or `.smc` path selects Super NES. Any other path stays on NES.
 
 ## Milestone 2 runtime
 
@@ -68,11 +72,11 @@ Files live under the data directory: `states/{content id}/slot-01.irstate` throu
 
 ## Configuration schema
 
-Schema version 4. A version 1 file, which has no `video` object, a version 2 file, which has `video` but no audio or input, and a version 3 file, which has no controller ports or overscan, are still accepted. The next save writes version 4.
+Schema version 7. A version 1 file, which has no `video` object, a version 2 file, which has `video` but no audio or input, a version 3 file, which has no controller ports or overscan, a version 4 file, which has no region choice, a version 5 file, which has no turbo keys, and a version 6 file, which has no fast-forward or screenshot keys, are still accepted. The next save writes version 7.
 
 ```json
 {
-  "version": 4,
+  "version": 7,
   "ui": {
     "theme": "blue",
     "windowWidth": 1024,
@@ -106,6 +110,8 @@ Schema version 4. A version 1 file, which has no `video` object, a version 2 fil
   "input": {
     "a": 29,
     "b": 27,
+    "turboA": 4,
+    "turboB": 22,
     "select": 229,
     "start": 40,
     "up": 82,
@@ -116,6 +122,8 @@ Schema version 4. A version 1 file, which has no `video` object, a version 2 fil
     "quickSave": 62,
     "quickLoad": 64,
     "pause": 41,
+    "fastForward": 66,
+    "screenshot": 69,
     "fullscreen": 40,
     "reset": 21
   },
@@ -125,13 +133,16 @@ Schema version 4. A version 1 file, which has no `video` object, a version 2 fil
   "controllers": {
     "port1": "keyboard",
     "port2": "",
-    "pad1": { "a": 1, "b": 0, "select": 4, "start": 6, "up": 11, "down": 12, "left": 13, "right": 14 },
-    "pad2": { "a": 1, "b": 0, "select": 4, "start": 6, "up": 11, "down": 12, "left": 13, "right": 14 }
+    "pad1": { "a": 1, "b": 0, "turboA": 10, "turboB": 9, "select": 4, "start": 6, "up": 11, "down": 12, "left": 13, "right": 14 },
+    "pad2": { "a": 1, "b": 0, "turboA": 10, "turboB": 9, "select": 4, "start": 6, "up": 11, "down": 12, "left": 13, "right": 14 }
+  },
+  "emulation": {
+    "region": "auto"
   }
 }
 ```
 
-`theme` is `blue`, `olive`, or `silver`. A file that still contains `xp-blue`, `xp-olive`, or `xp-silver` loads, and the next save writes the current name. The desktop draws its own title bar, caption buttons, and border. Window width is 640–7680 and height is 480–4320. `level` is `trace`, `debug`, `info`, `warn`, `error`, or `critical`. `scaleMode` is `fit` or `integer`. `integerScale` is 1–6. `aspectRatio` is `pixel` or `4:3`. `filter` is `nearest`, `smooth`, `sharp`, or `crt`. Brightness is −0.5–0.5, contrast is 0.5–2, saturation is 0–2, gamma is 0.4–2.5, sharpness is 1–4, and scanlines are 0–1. `overscan` crops eight pixels from each edge of the picture the window shows. `volume` is 0–1. `latency` is `short`, `balanced`, or `long`. An empty `device` selects the default playback device. Input values are key codes from 1 to 511. The eight controller keys are unique. Quick save, quick load, and pause are unique and are not controller keys. Open and Reset both use Ctrl, so they conflict only with each other. Fullscreen uses Alt, so it may reuse Return. A controller port is `keyboard`, an empty string, or a gamepad name. Gamepad button numbers are 0–31. Unknown fields are rejected. Do not add a setting until the application implements it.
+`theme` is `blue`, `olive`, or `silver`. A file that still contains `xp-blue`, `xp-olive`, or `xp-silver` loads, and the next save writes the current name. The desktop draws its own title bar, caption buttons, and border. Window width is 640–7680 and height is 480–4320. `level` is `trace`, `debug`, `info`, `warn`, `error`, or `critical`. `scaleMode` is `fit` or `integer`. `integerScale` is 1–6. `aspectRatio` is `pixel` or `4:3`. `filter` is `nearest`, `smooth`, `sharp`, or `crt`. Brightness is −0.5–0.5, contrast is 0.5–2, saturation is 0–2, gamma is 0.4–2.5, sharpness is 1–4, and scanlines are 0–1. `overscan` crops eight pixels from each edge of the picture the window shows. `volume` is 0–1. `latency` is `short`, `balanced`, or `long`. An empty `device` selects the default playback device. Input values are key codes from 1 to 511. The ten controller keys are unique. Quick save, quick load, pause, fast forward, and screenshot are unique and are not controller keys. Open and Reset both use Ctrl, so they conflict only with each other. Fullscreen uses Alt, so it may reuse Return. `fastForward` defaults to F9 and `screenshot` defaults to F12. A controller port is `keyboard`, an empty string, or a gamepad name. Gamepad button numbers are 0–31. `turboA` and `turboB` are host keys or gamepad buttons. A turbo button is down for one emulated frame and up for the next. Holding the normal button as well keeps it down. `emulation.region` is `auto`, `ntsc`, `pal`, or `dendy`. Automatic uses the region in the cartridge header. The other three override that header and change the frame length without clearing work RAM. Settings edits that choice, and Apply is what changes the running system. Unknown fields are rejected. Do not add a setting until the application implements it.
 
 The built-in shaders are original and compiled into the frontend. Each one has an id, a display name, a version, a stage (`sampling` or `color`), a cost, and parameters. Sampling runs before color. A compile or link failure leaves the crisp-pixel path in place. The data directory's `shaders` folder is not read.
 

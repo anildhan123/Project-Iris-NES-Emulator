@@ -38,7 +38,7 @@ cmake --build --preset windows-msvc-release
 .\build\windows-msvc-debug\bin\Release\iris.exe --profile .\build\windows-msvc-debug\bin\Release\iris_demo.nes
 ```
 
-Version 0.10.0 is an unsigned build. It is not a signed installer, and the macOS app is not notarized. `cpack -G ZIP -C Release` from the Windows build directory packs the Release executable, Iris Demo, this readme, and the license files. What that build was measured to do, and what it does not claim, is in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
+Version 0.15.0 is an unsigned build. It is not a signed installer, and the macOS app is not notarized. `cpack -G ZIP -C Release` from the Windows build directory packs the Release executable, Iris Demo, this readme, and the license files. What that build was measured to do, and what it does not claim, is in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 Linux and macOS use the same desktop sources:
 
@@ -81,7 +81,9 @@ The menu contains only commands that work:
 
 Open Game uses the system file dialog. Scan Folder adds `*.nes` files from that folder and its subfolders. A ROM path can also be passed on the command line. The library lists games you have opened or scanned, and File → Library shows or hides it. Removing a game from the library does not delete the file.
 
-The default controls are the arrow keys, Z (A), X (B), Right Shift (Select), and Enter (Start). Numpad Enter also presses Start. Escape pauses. F5 saves the selected slot and F7 loads it. Ctrl+R resets. Shift+1 through Shift+9 select slots 1–9, and Shift+0 selects slot 10. Options → Settings can change those keys, the picture, and the audio device. State Slots shows a thumbnail, the game title, the time, and a description for each slot. Alt+Enter toggles borderless fullscreen.
+The default controls are the arrow keys, Z (A), X (B), A (Turbo A), S (Turbo B), Right Shift (Select), and Enter (Start). Turbo is down for one emulated frame and up for the next. Numpad Enter also presses Start. Escape pauses. F9 toggles fast forward. F5 saves the selected slot and F7 loads it. F12 saves a screenshot. Ctrl+R resets. Shift+1 through Shift+9 select slots 1–9, and Shift+0 selects slot 10. Options → Settings can change those keys, the picture, the region, and the audio device. State Slots shows a thumbnail, the game title, the time, and a description for each slot. Alt+Enter toggles borderless fullscreen.
+
+With no ROM on the command line, Iris opens a system screen before the game window is used. NES and Super NES each offer Continue and Play Iris Demo. The console drawings on that screen are original; they are not Nintendo artwork. NES is the finished core. Super NES plays LoROM and HiROM (`.sfc` or `.smc`). `iris_demo.sfc` draws stripes and a marker; the arrow keys move it. The Super NES sound chip, enhancement chips, and save states for that system are not in this build. A `.nes` path, or `iris --profile`, stays on NES. Unplugging the laptop uses the same frame clock as NES: the process opts out of battery throttling, and the Super NES interpreter is compiled with optimizations in a debug build.
 
 The picture is the PPU's 256×240 output. Fit uses the largest whole multiple that fits. A fixed 1×–6× scale that does not fit steps down, and the status bar says so. Pixel aspect is the default; 4:3 is the television shape. Original, Smooth, Sharp, and CRT are presentation presets. Picture changes brightness, contrast, saturation, and gamma. Performance adds frame rate and timing to the status bar. None of these rewrite the emulated picture, so save thumbnails stay unfiltered. If the presentation shader cannot start, the window shows crisp pixels. The status bar names the loaded game. The window draws its own title bar, caption buttons, and border. Themes are `blue`, `olive`, and `silver`.
 
@@ -93,11 +95,11 @@ After a build, the original demo is next to the executable:
 
 File → Open Game starts in that folder, so `iris_demo.nes` is there as well. The demo draws a tile grid and the word IRIS. The arrow keys move the sprite. Hold Z to play a tone.
 
-Other mappers produce an error and leave the current game loaded. There is no region menu: NTSC is the default, and PAL or Dendy comes from the NES 2.0 header. A cartridge with battery-backed RAM writes `saves/{content id}.sav` when the game closes or Iris exits, and reads it again the next time that game opens. Reset does not erase that file. Save states are separate files under `states/`.
+Other mappers produce an error and leave the current game loaded. Emulation → Region can stay on Automatic, which follows the NES 2.0 header, or force NTSC, PAL, or Dendy. That choice changes the frame length and leaves work RAM alone. Emulation → Power Cycle restarts the CPU and clears work RAM; battery-backed cartridge RAM stays. Emulation → Game Information shows the title, mapper, region, and file. A cartridge with battery-backed RAM writes `saves/{content id}.sav` when the game closes or Iris exits, and reads it again the next time that game opens. Reset does not erase that file. Save states are separate files under `states/`.
 
 ## Data directory
 
-Configuration, logs, the game library, save states, and battery RAM are stored outside the install directory. On Windows that is `%LOCALAPPDATA%\IrisEmulator`. On Linux and macOS it is `$XDG_DATA_HOME/IrisEmulator`, or `$HOME/.local/share/IrisEmulator` when `XDG_DATA_HOME` is unset. Set `IRIS_DATA_DIR` to point that root somewhere else. A missing configuration file is created with defaults. A version 1 or version 2 file is still read; the next save writes version 3. A malformed file is left untouched and the session uses defaults. The library file is separate, so a bad configuration does not erase it.
+Configuration, logs, the game library, save states, and battery RAM are stored outside the install directory. On Windows that is `%LOCALAPPDATA%\IrisEmulator`. On Linux and macOS it is `$XDG_DATA_HOME/IrisEmulator`, or `$HOME/.local/share/IrisEmulator` when `XDG_DATA_HOME` is unset. Set `IRIS_DATA_DIR` to point that root somewhere else. A missing configuration file is created with defaults. A version 1, 2, 3, 4, 5, or 6 file is still read; the next save writes version 7, including `emulation.region` (`auto`, `ntsc`, `pal`, or `dendy`), the turbo keys, and the fast-forward and screenshot keys. A malformed file is left untouched and the session uses defaults. The library file is separate, so a bad configuration does not erase it.
 
 ```json
 {

@@ -3,6 +3,7 @@
 #include "iris/error.hpp"
 #include "iris/input_bindings.hpp"
 #include "iris/presentation.hpp"
+#include "iris/region_choice.hpp"
 
 #include <string>
 #include <string_view>
@@ -38,6 +39,8 @@ enum class AudioLatency {
 struct GamepadMap {
     int a = 1;
     int b = 0;
+    int turboA = 10;
+    int turboB = 9;
     int select = 4;
     int start = 6;
     int up = 11;
@@ -58,7 +61,7 @@ struct ControllerSetup {
 };
 
 struct Config {
-    static constexpr int kCurrentVersion = 4;
+    static constexpr int kCurrentVersion = 7;
 
     int version = kCurrentVersion;
     Theme theme = Theme::Blue;
@@ -86,6 +89,7 @@ struct Config {
     bool showLibrary = true;
     bool overscan = false;
     ControllerSetup controllers{};
+    RegionChoice region = RegionChoice::Automatic;
 };
 
 [[nodiscard]] inline bool operator==(const Config& left, const Config& right) {
@@ -98,7 +102,7 @@ struct Config {
            left.sharpness == right.sharpness && left.scanline == right.scanline && left.volume == right.volume &&
            left.muted == right.muted && left.audioDevice == right.audioDevice && left.audioLatency == right.audioLatency &&
            left.input == right.input && left.showLibrary == right.showLibrary && left.overscan == right.overscan &&
-           left.controllers == right.controllers;
+           left.controllers == right.controllers && left.region == right.region;
 }
 
 class ConfigService {

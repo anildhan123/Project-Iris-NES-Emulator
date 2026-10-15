@@ -397,23 +397,30 @@ void drawBindingButton(const char* label, int& scancode, const char* chord, int*
     ImGui::PopID();
 }
 
-std::uint8_t controllerButtons(const InputBindings& bindings) {
+struct PadSample {
+    std::uint8_t held = 0;
+    std::uint8_t turbo = 0;
+};
+
+PadSample controllerButtons(const InputBindings& bindings) {
     int count = 0;
     const bool* keys = SDL_GetKeyboardState(&count);
     if (keys == nullptr || count <= 0) {
-        return 0;
+        return {};
     }
     const auto down = [&](int code) { return code >= 0 && code < count && keys[code]; };
-    std::uint8_t buttons = 0;
-    if (down(bindings.a)) buttons = static_cast<std::uint8_t>(buttons | kButtonA);
-    if (down(bindings.b)) buttons = static_cast<std::uint8_t>(buttons | kButtonB);
-    if (down(bindings.select)) buttons = static_cast<std::uint8_t>(buttons | kButtonSelect);
-    if (down(bindings.start) || down(SDL_SCANCODE_KP_ENTER)) buttons = static_cast<std::uint8_t>(buttons | kButtonStart);
-    if (down(bindings.up)) buttons = static_cast<std::uint8_t>(buttons | kButtonUp);
-    if (down(bindings.down)) buttons = static_cast<std::uint8_t>(buttons | kButtonDown);
-    if (down(bindings.left)) buttons = static_cast<std::uint8_t>(buttons | kButtonLeft);
-    if (down(bindings.right)) buttons = static_cast<std::uint8_t>(buttons | kButtonRight);
-    return buttons;
+    PadSample sample;
+    if (down(bindings.a)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonA);
+    if (down(bindings.b)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonB);
+    if (down(bindings.select)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonSelect);
+    if (down(bindings.start) || down(SDL_SCANCODE_KP_ENTER)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonStart);
+    if (down(bindings.up)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonUp);
+    if (down(bindings.down)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonDown);
+    if (down(bindings.left)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonLeft);
+    if (down(bindings.right)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonRight);
+    if (down(bindings.turboA)) sample.turbo = static_cast<std::uint8_t>(sample.turbo | kButtonA);
+    if (down(bindings.turboB)) sample.turbo = static_cast<std::uint8_t>(sample.turbo | kButtonB);
+    return sample;
 }
 
 const char* gamepadButtonName(int button) {
@@ -430,6 +437,10 @@ const char* gamepadButtonName(int button) {
         return "Back";
     case 6:
         return "Start";
+    case 9:
+        return "Left shoulder";
+    case 10:
+        return "Right shoulder";
     case 11:
         return "Up";
     case 12:
@@ -510,12 +521,14 @@ void keepHostResponsive() {
 #if defined(_WIN32)
     // Battery mode otherwise coalesces short sleeps and caps a light process.
     // A plugged-in plan already leaves the timer at 1 ms, which hides that.
+    // This is the process, so NES and Super NES both keep the frame clock.
     PROCESS_POWER_THROTTLING_STATE processPower{};
     processPower.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
     processPower.ControlMask =
         PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
     processPower.StateMask = 0;
     SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &processPower, sizeof(processPower));
+    log::info("Battery power throttling is off so NES and Super NES frames stay on time.");
 #endif
 }
 
@@ -613,6 +626,165 @@ private:
 };
 #endif
 
+ImU32 shellPacked(const ShellColor& color, int alpha = 255) {
+    const auto channel = [](float value) {
+        return static_cast<int>(std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f));
+    };
+    return IM_COL32(channel(color.red), channel(color.green), channel(color.blue), alpha);
+}
+
+void drawOriginalConsole(ImDrawList* draw, ImVec2 origin, bool superNes) {
+    if (draw == nullptr) {
+        return;
+    }
+    if (!superNes) {
+        draw->AddRectFilled(origin, ImVec2(origin.x + 128.0f, origin.y + 40.0f), IM_COL32(88, 90, 96, 255), 4.0f);
+        draw->AddRectFilled(ImVec2(origin.x + 14.0f, origin.y + 8.0f), ImVec2(origin.x + 78.0f, origin.y + 24.0f), IM_COL32(36, 38, 42, 255), 2.0f);
+        draw->AddCircleFilled(ImVec2(origin.x + 96.0f, origin.y + 20.0f), 7.0f, IM_COL32(176, 64, 58, 255));
+        draw->AddCircleFilled(ImVec2(origin.x + 114.0f, origin.y + 20.0f), 7.0f, IM_COL32(58, 92, 168, 255));
+        return;
+    }
+    draw->AddRectFilled(origin, ImVec2(origin.x + 148.0f, origin.y + 36.0f), IM_COL32(72, 76, 84, 255), 8.0f);
+    draw->AddRectFilled(ImVec2(origin.x + 36.0f, origin.y + 8.0f), ImVec2(origin.x + 96.0f, origin.y + 24.0f), IM_COL32(32, 34, 40, 255), 2.0f);
+    draw->AddRectFilled(ImVec2(origin.x + 108.0f, origin.y + 12.0f), ImVec2(origin.x + 122.0f, origin.y + 26.0f), IM_COL32(168, 72, 78, 255), 3.0f);
+    draw->AddRectFilled(ImVec2(origin.x + 128.0f, origin.y + 12.0f), ImVec2(origin.x + 142.0f, origin.y + 26.0f), IM_COL32(70, 110, 168, 255), 3.0f);
+}
+
+struct StartupPick {
+    bool quit = false;
+    SystemKind kind = SystemKind::Nes;
+    std::string rom;
+};
+
+StartupPick pickSystem(
+    SDL_Window* window, const ShellPalette& palette, const std::filesystem::path& nesDemo, const std::filesystem::path& snesDemo) {
+    std::error_code demoError;
+    const bool nesReady = !nesDemo.empty() && std::filesystem::is_regular_file(nesDemo, demoError);
+    const bool snesReady = !snesDemo.empty() && std::filesystem::is_regular_file(snesDemo, demoError);
+    StartupPick pick;
+    bool chosen = false;
+    while (!chosen) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            ImGui_ImplSDL3_ProcessEvent(&event);
+            if (event.type == SDL_EVENT_QUIT) {
+                pick.quit = true;
+                return pick;
+            }
+            if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window)) {
+                pick.quit = true;
+                return pick;
+            }
+        }
+
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
+        ImGui::NewFrame();
+        const ImGuiViewport* viewport = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(viewport->Pos);
+        ImGui::SetNextWindowSize(viewport->Size);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        ImGui::Begin(
+            "##startup",
+            nullptr,
+            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                ImGuiWindowFlags_NoBringToFrontOnFocus);
+        ImGui::PopStyleVar(2);
+
+        const ImVec2 origin = ImGui::GetWindowPos();
+        const ImVec2 size = ImGui::GetWindowSize();
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        drawShadedBand(origin, ImVec2(origin.x + size.x, origin.y + size.y), palette.headerTop, palette.face);
+        const float band = 84.0f;
+        drawShadedBand(origin, ImVec2(origin.x + size.x, origin.y + band), palette.titleTop, palette.titleBottom);
+        draw->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + band * 0.42f), IM_COL32(255, 255, 255, 36));
+        draw->AddText(ImVec2(origin.x + 28.0f, origin.y + 16.0f), shellPacked(palette.titleText), "Iris");
+        draw->AddText(
+            ImVec2(origin.x + 28.0f, origin.y + 44.0f), shellPacked(palette.titleText), "Choose a system, then play or open a game.");
+        draw->AddRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), shellPacked(palette.frame));
+
+        const float gap = 20.0f;
+        const float footer = 56.0f;
+        const bool sideBySide = size.x >= 620.0f;
+        const float cardWidth = sideBySide ? std::min(320.0f, std::max(220.0f, (size.x - 64.0f - gap) * 0.5f))
+                                           : std::min(420.0f, std::max(240.0f, size.x - 64.0f));
+        const float cardHeight = 286.0f;
+        const float contentWidth = sideBySide ? cardWidth * 2.0f + gap : cardWidth;
+        const float startX = std::max(16.0f, (size.x - contentWidth) * 0.5f);
+        ImGui::SetCursorPos(ImVec2(0.0f, band + 16.0f));
+        ImGui::BeginChild("##system-cards", ImVec2(size.x, std::max(1.0f, size.y - band - footer - 16.0f)), ImGuiChildFlags_None);
+
+        const auto card = [&](const char* id, const char* title, const char* body, bool superNes, SystemKind cardKind,
+                              const std::filesystem::path& demo, bool demoReady) {
+            ImGui::PushStyleColor(
+                ImGuiCol_ChildBg, ImVec4(std::min(palette.face.red + 0.06f, 1.0f), std::min(palette.face.green + 0.06f, 1.0f),
+                                         std::min(palette.face.blue + 0.05f, 1.0f), 1.0f));
+            ImGui::BeginChild(id, ImVec2(cardWidth, cardHeight), ImGuiChildFlags_Borders);
+            drawSectionHeader(title, palette);
+            ImGui::Dummy(ImVec2(0.0f, 8.0f));
+            const float iconWidth = superNes ? 148.0f : 128.0f;
+            ImGui::SetCursorPosX(std::max(8.0f, (cardWidth - iconWidth) * 0.5f));
+            drawOriginalConsole(ImGui::GetWindowDrawList(), ImGui::GetCursorScreenPos(), superNes);
+            ImGui::Dummy(ImVec2(1.0f, superNes ? 36.0f : 40.0f));
+            ImGui::TextWrapped("%s", body);
+            const float buttonWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+            ImGui::SetCursorPosY(cardHeight - ImGui::GetFrameHeight() * 2.0f - 18.0f);
+            if (ImGui::Button("Continue", ImVec2(buttonWidth, 0.0f))) {
+                pick.kind = cardKind;
+                pick.rom.clear();
+                chosen = true;
+            }
+            ImGui::BeginDisabled(!demoReady);
+            if (ImGui::Button("Play Iris Demo", ImVec2(buttonWidth, 0.0f))) {
+                pick.kind = cardKind;
+                pick.rom = demo.string();
+                chosen = true;
+            }
+            ImGui::EndDisabled();
+            if (!demoReady && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                ImGui::SetTooltip("Iris Demo is placed beside the program when it is built.");
+            }
+            ImGui::EndChild();
+            ImGui::PopStyleColor();
+        };
+
+        ImGui::SetCursorPos(ImVec2(startX, 12.0f));
+        card(
+            "##nes-card", "NES", "Cartridges, save states, and sound. Continue to open a game, or play the original demo.",
+            false, SystemKind::Nes, nesDemo, nesReady);
+        if (sideBySide) {
+            ImGui::SameLine(0.0f, gap);
+        } else {
+            ImGui::SetCursorPosX(startX);
+        }
+        card(
+            "##snes-card", "Super NES",
+            "LoROM and HiROM. The demo is stripes and a marker. The arrow keys move it.",
+            true, SystemKind::Snes, snesDemo, snesReady);
+        ImGui::SetCursorPosX(startX);
+        ImGui::Dummy(ImVec2(0.0f, 10.0f));
+        ImGui::PushTextWrapPos(startX + contentWidth);
+        ImGui::TextUnformatted("Super NES sound, enhancement chips, and save states are not in this build.");
+        ImGui::PopTextWrapPos();
+        ImGui::EndChild();
+
+        ImGui::SetCursorPos(ImVec2((size.x - 120.0f) * 0.5f, size.y - 42.0f));
+        if (ImGui::Button("Quit", ImVec2(120.0f, 0.0f))) {
+            pick.quit = true;
+            chosen = true;
+        }
+
+        ImGui::End();
+        ImGui::Render();
+        glClearColor(palette.face.red, palette.face.green, palette.face.blue, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        SDL_GL_SwapWindow(window);
+    }
+    return pick;
+}
+
 void uploadFrame(GLuint& texture, const FrameView& frame) {
     if (texture == 0) {
         glGenTextures(1, &texture);
@@ -628,8 +800,8 @@ void uploadFrame(GLuint& texture, const FrameView& frame) {
 
 }  // namespace
 
-DesktopShell::DesktopShell(const Config& config, IEmulatedSystem& system, std::string initialRom)
-    : config_(config), system_(system), initialRom_(std::move(initialRom)), windowWidth_(config.windowWidth),
+DesktopShell::DesktopShell(const Config& config, SystemFactory factory, std::string initialRom)
+    : config_(config), factory_(factory), initialRom_(std::move(initialRom)), windowWidth_(config.windowWidth),
       windowHeight_(config.windowHeight) {}
 
 int DesktopShell::run() {
@@ -786,13 +958,42 @@ int DesktopShell::run() {
     if (const char* base = SDL_GetBasePath()) {
         basePath = base;
     }
-    static const SDL_DialogFileFilter kFilters[] = {
-        {"NES ROM", "nes"},
+
+    SystemKind kind = SystemKind::Nes;
+    if (!initialRom_.empty()) {
+        kind = systemKindForPath(std::filesystem::path(initialRom_));
+    } else {
+        const StartupPick pick = pickSystem(
+            session.window, palette, std::filesystem::path(basePath) / "iris_demo.nes",
+            std::filesystem::path(basePath) / "iris_demo.sfc");
+        if (pick.quit) {
+            return 0;
+        }
+        kind = pick.kind;
+        if (!pick.rom.empty()) {
+            initialRom_ = pick.rom;
+        }
+    }
+    if (factory_ == nullptr) {
+        log::error("No system is available.");
+        return 1;
+    }
+    system_ = factory_(kind);
+    if (system_ == nullptr) {
+        log::error("The selected system could not be created.");
+        return 1;
+    }
+    system_->setRegionChoice(config_.region);
+
+    SDL_DialogFileFilter filters[2] = {
+        {kind == SystemKind::Snes ? "Super NES ROM" : "NES ROM", kind == SystemKind::Snes ? "sfc;smc" : "nes"},
         {"All files", "*"},
     };
 
     bool requestExit = false;
     bool openAbout = false;
+    bool openGameInfo = false;
+    std::string gameInfoText;
     bool openLegal = false;
     bool openError = false;
     bool openPicture = false;
@@ -803,14 +1004,15 @@ int DesktopShell::run() {
     TextureGuard texture;
     const std::string versionLabel = std::string(kProductName) + " " + kVersionString;
     const std::string aboutText = std::string(kProductName) + " " + kVersionString +
-                                   "\n\nThis build plays NROM, MMC1, UxROM, CNROM, MMC3, AxROM, Color Dreams, BNROM, GxROM, and Camerica. "
+                                   "\n\nThis build plays NES cartridges on NROM, MMC1, UxROM, CNROM, MMC3, AxROM, Color Dreams, BNROM, GxROM, and Camerica. "
                                    "A NES 2.0 header can select PAL timing. "
+                                   "Super NES plays a LoROM or HiROM board, including save RAM, DMA, HDMA, windows, color math, and background modes 0 through 7. Iris Demo moves a marker with the arrow keys. The sound chip, enhancement chips, and save states are not in this build. "
                                    "Iris Demo, written for this project, is generated beside the executable.\n\n"
                                    "Open a ROM with File, Open Game, or from the library. "
-                                   "The default controls are the arrow keys, Z for A, X for B, Right Shift for Select, and Enter for Start. "
-                                   "Numpad Enter also presses Start. Escape pauses. "
-                                   "F5 saves the selected state slot and F7 loads it. Ctrl+R resets. "
-                                   "Options, Settings changes the theme, picture, audio, and keys. "
+                                   "The default controls are the arrow keys, Z for A, X for B, A for Turbo A, S for Turbo B, Right Shift for Select, and Enter for Start. "
+                                   "Numpad Enter also presses Start. Escape pauses. F9 toggles fast forward. "
+                                   "F5 saves the selected state slot and F7 loads it. F12 saves a screenshot. Ctrl+R resets. "
+                                   "Options, Settings changes the theme, picture, audio, region, and keys. "
                                    "Shift+1 through Shift+0 select a slot, and Emulation, State Slots shows previews. "
                                    "Battery-backed RAM is stored separately from those slots. "
                                    "View sets the scale, 4:3 aspect, and presentation filter. Alt+Enter toggles fullscreen. "
@@ -867,6 +1069,8 @@ int DesktopShell::run() {
     std::atomic<bool> fastForward{false};
     std::atomic<bool> requestStep{false};
     std::atomic<std::uint8_t> livePort0{0};
+    std::atomic<std::uint8_t> turboPort0{0};
+    std::atomic<std::uint8_t> turboPort1{0};
     std::atomic<std::uint8_t> livePort1{0};
     std::atomic<int> pacedFrames{0};
     struct PublishedPicture {
@@ -880,6 +1084,8 @@ int DesktopShell::run() {
     int viewWidth = 0;
     int viewHeight = 0;
     bool viewLoaded = false;
+    std::string viewContentId;
+    std::string loadedGamePath;
     bool viewPaused = false;
     SystemInfo viewInfo;
     std::uint64_t queuedSerial = 0;
@@ -935,7 +1141,7 @@ int DesktopShell::run() {
     };
     const auto padButtons = [&](const std::string& device, const GamepadMap& map) {
         if (device.empty()) {
-            return static_cast<std::uint8_t>(0);
+            return PadSample{};
         }
         if (device == "keyboard") {
             return controllerButtons(config_.input);
@@ -948,18 +1154,20 @@ int DesktopShell::run() {
                 return button >= 0 && button < SDL_GAMEPAD_BUTTON_COUNT &&
                        SDL_GetGamepadButton(pad.pad, static_cast<SDL_GamepadButton>(button));
             };
-            std::uint8_t buttons = 0;
-            if (down(map.a)) buttons = static_cast<std::uint8_t>(buttons | kButtonA);
-            if (down(map.b)) buttons = static_cast<std::uint8_t>(buttons | kButtonB);
-            if (down(map.select)) buttons = static_cast<std::uint8_t>(buttons | kButtonSelect);
-            if (down(map.start)) buttons = static_cast<std::uint8_t>(buttons | kButtonStart);
-            if (down(map.up)) buttons = static_cast<std::uint8_t>(buttons | kButtonUp);
-            if (down(map.down)) buttons = static_cast<std::uint8_t>(buttons | kButtonDown);
-            if (down(map.left)) buttons = static_cast<std::uint8_t>(buttons | kButtonLeft);
-            if (down(map.right)) buttons = static_cast<std::uint8_t>(buttons | kButtonRight);
-            return buttons;
+            PadSample sample;
+            if (down(map.a)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonA);
+            if (down(map.b)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonB);
+            if (down(map.select)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonSelect);
+            if (down(map.start)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonStart);
+            if (down(map.up)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonUp);
+            if (down(map.down)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonDown);
+            if (down(map.left)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonLeft);
+            if (down(map.right)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonRight);
+            if (down(map.turboA)) sample.turbo = static_cast<std::uint8_t>(sample.turbo | kButtonA);
+            if (down(map.turboB)) sample.turbo = static_cast<std::uint8_t>(sample.turbo | kButtonB);
+            return sample;
         }
-        return static_cast<std::uint8_t>(0);
+        return PadSample{};
     };
     const auto saveScreenshot = [&]() {
         if (viewPicture.empty() || viewWidth <= 0 || viewHeight <= 0 || !appPaths.has_value()) {
@@ -1006,6 +1214,12 @@ int DesktopShell::run() {
         FrameClock clock;
 #endif
         auto nextDue = std::chrono::steady_clock::now();
+        bool turboOn = true;
+        const auto drivePorts = [&]() {
+            system_->setController(0, applyTurbo(livePort0.load(), turboPort0.load(), turboOn));
+            system_->setController(1, applyTurbo(livePort1.load(), turboPort1.load(), turboOn));
+            turboOn = !turboOn;
+        };
         while (!stopWorker.load()) {
             std::chrono::steady_clock::time_point frameDeadline{};
             std::chrono::nanoseconds idleWait{0};
@@ -1026,20 +1240,19 @@ int DesktopShell::run() {
                     idleWait = std::chrono::milliseconds(1);
                 } else {
                     const bool step = requestStep.exchange(false);
-                    if (!system_.loaded() || (system_.paused() && !step)) {
+                    if (!system_->loaded() || (system_->paused() && !step)) {
                         nextDue = std::chrono::steady_clock::now();
                         idleWait = std::chrono::milliseconds(10);
                     } else if (fastForward.load()) {
                         clearPlayback = true;
-                        system_.setController(0, livePort0.load());
-                        system_.setController(1, livePort1.load());
+                        drivePorts();
                         const auto started = std::chrono::steady_clock::now();
-                        system_.runFrame();
+                        system_->runFrame();
                         shownEmulationMs = std::chrono::duration<double, std::milli>(
                                                std::chrono::steady_clock::now() - started)
                                                .count();
                         pacedFrames.fetch_add(1);
-                        const FrameView frame = system_.frame();
+                        const FrameView frame = system_->frame();
                         if (frame.rgba != nullptr && frame.width > 0 && frame.height > 0) {
                             const std::size_t bytes = static_cast<std::size_t>(frame.width) *
                                                       static_cast<std::size_t>(frame.height) * 4;
@@ -1049,30 +1262,33 @@ int DesktopShell::run() {
                         }
                         ++published.serial;
                         if (step) {
-                            system_.setPaused(true);
+                            system_->setPaused(true);
                         }
                         nextDue = std::chrono::steady_clock::now();
                     } else {
-                        const bool followAudio = queuedSamples >= 0 && !config_.muted && config_.volume > 0.0f;
+                        const AudioView previousAudio = system_->audio();
+                        const bool systemHasAudio = previousAudio.samples != nullptr && previousAudio.count > 0;
+                        const bool wantAudio = queuedSamples >= 0 && !config_.muted && config_.volume > 0.0f;
+                        const bool followAudio = systemHasAudio && wantAudio;
                         const int paceTarget = audioPaceSamples(config_.audioLatency);
                         const auto now = std::chrono::steady_clock::now();
                         // Waiting out a full audio buffer is what made the picture miss
                         // NTSC speed. The frame clock stays in charge. Audio only pulls
-                        // a frame forward when the device is about to starve.
+                        // a frame forward when this system has produced samples and the
+                        // device is about to starve. A silent system must not spin.
                         const bool refill = followAudio && queuedSamples < kAudioRefillSamples;
                         if (!refill && now < nextDue) {
                             frameDeadline = nextDue;
                             waitForFrame = true;
                         } else {
-                            system_.setController(0, livePort0.load());
-                            system_.setController(1, livePort1.load());
+                            drivePorts();
                             const auto started = std::chrono::steady_clock::now();
-                            system_.runFrame();
+                            system_->runFrame();
                             shownEmulationMs = std::chrono::duration<double, std::milli>(
                                                    std::chrono::steady_clock::now() - started)
                                                    .count();
                             pacedFrames.fetch_add(1);
-                            const FrameView frame = system_.frame();
+                            const FrameView frame = system_->frame();
                             if (frame.rgba != nullptr && frame.width > 0 && frame.height > 0) {
                                 const std::size_t bytes = static_cast<std::size_t>(frame.width) *
                                                           static_cast<std::size_t>(frame.height) * 4;
@@ -1080,21 +1296,19 @@ int DesktopShell::run() {
                                 published.width = frame.width;
                                 published.height = frame.height;
                             }
-                            if (followAudio) {
-                                const AudioView audio = system_.audio();
-                                if (audio.samples != nullptr && audio.count > 0 && queuedSamples <= paceTarget &&
-                                    queuedSamples + audio.count < audioQueueSamples(config_.audioLatency)) {
-                                    const float volume = std::min(config_.volume, 1.0f);
-                                    chunk.resize(static_cast<std::size_t>(audio.count));
-                                    for (int index = 0; index < audio.count; ++index) {
-                                        chunk[static_cast<std::size_t>(index)] = audio.samples[index] * volume;
-                                    }
+                            const AudioView audio = system_->audio();
+                            if (wantAudio && audio.samples != nullptr && audio.count > 0 && queuedSamples <= paceTarget &&
+                                queuedSamples + audio.count < audioQueueSamples(config_.audioLatency)) {
+                                const float volume = std::min(config_.volume, 1.0f);
+                                chunk.resize(static_cast<std::size_t>(audio.count));
+                                for (int index = 0; index < audio.count; ++index) {
+                                    chunk[static_cast<std::size_t>(index)] = audio.samples[index] * volume;
                                 }
                             }
                             ++published.serial;
-                            const auto period = std::chrono::nanoseconds(system_.framePeriodNs());
+                            const auto period = std::chrono::nanoseconds(system_->framePeriodNs());
                             if (step) {
-                                system_.setPaused(true);
+                                system_->setPaused(true);
                             }
                             if (now < nextDue) {
                                 nextDue = now + period;
@@ -1168,12 +1382,12 @@ int DesktopShell::run() {
 
     const auto slotFile = [&](int slot) -> std::filesystem::path {
         std::lock_guard lock(gate);
-        if (!appPaths.has_value() || system_.contentId().size() != 64) {
+        if (!appPaths.has_value() || system_->contentId().size() != 64) {
             return {};
         }
         char name[32] = {};
         std::snprintf(name, sizeof(name), "slot-%02d.irstate", slot + 1);
-        return appPaths->states / system_.contentId() / name;
+        return appPaths->states / system_->contentId() / name;
     };
 
     const auto readFile = [](const std::filesystem::path& path, std::size_t limit, std::vector<std::uint8_t>& bytes, std::string& error) {
@@ -1205,12 +1419,12 @@ int DesktopShell::run() {
             return;
         }
         std::vector<std::uint8_t> bytes;
-        if (!system_.copyBattery(bytes)) {
+        if (!system_->copyBattery(bytes)) {
             return;
         }
         std::error_code failure;
         std::filesystem::create_directories(appPaths->saves, failure);
-        const auto file = appPaths->saves / (system_.contentId() + ".sav");
+        const auto file = appPaths->saves / (system_->contentId() + ".sav");
         if (failure || !writeBinaryFileAtomically(file, bytes.data(), bytes.size())) {
             log::error("Could not write the battery save.");
         }
@@ -1218,17 +1432,17 @@ int DesktopShell::run() {
 
     const auto importBattery = [&]() {
         std::lock_guard lock(gate);
-        if (!appPaths.has_value() || !system_.info().batteryBacked) {
+        if (!appPaths.has_value() || !system_->info().batteryBacked) {
             return;
         }
-        const auto file = appPaths->saves / (system_.contentId() + ".sav");
+        const auto file = appPaths->saves / (system_->contentId() + ".sav");
         std::error_code failure;
         if (!std::filesystem::is_regular_file(file, failure)) {
             return;
         }
         std::vector<std::uint8_t> bytes;
         std::string error;
-        if (!readFile(file, 2 * 1024 * 1024, bytes, error) || !system_.restoreBattery(bytes.data(), bytes.size(), error)) {
+        if (!readFile(file, 2 * 1024 * 1024, bytes, error) || !system_->restoreBattery(bytes.data(), bytes.size(), error)) {
             errorText = error.empty() ? "The battery save does not match this cartridge and was not loaded." : error;
             errorTitle = "Could not load the battery save";
             openError = true;
@@ -1238,7 +1452,7 @@ int DesktopShell::run() {
 
     const auto saveSelectedSlot = [&]() {
         std::lock_guard lock(gate);
-        if (!system_.loaded()) {
+        if (!system_->loaded()) {
             return;
         }
         if (!appPaths.has_value()) {
@@ -1250,7 +1464,7 @@ int DesktopShell::run() {
         std::vector<std::uint8_t> bytes;
         std::string error;
         const std::string description = slotDescriptions[static_cast<std::size_t>(selectedSlot)];
-        if (!system_.saveState(bytes, description, error)) {
+        if (!system_->saveState(bytes, description, error)) {
             errorText = error;
             errorTitle = "Could not save the state";
             openError = true;
@@ -1273,7 +1487,7 @@ int DesktopShell::run() {
 
     const auto loadSelectedSlot = [&]() {
         std::lock_guard lock(gate);
-        if (!system_.loaded()) {
+        if (!system_->loaded()) {
             return;
         }
         const auto file = slotFile(selectedSlot);
@@ -1286,7 +1500,7 @@ int DesktopShell::run() {
         }
         std::vector<std::uint8_t> bytes;
         std::string error;
-        if (!readFile(file, 4 * 1024 * 1024, bytes, error) || !system_.loadState(bytes.data(), bytes.size(), error)) {
+        if (!readFile(file, 4 * 1024 * 1024, bytes, error) || !system_->loadState(bytes.data(), bytes.size(), error)) {
             errorText = error.empty() ? "The state file is damaged or incomplete." : error;
             errorTitle = "Could not load the state";
             openError = true;
@@ -1319,14 +1533,15 @@ int DesktopShell::run() {
         std::lock_guard lock(gate);
         flushBattery();
         std::string error;
-        if (!system_.loadContent(path, error)) {
+        if (!system_->loadContent(path, error)) {
             errorText = error;
             errorTitle = "Could not open game";
             openError = true;
             log::error(error);
             return false;
         }
-        const SystemInfo info = system_.info();
+        const SystemInfo info = system_->info();
+        loadedGamePath = pathToUtf8(path);
         log::info(std::string("Loaded ") + info.title + " (" + info.detail + ").");
         if (info.batteryBacked) {
             log::warn("Battery-backed RAM is stored separately from save states.");
@@ -1336,7 +1551,7 @@ int DesktopShell::run() {
         entry.path = pathToUtf8(path);
         entry.title = info.title;
         entry.detail = info.detail;
-        entry.contentId = system_.contentId();
+        entry.contentId = system_->contentId();
         entry.addedUnixMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::system_clock::now().time_since_epoch())
                                 .count();
@@ -1360,8 +1575,8 @@ int DesktopShell::run() {
         dialog.kind = DialogKind::OpenRom;
         dialog.active = true;
         dialog.ready = false;
-        SDL_ShowOpenFileDialog(
-            onOpenFile, &dialog, session.window, kFilters, 2, basePath.empty() ? nullptr : basePath.c_str(), false);
+            SDL_ShowOpenFileDialog(
+            onOpenFile, &dialog, session.window, filters, 2, basePath.empty() ? nullptr : basePath.c_str(), false);
     };
 
     const auto scanFolder = [&](const std::filesystem::path& folder) {
@@ -1378,11 +1593,11 @@ int DesktopShell::run() {
         const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::system_clock::now().time_since_epoch())
                              .count();
-        const RomScan found = collectNesFiles(folder);
+        const RomScan found = kind == SystemKind::Snes ? collectRomFiles(folder, {".sfc", ".smc"}) : collectNesFiles(folder);
         for (const std::filesystem::path& file : found.files) {
             ContentDescription description;
             std::string describeError;
-            if (!system_.describeContent(file, description, describeError)) {
+            if (!system_->describeContent(file, description, describeError)) {
                 ++skipped;
                 continue;
             }
@@ -1480,19 +1695,24 @@ int DesktopShell::run() {
                     const int code = static_cast<int>(event.key.scancode);
                     if (ctrl && !alt && code == config_.input.openGame) {
                         showOpenDialog();
-                    } else if (ctrl && !alt && code == config_.input.reset && system_.loaded()) {
+                    } else if (ctrl && !alt && code == config_.input.reset && system_->loaded()) {
                         std::lock_guard lock(gate);
-                        system_.reset();
+                        system_->reset();
                     } else if (alt && !ctrl && code == config_.input.fullscreen) {
                         setFullscreen(!config_.fullscreen);
-                    } else if (!ctrl && !alt && !shift && code == config_.input.pause && system_.loaded()) {
+                    } else if (!ctrl && !alt && !shift && code == config_.input.pause && system_->loaded()) {
                         std::lock_guard lock(gate);
-                        system_.setPaused(!system_.paused());
-                    } else if (!ctrl && !alt && !shift && code == config_.input.quickSave && system_.loaded()) {
+                        system_->setPaused(!system_->paused());
+                    } else if (!ctrl && !alt && !shift && code == config_.input.quickSave && system_->loaded()) {
                         saveSelectedSlot();
-                    } else if (!ctrl && !alt && !shift && code == config_.input.quickLoad && system_.loaded()) {
+                    } else if (!ctrl && !alt && !shift && code == config_.input.quickLoad && system_->loaded()) {
                         loadSelectedSlot();
-                    } else if (shift && !ctrl && !alt && system_.loaded()) {
+                    } else if (!ctrl && !alt && !shift && code == config_.input.fastForward && system_->loaded()) {
+                        fastOn = !fastOn;
+                        fastForward.store(fastOn);
+                    } else if (!ctrl && !alt && !shift && code == config_.input.screenshot && system_->loaded()) {
+                        saveScreenshot();
+                    } else if (shift && !ctrl && !alt && system_->loaded()) {
                         int slot = -1;
                         if (event.key.scancode >= SDL_SCANCODE_1 && event.key.scancode <= SDL_SCANCODE_9) {
                             slot = event.key.scancode - SDL_SCANCODE_1;
@@ -1524,25 +1744,25 @@ int DesktopShell::run() {
             std::string chosen;
             bool failed = false;
             std::string failure;
-            DialogKind kind = DialogKind::OpenRom;
+            DialogKind dialogKind = DialogKind::OpenRom;
             {
                 std::lock_guard lock(dialog.mutex);
                 if (dialog.ready) {
                     chosen = dialog.path;
                     failed = dialog.failed;
                     failure = dialog.error;
-                    kind = dialog.kind;
+                    dialogKind = dialog.kind;
                     dialog.ready = false;
                     dialog.path.clear();
                 }
             }
             if (failed) {
                 errorText = failure;
-                errorTitle = kind == DialogKind::ScanFolder ? "Could not scan the folder" : "Could not open game";
+                errorTitle = dialogKind == DialogKind::ScanFolder ? "Could not scan the folder" : "Could not open game";
                 openError = true;
                 log::error(failure);
             } else if (!chosen.empty()) {
-                if (kind == DialogKind::ScanFolder) {
+                if (dialogKind == DialogKind::ScanFolder) {
                     scanFolder(pathFromUtf8(chosen));
                 } else {
                     openRom(pathFromUtf8(chosen));
@@ -1555,15 +1775,22 @@ int DesktopShell::run() {
         if (uiOwnsInput) {
             livePort0.store(0);
             livePort1.store(0);
+            turboPort0.store(0);
+            turboPort1.store(0);
         } else {
-            livePort0.store(padButtons(config_.controllers.port1, config_.controllers.pad1));
-            livePort1.store(padButtons(config_.controllers.port2, config_.controllers.pad2));
+            const PadSample port0 = padButtons(config_.controllers.port1, config_.controllers.pad1);
+            const PadSample port1 = padButtons(config_.controllers.port2, config_.controllers.pad2);
+            livePort0.store(port0.held);
+            livePort1.store(port1.held);
+            turboPort0.store(port0.turbo);
+            turboPort1.store(port1.turbo);
         }
         {
             std::lock_guard lock(gate);
-            viewLoaded = system_.loaded();
-            viewPaused = system_.paused();
-            viewInfo = viewLoaded ? system_.info() : SystemInfo{};
+            viewLoaded = system_->loaded();
+            viewPaused = system_->paused();
+            viewInfo = viewLoaded ? system_->info() : SystemInfo{};
+            viewContentId = viewLoaded ? system_->contentId() : std::string{};
             lastEmulationMs = shownEmulationMs;
             if (published.serial != queuedSerial) {
                 viewPicture = published.rgba;
@@ -1607,6 +1834,8 @@ int DesktopShell::run() {
             const std::string saveShortcut = scancodeLabel(config_.input.quickSave);
             const std::string loadShortcut = scancodeLabel(config_.input.quickLoad);
             const std::string pauseShortcut = scancodeLabel(config_.input.pause);
+            const std::string forwardShortcut = scancodeLabel(config_.input.fastForward);
+            const std::string screenshotShortcut = scancodeLabel(config_.input.screenshot);
             const std::string fullscreenShortcut = chord("Alt+", config_.input.fullscreen);
             chrome.width = static_cast<int>(std::lround(viewport->Size.x));
             chrome.height = static_cast<int>(std::lround(viewport->Size.y));
@@ -1670,6 +1899,7 @@ int DesktopShell::run() {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f * uiScale, 6.0f * uiScale));
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("File")) {
+                    ImGui::MenuItem(kind == SystemKind::Snes ? "System: Super NES" : "System: NES", nullptr, false, false);
                     if (ImGui::MenuItem("Open Game...", openShortcut.c_str())) {
                         showOpenDialog();
                     }
@@ -1696,8 +1926,10 @@ int DesktopShell::run() {
                     if (ImGui::MenuItem("Close Game", nullptr, false, viewLoaded)) {
                         flushBattery();
                         std::lock_guard lock(gate);
-                        system_.unload();
+                        system_->unload();
                         viewLoaded = false;
+                        loadedGamePath.clear();
+                        viewContentId.clear();
                     }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Exit")) {
@@ -1709,20 +1941,44 @@ int DesktopShell::run() {
                     const char* pauseLabel = viewPaused ? "Resume" : "Pause";
                     if (ImGui::MenuItem(pauseLabel, pauseShortcut.c_str(), false, viewLoaded)) {
                         std::lock_guard lock(gate);
-                        system_.setPaused(!system_.paused());
-                        viewPaused = system_.paused();
+                        system_->setPaused(!system_->paused());
+                        viewPaused = system_->paused();
                     }
                     if (ImGui::MenuItem("Reset", resetShortcut.c_str(), false, viewLoaded)) {
                         std::lock_guard lock(gate);
-                        system_.reset();
+                        system_->reset();
+                    }
+                    if (ImGui::MenuItem("Power Cycle", nullptr, false, viewLoaded)) {
+                        std::lock_guard lock(gate);
+                        system_->powerCycle();
+                    }
+                    if (ImGui::BeginMenu("Region")) {
+                        const auto chooseRegion = [&](RegionChoice choice) {
+                            config_.region = choice;
+                            std::lock_guard lock(gate);
+                            system_->setRegionChoice(choice);
+                        };
+                        if (ImGui::MenuItem("Automatic", nullptr, config_.region == RegionChoice::Automatic)) {
+                            chooseRegion(RegionChoice::Automatic);
+                        }
+                        if (ImGui::MenuItem("NTSC", nullptr, config_.region == RegionChoice::Ntsc)) {
+                            chooseRegion(RegionChoice::Ntsc);
+                        }
+                        if (ImGui::MenuItem("PAL", nullptr, config_.region == RegionChoice::Pal)) {
+                            chooseRegion(RegionChoice::Pal);
+                        }
+                        if (ImGui::MenuItem("Dendy", nullptr, config_.region == RegionChoice::Dendy)) {
+                            chooseRegion(RegionChoice::Dendy);
+                        }
+                        ImGui::EndMenu();
                     }
                     if (ImGui::MenuItem("Frame Step", nullptr, false, viewLoaded)) {
                         std::lock_guard lock(gate);
-                        system_.setPaused(true);
+                        system_->setPaused(true);
                         requestStep.store(true);
                         viewPaused = true;
                     }
-                    if (ImGui::MenuItem("Fast Forward", nullptr, fastOn, viewLoaded)) {
+                    if (ImGui::MenuItem("Fast Forward", forwardShortcut.c_str(), fastOn, viewLoaded)) {
                         fastOn = !fastOn;
                         fastForward.store(fastOn);
                     }
@@ -1735,6 +1991,10 @@ int DesktopShell::run() {
                     }
                     if (ImGui::MenuItem("State Slots...", nullptr, false, viewLoaded)) {
                         openStateSlots = true;
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Game Information", nullptr, false, viewLoaded)) {
+                        openGameInfo = true;
                     }
                     ImGui::EndMenu();
                 }
@@ -1814,7 +2074,7 @@ int DesktopShell::run() {
                         openPicture = true;
                     }
                     ImGui::MenuItem("Overscan", nullptr, &config_.overscan);
-                    if (ImGui::MenuItem("Screenshot", nullptr, false, viewLoaded && !viewPicture.empty())) {
+                    if (ImGui::MenuItem("Screenshot", screenshotShortcut.c_str(), false, viewLoaded && !viewPicture.empty())) {
                         saveScreenshot();
                     }
                     ImGui::Separator();
@@ -1877,13 +2137,13 @@ int DesktopShell::run() {
             ImGui::BeginDisabled(!viewLoaded);
             if (ImGui::Button(viewPaused ? "Resume" : "Pause")) {
                 std::lock_guard lock(gate);
-                system_.setPaused(!system_.paused());
-                viewPaused = system_.paused();
+                system_->setPaused(!system_->paused());
+                viewPaused = system_->paused();
             }
             ImGui::SameLine();
             if (ImGui::Button("Reset")) {
                 std::lock_guard lock(gate);
-                system_.reset();
+                system_->reset();
             }
             ImGui::SameLine();
             if (ImGui::Button("Save")) {
@@ -2135,6 +2395,10 @@ int DesktopShell::run() {
                         ImGui::SameLine();
                         bind("B", map.b);
                         ImGui::SameLine();
+                        bind("Turbo A", map.turboA);
+                        ImGui::SameLine();
+                        bind("Turbo B", map.turboB);
+                        ImGui::SameLine();
                         bind("Select", map.select);
                         ImGui::SameLine();
                         bind("Start", map.start);
@@ -2173,7 +2437,7 @@ int DesktopShell::run() {
             }
             const ImGuiViewport* settingsViewport = ImGui::GetMainViewport();
             ImGui::SetNextWindowPos(settingsViewport->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-            ImGui::SetNextWindowSize(ImVec2(560.0f, 520.0f), ImGuiCond_Appearing);
+            ImGui::SetNextWindowSize(ImVec2(560.0f, 560.0f), ImGuiCond_Appearing);
             if (beginClassicPopup("Settings", palette)) {
                 const auto applyDraft = [&]() {
                     if (bindingConflict(settingsDraft.input).has_value()) {
@@ -2185,10 +2449,10 @@ int DesktopShell::run() {
                     const bool vsyncChanged = settingsDraft.vsync != config_.vsync;
                     const bool wasFullscreen = (SDL_GetWindowFlags(session.window) & SDL_WINDOW_FULLSCREEN) != 0;
                     const bool fullscreenChanged = settingsDraft.fullscreen != wasFullscreen;
+                    const RegionChoice previousRegion = config_.region;
                     const int keptWidth = config_.windowWidth;
                     const int keptHeight = config_.windowHeight;
                     settingsDraft.controllers = config_.controllers;
-                    settingsDraft.overscan = config_.overscan;
                     config_ = settingsDraft;
                     config_.windowWidth = keptWidth;
                     config_.windowHeight = keptHeight;
@@ -2200,6 +2464,10 @@ int DesktopShell::run() {
                     }
                     if (logChanged) {
                         log::setLevel(config_.logLevel);
+                    }
+                    if (config_.region != previousRegion) {
+                        std::lock_guard lock(gate);
+                        system_->setRegionChoice(config_.region);
                     }
                     if (vsyncChanged && !SDL_GL_SetSwapInterval(config_.vsync ? 1 : 0)) {
                         config_.vsync = !config_.vsync;
@@ -2255,35 +2523,51 @@ int DesktopShell::run() {
                         ImGui::EndTabItem();
                     }
                     if (ImGui::BeginTabItem("Video")) {
+                        const auto tip = [](const char* text) { ImGui::SetItemTooltip("%s", text); };
                         int scale = static_cast<int>(settingsDraft.scaleMode);
                         if (ImGui::Combo("Scale", &scale, "Fit\0Integer\0")) {
                             settingsDraft.scaleMode = static_cast<ScaleMode>(scale);
                         }
+                        tip("Fit uses the window. Integer keeps whole pixels at the scale below.");
                         ImGui::SliderInt(
                             "Integer scale", &settingsDraft.integerScale, kMinimumIntegerScale, kMaximumIntegerScale);
+                        tip("Used when Scale is Integer. The range is 1 to 6.");
                         int aspect = static_cast<int>(settingsDraft.aspect);
                         if (ImGui::Combo("Aspect", &aspect, "Pixel\0Television 4:3\0")) {
                             settingsDraft.aspect = static_cast<AspectMode>(aspect);
                         }
+                        tip("Pixel keeps the PPU aspect. Television 4:3 is only a presentation stretch.");
                         int filter = static_cast<int>(settingsDraft.filter);
                         if (ImGui::Combo("Filter", &filter, "Original\0Smooth\0Sharp\0CRT\0")) {
                             settingsDraft.filter = static_cast<PictureFilter>(filter);
                         }
+                        tip("Samples the finished picture. The emulated image stays as the PPU drew it.");
                         ImGui::SliderFloat("Brightness", &settingsDraft.brightness, kBrightness.minimum, kBrightness.maximum, "%.2f");
+                        tip("Shifts the shown colors. It does not change the PPU palette.");
                         ImGui::SliderFloat("Contrast", &settingsDraft.contrast, kContrast.minimum, kContrast.maximum, "%.2f");
+                        tip("Scales the shown contrast. It does not change the PPU palette.");
                         ImGui::SliderFloat(
                             "Saturation", &settingsDraft.saturation, kSaturation.minimum, kSaturation.maximum, "%.2f");
+                        tip("Scales the shown color. Zero is grayscale.");
                         ImGui::SliderFloat("Gamma", &settingsDraft.gamma, kGamma.minimum, kGamma.maximum, "%.2f");
+                        tip("Adjusts the shown midtones.");
                         if (settingsDraft.filter == PictureFilter::Sharp) {
                             ImGui::SliderFloat(
                                 "Sharpness", &settingsDraft.sharpness, kSharpness.minimum, kSharpness.maximum, "%.2f");
+                            tip("Used by the Sharp filter.");
                         }
                         if (settingsDraft.filter == PictureFilter::Crt) {
                             ImGui::SliderFloat("Scanlines", &settingsDraft.scanline, kScanline.minimum, kScanline.maximum, "%.2f");
+                            tip("Darkens every other shown line. Zero turns scanlines off.");
                         }
+                        ImGui::Checkbox("Overscan", &settingsDraft.overscan);
+                        tip("Crops eight pixels from each edge of the shown picture. The emulated picture is left as the system drew it.");
                         ImGui::Checkbox("Fullscreen", &settingsDraft.fullscreen);
+                        tip("Fills the display. Alt and the Fullscreen key do the same.");
                         ImGui::Checkbox("VSync", &settingsDraft.vsync);
+                        tip("Waits for the display refresh before swapping the window.");
                         ImGui::Checkbox("Performance", &settingsDraft.showPerformance);
+                        tip("Shows frame timing on the picture.");
                         ImGui::TextWrapped("These settings change how the picture is shown. The emulated image stays as the PPU drew it.");
                         ImGui::EndTabItem();
                     }
@@ -2327,6 +2611,8 @@ int DesktopShell::run() {
                         ImGui::TextUnformatted("Controller");
                         drawBindingButton("A", settingsDraft.input.a, nullptr, captureBinding);
                         drawBindingButton("B", settingsDraft.input.b, nullptr, captureBinding);
+                        drawBindingButton("Turbo A", settingsDraft.input.turboA, nullptr, captureBinding);
+                        drawBindingButton("Turbo B", settingsDraft.input.turboB, nullptr, captureBinding);
                         drawBindingButton("Select", settingsDraft.input.select, nullptr, captureBinding);
                         drawBindingButton("Start", settingsDraft.input.start, nullptr, captureBinding);
                         drawBindingButton("Up", settingsDraft.input.up, nullptr, captureBinding);
@@ -2339,11 +2625,26 @@ int DesktopShell::run() {
                         drawBindingButton("Quick save", settingsDraft.input.quickSave, nullptr, captureBinding);
                         drawBindingButton("Quick load", settingsDraft.input.quickLoad, nullptr, captureBinding);
                         drawBindingButton("Pause", settingsDraft.input.pause, nullptr, captureBinding);
+                        drawBindingButton("Fast forward", settingsDraft.input.fastForward, nullptr, captureBinding);
+                        drawBindingButton("Screenshot", settingsDraft.input.screenshot, nullptr, captureBinding);
                         drawBindingButton("Fullscreen", settingsDraft.input.fullscreen, "Alt+", captureBinding);
                         drawBindingButton("Reset", settingsDraft.input.reset, "Ctrl+", captureBinding);
                         ImGui::TextWrapped(
                             "Click a key, then press the replacement. Numpad Enter also presses Start. "
-                            "Shift+1 through Shift+0 still select state slots.");
+                            "Shift+1 through Shift+0 still select state slots. "
+                            "Fast forward skips the frame wait, and a screenshot saves the shown picture.");
+                        ImGui::EndTabItem();
+                    }
+                    if (ImGui::BeginTabItem("Emulation")) {
+                        int region = static_cast<int>(settingsDraft.region);
+                        if (ImGui::Combo("Region", &region, "Automatic\0NTSC\0PAL\0Dendy\0")) {
+                            settingsDraft.region = static_cast<RegionChoice>(region);
+                        }
+                        ImGui::SetItemTooltip(
+                            "Automatic follows the cartridge header. The other choices change the frame length without clearing work RAM.");
+                        ImGui::TextWrapped(
+                            "Apply stores the choice. Power Cycle and Reset stay in the Emulation menu. "
+                            "Power Cycle clears work RAM. Reset keeps it. Battery-backed cartridge RAM stays either way.");
                         ImGui::EndTabItem();
                     }
                     if (ImGui::BeginTabItem("Paths")) {
@@ -2360,6 +2661,8 @@ int DesktopShell::run() {
                             ImGui::TextWrapped("%s", pathToUtf8(appPaths->saves).c_str());
                             ImGui::TextWrapped("Logs");
                             ImGui::TextWrapped("%s", pathToUtf8(appPaths->logs).c_str());
+                            ImGui::TextWrapped("Screenshots");
+                            ImGui::TextWrapped("%s", pathToUtf8(appPaths->screenshots).c_str());
                             if (ImGui::Button("Open data folder")) {
 #if defined(_WIN32)
                                 const auto opened = reinterpret_cast<INT_PTR>(ShellExecuteW(
@@ -2419,7 +2722,7 @@ int DesktopShell::run() {
                 }
                 if (beginClassicPopup("Reset settings", palette, ImGuiWindowFlags_AlwaysAutoResize)) {
                     ImGui::TextWrapped(
-                        "Theme, picture, audio, and controls return to their defaults. The window size stays as it is.");
+                        "Theme, picture, audio, region, and controls return to their defaults. The window size stays as it is.");
                     if (ImGui::Button("Reset", ImVec2(75.0f, 0.0f))) {
                         const int width = settingsDraft.windowWidth;
                         const int height = settingsDraft.windowHeight;
@@ -2462,6 +2765,17 @@ int DesktopShell::run() {
                 }
                 ImGui::EndPopup();
             }
+            if (openGameInfo) {
+                gameInfoText = viewInfo.title + "\n" + viewInfo.detail;
+                gameInfoText += viewInfo.batteryBacked ? "\nBattery-backed RAM" : "\nNo battery-backed RAM";
+                if (!viewContentId.empty()) {
+                    gameInfoText += "\n" + viewContentId;
+                }
+                if (!loadedGamePath.empty()) {
+                    gameInfoText += "\n" + loadedGamePath;
+                }
+            }
+            drawModal("Game Information", gameInfoText.c_str(), openGameInfo, palette);
             drawModal("About Iris Emulator", aboutText.c_str(), openAbout, palette);
             if (openPicture) {
                 ImGui::OpenPopup("Picture");
@@ -2517,7 +2831,7 @@ int DesktopShell::run() {
                             readFile(file, 4 * 1024 * 1024, bytes, error)) {
                             {
                                 std::lock_guard lock(gate);
-                                system_.inspectState(bytes.data(), bytes.size(), preview);
+                                system_->inspectState(bytes.data(), bytes.size(), preview);
                             }
                         }
                         slotPreviews[static_cast<std::size_t>(slot)] = preview;
@@ -2532,7 +2846,10 @@ int DesktopShell::run() {
                         }
                     }
                 }
-                ImGui::TextUnformatted("F5 saves the current slot. F7 loads it. Shift+1 through Shift+0 select a slot.");
+                const std::string slotHint = scancodeLabel(config_.input.quickSave) + " saves the current slot. " +
+                                             scancodeLabel(config_.input.quickLoad) +
+                                             " loads it. Shift+1 through Shift+0 select a slot.";
+                ImGui::TextUnformatted(slotHint.c_str());
                 ImGui::Spacing();
                 if (ImGui::BeginChild("##state-slots", ImVec2(560.0f, 360.0f), ImGuiChildFlags_Borders)) {
                     for (int slot = 0; slot < kStateSlots; ++slot) {

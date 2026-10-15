@@ -1,5 +1,7 @@
 #pragma once
 
+#include "iris/region_choice.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -60,6 +62,11 @@ inline constexpr std::uint8_t kButtonDown = 0x20;
 inline constexpr std::uint8_t kButtonLeft = 0x40;
 inline constexpr std::uint8_t kButtonRight = 0x80;
 
+// Turbo is pressed for one emulated frame and released for the next. A button that is also held stays down.
+[[nodiscard]] inline std::uint8_t applyTurbo(std::uint8_t held, std::uint8_t turbo, bool on) {
+    return on ? static_cast<std::uint8_t>(held | turbo) : held;
+}
+
 // The desktop shell talks only to this interface. It does not include CPU, PPU, or mapper types.
 class IEmulatedSystem {
 public:
@@ -69,6 +76,9 @@ public:
     virtual void unload() = 0;
     [[nodiscard]] virtual bool loaded() const = 0;
     virtual void reset() = 0;
+    virtual void powerCycle() = 0;
+    virtual void setRegionChoice(RegionChoice choice) = 0;
+    [[nodiscard]] virtual RegionChoice regionChoice() const = 0;
     virtual void setPaused(bool paused) = 0;
     [[nodiscard]] virtual bool paused() const = 0;
     virtual void runFrame() = 0;

@@ -7,7 +7,7 @@ alwaysApply: true
 
 Read `docs/PRD.md`, `docs/ARCHITECTURE.md`, and `docs/ROADMAP.md` before changing architecture.
 
-- Implement one milestone at a time. Milestone 11 (play, input, and picture timing) is implemented. Do not start later work: other consoles, a multi-system factory, or full mobile frontends.
+- Implement one milestone at a time. Milestone 15 (Super NES LoROM) is implemented. Do not start later work: other consoles, a multi-system factory, or full mobile frontends.
 - The emulation core must not include SDL window types, ImGui, or Win32 UI types. Desktop code calls services and does not read CPU or PPU internals.
 - Do not add menu items, settings, or buttons that do not work.
 - Do not add commercial ROMs, proprietary firmware, copied UI assets, or a copy of Tahoma.

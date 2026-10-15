@@ -271,7 +271,8 @@ bool saveLibraryFile(const std::filesystem::path& path, const GameLibrary& libra
     return writeTextFileAtomically(path, LibraryService::toJson(library) + "\n");
 }
 
-RomScan collectNesFiles(const std::filesystem::path& folder, int maxDepth, std::size_t maxFiles) {
+RomScan collectRomFiles(
+    const std::filesystem::path& folder, const std::vector<std::string>& extensions, int maxDepth, std::size_t maxFiles) {
     RomScan scan;
     if (maxDepth < 0) {
         maxDepth = 0;
@@ -300,7 +301,14 @@ RomScan collectNesFiles(const std::filesystem::path& folder, int maxDepth, std::
         for (char& character : extension) {
             character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
         }
-        if (extension != ".nes") {
+        bool matched = false;
+        for (const std::string& wanted : extensions) {
+            if (extension == wanted) {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
             continue;
         }
         if (scan.files.size() >= maxFiles) {
@@ -313,6 +321,10 @@ RomScan collectNesFiles(const std::filesystem::path& folder, int maxDepth, std::
         scan.incomplete = true;
     }
     return scan;
+}
+
+RomScan collectNesFiles(const std::filesystem::path& folder, int maxDepth, std::size_t maxFiles) {
+    return collectRomFiles(folder, {".nes"}, maxDepth, maxFiles);
 }
 
 }  // namespace iris

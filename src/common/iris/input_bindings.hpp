@@ -12,6 +12,8 @@ inline constexpr int kMaxScancode = 511;
 struct InputBindings {
     int a = 29;             // Z
     int b = 27;             // X
+    int turboA = 4;         // A
+    int turboB = 22;        // S
     int select = 229;       // Right Shift
     int start = 40;         // Return
     int up = 82;
@@ -22,6 +24,8 @@ struct InputBindings {
     int quickSave = 62;     // F5
     int quickLoad = 64;     // F7
     int pause = 41;         // Escape
+    int fastForward = 66;   // F9
+    int screenshot = 69;    // F12
     int fullscreen = 40;    // Return, used with Alt
     int reset = 21;         // R, used with Ctrl
 
@@ -35,25 +39,28 @@ struct InputBindings {
 // Pad keys are unique. Unmodified shortcuts are unique and are not pad keys.
 // Open and Reset share the Ctrl chord, so they conflict only with each other.
 // Fullscreen uses Alt, so it may reuse Return, which is also Start.
+// Fast forward and screenshot are unmodified keys.
 [[nodiscard]] inline std::optional<std::string> bindingConflict(const InputBindings& bindings) {
     const int pad[] = {
-        bindings.a, bindings.b, bindings.select, bindings.start, bindings.up, bindings.down, bindings.left, bindings.right};
-    const char* padNames[] = {"A", "B", "Select", "Start", "Up", "Down", "Left", "Right"};
+        bindings.a,     bindings.b,    bindings.turboA, bindings.turboB, bindings.select, bindings.start,
+        bindings.up,    bindings.down, bindings.left,   bindings.right};
+    const char* padNames[] = {"A", "B", "Turbo A", "Turbo B", "Select", "Start", "Up", "Down", "Left", "Right"};
     for (const int code : pad) {
         if (!validScancode(code)) {
             return "A controller key is not a valid key.";
         }
     }
-    for (int i = 0; i < 8; ++i) {
-        for (int j = i + 1; j < 8; ++j) {
+    for (int i = 0; i < 10; ++i) {
+        for (int j = i + 1; j < 10; ++j) {
             if (pad[i] == pad[j]) {
                 return std::string(padNames[i]) + " and " + padNames[j] + " use the same key.";
             }
         }
     }
 
-    const int plain[] = {bindings.quickSave, bindings.quickLoad, bindings.pause};
-    const char* plainNames[] = {"Quick save", "Quick load", "Pause"};
+    const int plain[] = {
+        bindings.quickSave, bindings.quickLoad, bindings.pause, bindings.fastForward, bindings.screenshot};
+    const char* plainNames[] = {"Quick save", "Quick load", "Pause", "Fast forward", "Screenshot"};
     for (const int code : plain) {
         if (!validScancode(code)) {
             return "A shortcut is not a valid key.";
@@ -62,13 +69,13 @@ struct InputBindings {
     if (!validScancode(bindings.openGame) || !validScancode(bindings.fullscreen) || !validScancode(bindings.reset)) {
         return "A shortcut is not a valid key.";
     }
-    for (int i = 0; i < 3; ++i) {
-        for (int j = 0; j < 8; ++j) {
+    for (int i = 0; i < 5; ++i) {
+        for (int j = 0; j < 10; ++j) {
             if (plain[i] == pad[j]) {
                 return std::string(plainNames[i]) + " and " + padNames[j] + " use the same key.";
             }
         }
-        for (int j = i + 1; j < 3; ++j) {
+        for (int j = i + 1; j < 5; ++j) {
             if (plain[i] == plain[j]) {
                 return std::string(plainNames[i]) + " and " + plainNames[j] + " use the same key.";
             }

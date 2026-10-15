@@ -113,3 +113,41 @@ Full mobile frontends and other consoles are not started.
 - Version 0.11.0. Configuration version 4 adds the controller ports and overscan. Versions 1, 2, and 3 still load.
 
 Full mobile frontends and other consoles are not started.
+
+## Milestone 12 — Region and power cycle (implemented)
+
+- Emulation, Region chooses Automatic, NTSC, PAL, or Dendy. Automatic follows the cartridge header. The other three override it and change the frame length without clearing work RAM.
+- Emulation, Power Cycle clears work RAM and restarts the CPU. Battery-backed cartridge RAM stays. Reset still keeps work RAM.
+- Emulation, Game Information shows the title, mapper, region, battery, content id, and file path.
+- Version 0.12.0. Configuration version 5 adds `emulation.region`. Versions 1, 2, 3, and 4 still load.
+
+Full mobile frontends and other consoles are not started.
+
+## Milestone 13 — Turbo (implemented)
+
+- Settings maps Turbo A and Turbo B. The defaults are A and S. A gamepad uses the right shoulder and the left shoulder.
+- Turbo is on for one emulated frame and off for the next. Holding the normal button at the same time keeps that button down.
+- Version 0.13.0. Configuration version 6 adds the turbo keys. Versions 1 through 5 still load.
+
+Full mobile frontends and other consoles are not started.
+
+## Milestone 14 — Settings for region, overscan, and shortcuts (implemented)
+
+- Settings, Emulation chooses Automatic, NTSC, PAL, or Dendy. Apply is what changes the running system. The Emulation menu still changes it immediately.
+- Settings, Video includes overscan. The View menu still toggles it immediately.
+- Settings maps Fast Forward and Screenshot. The defaults are F9 and F12. Those keys are shown on the menus.
+- Settings, Paths shows the screenshots folder beside the other data folders.
+- Version 0.14.0. Configuration version 7 adds the fast-forward and screenshot keys. Versions 1 through 6 still load.
+
+Full mobile frontends and other consoles are not started.
+
+## Milestone 15 — Super NES LoROM (implemented)
+
+- The startup screen offers NES and Super NES. Each card can continue into the window or play Iris Demo. A `.sfc` or `.smc` path selects Super NES. The NES core is unchanged.
+- Super NES loads LoROM and HiROM, with or without a 512-byte copier header. Other mappings are refused.
+- The CPU runs in emulation mode or native mode. REP can widen the accumulator to 16 bits. XCE switches modes. NMI is raised at vblank. An opcode that is still missing stops the CPU and the status line names it.
+- Background modes 0 through 7 and 8×8 sprites are drawn into a 256×224 picture. Mode 2 does not apply its offset layer, and modes 5 and 6 stay 256 pixels wide. General DMA and direct or indirect HDMA can write video registers. Window 1 can mask a background or sprite, and color math can add or subtract a fixed color. The CPU runs the 65816 instruction set. A game can wait on vblank, use the multiply and divide registers, and keep LoROM or HiROM save RAM. Controller port 1 is live. The sound chip is silent. Iris Demo draws stripes and a marker moved with the direction keys. Enhancement chips and Super NES save states are not in this build.
+- The startup cards use original console drawings. Battery mode uses the same process and thread opt-out as NES, and the Super NES interpreter is optimized in debug builds so a frame still finishes on battery.
+- Version 0.15.0. The configuration schema stays at version 7.
+
+Full mobile frontends and other consoles are not started.

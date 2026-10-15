@@ -5,6 +5,7 @@
 #include "iris/log.hpp"
 #include "iris/nes/nes_system.hpp"
 #include "iris/paths.hpp"
+#include "iris/snes/snes_system.hpp"
 #include "iris/version.hpp"
 
 #include <chrono>
@@ -19,7 +20,9 @@ namespace {
 
 int profileContent(const std::filesystem::path& path) {
     constexpr int kFrames = 300;
-    auto system = systems::nes::createNesSystem();
+    const SystemKind kind = systemKindForPath(path);
+    std::unique_ptr<IEmulatedSystem> system =
+        kind == SystemKind::Snes ? systems::snes::createSnesSystem() : systems::nes::createNesSystem();
     std::string error;
     if (!system->loadContent(path, error)) {
         std::cerr << error << '\n';
@@ -128,8 +131,13 @@ int Application::run(int argc, char** argv) {
             return code;
         }
 
-        const auto system = systems::nes::createNesSystem();
-        DesktopShell shell(config, *system, initialRom);
+        const auto createSystem = [](SystemKind kind) -> std::unique_ptr<IEmulatedSystem> {
+            if (kind == SystemKind::Snes) {
+                return systems::snes::createSnesSystem();
+            }
+            return systems::nes::createNesSystem();
+        };
+        DesktopShell shell(config, createSystem, initialRom);
         const int code = shell.run();
         if (code == 0 && persistConfig) {
             if (!saveConfigFile(paths->configFile, shell.config())) {

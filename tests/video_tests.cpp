@@ -80,7 +80,7 @@ TEST_CASE("version 1 configuration gains presentation defaults") {
     const auto parsed = iris::ConfigService::fromJson(
         R"({"version":1,"ui":{"theme":"xp-blue","windowWidth":1024,"windowHeight":768},"logging":{"level":"info"}})");
     REQUIRE(parsed.ok());
-    REQUIRE(parsed.value().version == 4);
+    REQUIRE(parsed.value().version == 7);
     REQUIRE(parsed.value().scaleMode == iris::ScaleMode::Fit);
     REQUIRE(parsed.value().filter == iris::PictureFilter::Nearest);
     REQUIRE(parsed.value().aspect == iris::AspectMode::Pixel);
@@ -123,6 +123,25 @@ TEST_CASE("version 2 picture settings round-trip and reject values outside their
     REQUIRE_FALSE(badGamma.ok());
 
     const auto future = iris::ConfigService::fromJson(
-        R"({"version":5,"ui":{"theme":"xp-blue","windowWidth":1024,"windowHeight":768},"logging":{"level":"info"}})");
+        R"({"version":8,"ui":{"theme":"xp-blue","windowWidth":1024,"windowHeight":768},"logging":{"level":"info"}})");
     REQUIRE_FALSE(future.ok());
+
+    iris::Config regionConfig = iris::ConfigService::defaults();
+    regionConfig.region = iris::RegionChoice::Dendy;
+    const auto regionParsed = iris::ConfigService::fromJson(iris::ConfigService::toJson(regionConfig));
+    REQUIRE(regionParsed.ok());
+    REQUIRE(regionParsed.value().version == 7);
+    REQUIRE(regionParsed.value().region == iris::RegionChoice::Dendy);
+    auto regionText = iris::ConfigService::toJson(iris::ConfigService::defaults());
+    const auto autoAt = regionText.find("\"auto\"");
+    REQUIRE(autoAt != std::string::npos);
+    regionText.replace(autoAt, 6, "\"secam\"");
+    REQUIRE_FALSE(iris::ConfigService::fromJson(regionText).ok());
+
+    const auto version6 = iris::ConfigService::fromJson(
+        R"({"version":6,"ui":{"theme":"blue","windowWidth":1024,"windowHeight":768},"logging":{"level":"info"},"video":{"scaleMode":"fit","integerScale":3,"aspectRatio":"pixel","filter":"nearest","fullscreen":false,"vsync":true,"showPerformance":false,"brightness":0.0,"contrast":1.0,"saturation":1.0,"gamma":1.0,"sharpness":2.0,"scanline":0.5,"overscan":false},"audio":{"volume":1.0,"muted":false,"device":"","latency":"balanced"},"input":{"a":29,"b":27,"turboA":4,"turboB":22,"select":229,"start":40,"up":82,"down":81,"left":80,"right":79,"openGame":18,"quickSave":62,"quickLoad":64,"pause":41,"fullscreen":40,"reset":21},"library":{"show":true},"controllers":{"port1":"keyboard","port2":"","pad1":{"a":1,"b":0,"turboA":10,"turboB":9,"select":4,"start":6,"up":11,"down":12,"left":13,"right":14},"pad2":{"a":1,"b":0,"turboA":10,"turboB":9,"select":4,"start":6,"up":11,"down":12,"left":13,"right":14}},"emulation":{"region":"auto"}})");
+    REQUIRE(version6.ok());
+    REQUIRE(version6.value().input.fastForward == 66);
+    REQUIRE(version6.value().input.screenshot == 69);
+    REQUIRE(version6.value().version == 7);
 }

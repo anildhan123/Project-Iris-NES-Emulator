@@ -1,6 +1,7 @@
 #pragma once
 
 #include "iris/emulated_system.hpp"
+#include "iris/region_choice.hpp"
 #include "iris/nes/bus.hpp"
 #include "iris/nes/cartridge.hpp"
 #include "iris/nes/mapper.hpp"
@@ -25,6 +26,9 @@ public:
     void unload() override;
     [[nodiscard]] bool loaded() const override { return loaded_; }
     void reset() override;
+    void powerCycle() override;
+    void setRegionChoice(iris::RegionChoice choice) override;
+    [[nodiscard]] iris::RegionChoice regionChoice() const override { return regionChoice_; }
     void setPaused(bool paused) override { paused_ = paused; }
     [[nodiscard]] bool paused() const override { return paused_; }
     void runFrame() override;
@@ -45,6 +49,7 @@ public:
 
 private:
     bool adopt(Cartridge cartridge, std::string& error);
+    void applyRegion();
     void clockCpuCycle();
     [[nodiscard]] bool irqLine() const;
     void refreshContentId();
@@ -63,6 +68,7 @@ private:
     std::string title_;
     std::string contentId_;
     Region region_ = Region::Ntsc;
+    iris::RegionChoice regionChoice_ = iris::RegionChoice::Automatic;
     int ppuNumerator_ = 3;
     int ppuDenominator_ = 1;
     int ppuAccum_ = 0;

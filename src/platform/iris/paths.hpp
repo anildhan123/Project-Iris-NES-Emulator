@@ -79,7 +79,14 @@ struct RomScan {
     bool incomplete = false;
 };
 
-// Walks folder and its subfolders for *.nes files. Directory links are not followed.
+// Walks folder and its subfolders. Directory links are not followed.
+// extensions are lowercase and include the dot, such as ".nes" or ".sfc".
+[[nodiscard]] RomScan collectRomFiles(
+    const std::filesystem::path& folder,
+    const std::vector<std::string>& extensions,
+    int maxDepth = kMaxRomScanDepth,
+    std::size_t maxFiles = kMaxRomScanFiles);
+
 [[nodiscard]] RomScan collectNesFiles(
     const std::filesystem::path& folder,
     int maxDepth = kMaxRomScanDepth,

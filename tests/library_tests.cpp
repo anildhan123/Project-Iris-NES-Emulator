@@ -1,4 +1,5 @@
 #include "iris/config.hpp"
+#include "iris/emulated_system.hpp"
 #include "iris/input_bindings.hpp"
 #include "iris/library.hpp"
 #include "iris/paths.hpp"
@@ -89,7 +90,11 @@ TEST_CASE("version 1 and 2 configuration migrates and version 3 keeps audio and 
     const auto version1 = iris::ConfigService::fromJson(
         R"({"version":1,"ui":{"theme":"xp-blue","windowWidth":1024,"windowHeight":768},"logging":{"level":"info"}})");
     REQUIRE(version1.ok());
-    REQUIRE(version1.value().version == 4);
+    REQUIRE(version1.value().version == 7);
+    REQUIRE(version1.value().input.turboA == 4);
+    REQUIRE(version1.value().input.turboB == 22);
+    REQUIRE(version1.value().input.fastForward == 66);
+    REQUIRE(version1.value().input.screenshot == 69);
     REQUIRE(version1.value().volume == 1.0f);
     REQUIRE(version1.value().showLibrary);
     REQUIRE(version1.value().input.a == 29);
@@ -98,7 +103,7 @@ TEST_CASE("version 1 and 2 configuration migrates and version 3 keeps audio and 
     const auto version2 = iris::ConfigService::fromJson(
         R"({"version":2,"ui":{"theme":"xp-blue","windowWidth":1024,"windowHeight":768},"logging":{"level":"info"},"video":{"scaleMode":"integer","integerScale":2,"aspectRatio":"4:3","filter":"crt","fullscreen":false,"vsync":true,"showPerformance":false,"brightness":0,"contrast":1,"saturation":1,"gamma":1,"sharpness":2,"scanline":0.5}})");
     REQUIRE(version2.ok());
-    REQUIRE(version2.value().version == 3);
+    REQUIRE(version2.value().version == 7);
     REQUIRE(version2.value().scaleMode == iris::ScaleMode::Integer);
     REQUIRE(version2.value().integerScale == 2);
     REQUIRE(version2.value().audioDevice.empty());
@@ -109,8 +114,8 @@ TEST_CASE("version 1 and 2 configuration migrates and version 3 keeps audio and 
     config.muted = true;
     config.audioDevice = "Speakers";
     config.audioLatency = iris::AudioLatency::Long;
-    config.input.a = 4;
-    config.input.b = 5;
+    config.input.a = 6;
+    config.input.b = 7;
     config.showLibrary = false;
     const auto roundTrip = iris::ConfigService::fromJson(iris::ConfigService::toJson(config));
     REQUIRE(roundTrip.ok());
@@ -150,4 +155,19 @@ TEST_CASE("controller bindings reject duplicate keys and allow Alt+Enter beside 
     bindings = iris::InputBindings{};
     bindings.fullscreen = bindings.start;
     REQUIRE_FALSE(iris::bindingConflict(bindings).has_value());
+
+    bindings = iris::InputBindings{};
+    bindings.turboA = bindings.a;
+    const auto sameTurbo = iris::bindingConflict(bindings);
+    REQUIRE(sameTurbo.has_value());
+    REQUIRE(sameTurbo->find("Turbo A") != std::string::npos);
+
+    bindings = iris::InputBindings{};
+    bindings.screenshot = bindings.pause;
+    const auto sameShot = iris::bindingConflict(bindings);
+    REQUIRE(sameShot.has_value());
+    REQUIRE(sameShot->find("Screenshot") != std::string::npos);
+
+    REQUIRE(iris::applyTurbo(iris::kButtonB, iris::kButtonA, true) == (iris::kButtonA | iris::kButtonB));
+    REQUIRE(iris::applyTurbo(iris::kButtonB, iris::kButtonA, false) == iris::kButtonB);
 }

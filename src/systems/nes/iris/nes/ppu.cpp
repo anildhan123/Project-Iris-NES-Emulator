@@ -20,6 +20,10 @@ void Ppu::connect(Mapper* mapper, Mirroring mirroring) {
 void Ppu::setTiming(int scanlines, bool oddFrameSkip) {
     scanlines_ = scanlines < 262 ? 262 : scanlines;
     oddFrameSkip_ = oddFrameSkip;
+    if (scanline_ >= scanlines_) {
+        scanline_ = 0;
+        dot_ = 0;
+    }
 }
 
 Mirroring Ppu::activeMirroring() const { return mapper_ != nullptr ? mapper_->mirroring() : mirroring_; }

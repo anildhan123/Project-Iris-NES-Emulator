@@ -229,3 +229,25 @@ TEST_CASE("PAL and Dendy headers select their own frame length") {
     pal.runFrame();
     REQUIRE(pal.audio().count > ntsc.audio().count + 50);
 }
+
+TEST_CASE("a region choice overrides the header and power cycle clears work RAM") {
+    auto rom = makeRom(0, 0, 1, 1, 0, true);
+    putPrg(rom, 0, {0xA9, 0x5A, 0x85, 0x00, 0x4C, 0x04, 0x80});
+    putVector(rom, 16384, 0x8000, 0x8000);
+
+    iris::systems::nes::NesSystem nes;
+    std::string error;
+    nes.setRegionChoice(iris::RegionChoice::Pal);
+    REQUIRE(nes.loadBytes(rom.data(), rom.size(), "region", error));
+    REQUIRE(nes.info().detail == "NROM, PAL");
+    REQUIRE(nes.framePeriodNs() != iris::systems::nes::kNtscFrameNs);
+    nes.runFrame();
+    REQUIRE(nes.debugRead(0x00) == 0x5A);
+    nes.reset();
+    REQUIRE(nes.debugRead(0x00) == 0x5A);
+    nes.powerCycle();
+    REQUIRE(nes.debugRead(0x00) == 0x00);
+    nes.setRegionChoice(iris::RegionChoice::Automatic);
+    REQUIRE(nes.info().detail == "NROM, NTSC");
+    REQUIRE(nes.framePeriodNs() == iris::systems::nes::kNtscFrameNs);
+}

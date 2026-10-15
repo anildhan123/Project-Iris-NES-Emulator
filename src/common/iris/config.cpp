@@ -25,6 +25,36 @@ const char* themeName(Theme theme) {
     return "blue";
 }
 
+const char* regionName(RegionChoice choice) {
+    switch (choice) {
+    case RegionChoice::Ntsc:
+        return "ntsc";
+    case RegionChoice::Pal:
+        return "pal";
+    case RegionChoice::Dendy:
+        return "dendy";
+    case RegionChoice::Automatic:
+        return "auto";
+    }
+    return "auto";
+}
+
+std::optional<RegionChoice> regionFromName(std::string_view name) {
+    if (name == "auto") {
+        return RegionChoice::Automatic;
+    }
+    if (name == "ntsc") {
+        return RegionChoice::Ntsc;
+    }
+    if (name == "pal") {
+        return RegionChoice::Pal;
+    }
+    if (name == "dendy") {
+        return RegionChoice::Dendy;
+    }
+    return std::nullopt;
+}
+
 std::optional<Theme> themeFromName(std::string_view name) {
     if (name == "blue" || name == "xp-blue") {
         return Theme::Blue;
@@ -178,11 +208,11 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
         return invalid("Expected a JSON object.");
     }
     if (!document.contains("version") || !document["version"].is_number_integer()) {
-        return invalid("Unsupported configuration version. Expected version 1, 2, 3, or 4.");
+        return invalid("Unsupported configuration version. Expected version 1, 2, 3, 4, 5, 6, or 7.");
     }
     const auto version = document["version"].get<std::int64_t>();
-    if (version != 1 && version != 2 && version != 3 && version != 4) {
-        return invalid("Unsupported configuration version. Expected version 1, 2, 3, or 4.");
+    if (version != 1 && version != 2 && version != 3 && version != 4 && version != 5 && version != 6 && version != 7) {
+        return invalid("Unsupported configuration version. Expected version 1, 2, 3, 4, 5, 6, or 7.");
     }
 
     std::string message;
@@ -200,6 +230,12 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
     } else if (version == 4 &&
                !hasOnly(
                    document, {"version", "ui", "logging", "video", "audio", "input", "library", "controllers"}, message)) {
+        return invalid(std::move(message));
+    } else if ((version == 5 || version == 6 || version == 7) &&
+               !hasOnly(
+                   document,
+                   {"version", "ui", "logging", "video", "audio", "input", "library", "controllers", "emulation"},
+                   message)) {
         return invalid(std::move(message));
     }
 
@@ -344,15 +380,37 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
             }
 
             const Json& input = document["input"];
-            if (!hasOnly(
-                    input,
-                    {"a", "b", "select", "start", "up", "down", "left", "right", "openGame", "quickSave", "quickLoad",
-                     "pause", "fullscreen", "reset"},
-                    message)) {
+            if (version >= 7) {
+                if (!hasOnly(
+                        input,
+                        {"a", "b", "turboA", "turboB", "select", "start", "up", "down", "left", "right", "openGame",
+                         "quickSave", "quickLoad", "pause", "fastForward", "screenshot", "fullscreen", "reset"},
+                        message)) {
+                    return invalid(std::move(message));
+                }
+            } else if (version >= 6) {
+                if (!hasOnly(
+                        input,
+                        {"a", "b", "turboA", "turboB", "select", "start", "up", "down", "left", "right", "openGame",
+                         "quickSave", "quickLoad", "pause", "fullscreen", "reset"},
+                        message)) {
+                    return invalid(std::move(message));
+                }
+            } else if (!hasOnly(
+                           input,
+                           {"a", "b", "select", "start", "up", "down", "left", "right", "openGame", "quickSave", "quickLoad",
+                            "pause", "fullscreen", "reset"},
+                           message)) {
                 return invalid(std::move(message));
             }
             InputBindings bindings;
-            if (!readScancode(input, "a", bindings.a, message) || !readScancode(input, "b", bindings.b, message) ||
+            if ((version >= 7 &&
+                 (!readScancode(input, "fastForward", bindings.fastForward, message) ||
+                  !readScancode(input, "screenshot", bindings.screenshot, message))) ||
+                (version >= 6 &&
+                 (!readScancode(input, "turboA", bindings.turboA, message) ||
+                  !readScancode(input, "turboB", bindings.turboB, message))) ||
+                !readScancode(input, "a", bindings.a, message) || !readScancode(input, "b", bindings.b, message) ||
                 !readScancode(input, "select", bindings.select, message) ||
                 !readScancode(input, "start", bindings.start, message) || !readScancode(input, "up", bindings.up, message) ||
                 !readScancode(input, "down", bindings.down, message) ||
@@ -399,7 +457,13 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
             }
             const auto readPad = [&](const char* key, GamepadMap& pad) {
                 const Json& object = controllers[key];
-                if (!hasOnly(object, {"a", "b", "select", "start", "up", "down", "left", "right"}, message)) {
+                if (version >= 6) {
+                    if (!hasOnly(
+                            object, {"a", "b", "turboA", "turboB", "select", "start", "up", "down", "left", "right"},
+                            message)) {
+                        return false;
+                    }
+                } else if (!hasOnly(object, {"a", "b", "select", "start", "up", "down", "left", "right"}, message)) {
                     return false;
                 }
                 const char* names[] = {"a", "b", "select", "start", "up", "down", "left", "right"};
@@ -416,6 +480,23 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
                     }
                     *fields[index] = static_cast<int>(value);
                 }
+                if (version >= 6) {
+                    const char* turboNames[] = {"turboA", "turboB"};
+                    int* turboFields[] = {&pad.turboA, &pad.turboB};
+                    for (int index = 0; index < 2; ++index) {
+                        if (!object[turboNames[index]].is_number_integer()) {
+                            message = std::string("controllers.") + key + "." + turboNames[index] + " must be an integer.";
+                            return false;
+                        }
+                        const auto turboValue = object[turboNames[index]].get<std::int64_t>();
+                        if (turboValue < 0 || turboValue > 31) {
+                            message = std::string("controllers.") + key + "." + turboNames[index] +
+                                      " is outside the button range.";
+                            return false;
+                        }
+                        *turboFields[index] = static_cast<int>(turboValue);
+                    }
+                }
                 return true;
             };
             GamepadMap pad1;
@@ -427,6 +508,20 @@ Result<Config> ConfigService::fromJson(std::string_view jsonText) {
             config.controllers.port2 = port2;
             config.controllers.pad1 = pad1;
             config.controllers.pad2 = pad2;
+        }
+        if (version >= 5) {
+            const Json& emulation = document["emulation"];
+            if (!hasOnly(emulation, {"region"}, message)) {
+                return invalid(std::move(message));
+            }
+            if (!emulation["region"].is_string()) {
+                return invalid("emulation.region must be a string.");
+            }
+            const auto choice = regionFromName(emulation["region"].get<std::string>());
+            if (!choice.has_value()) {
+                return invalid("emulation.region must be auto, ntsc, pal, or dendy.");
+            }
+            config.region = *choice;
         }
         return Result<Config>::success(std::move(config));
     } catch (const Json::exception&) {
@@ -468,6 +563,8 @@ std::string ConfigService::toJson(const Config& config) {
     Json input = Json::object();
     input["a"] = config.input.a;
     input["b"] = config.input.b;
+    input["turboA"] = config.input.turboA;
+    input["turboB"] = config.input.turboB;
     input["select"] = config.input.select;
     input["start"] = config.input.start;
     input["up"] = config.input.up;
@@ -478,6 +575,8 @@ std::string ConfigService::toJson(const Config& config) {
     input["quickSave"] = config.input.quickSave;
     input["quickLoad"] = config.input.quickLoad;
     input["pause"] = config.input.pause;
+    input["fastForward"] = config.input.fastForward;
+    input["screenshot"] = config.input.screenshot;
     input["fullscreen"] = config.input.fullscreen;
     input["reset"] = config.input.reset;
 
@@ -488,6 +587,8 @@ std::string ConfigService::toJson(const Config& config) {
         Json object = Json::object();
         object["a"] = pad.a;
         object["b"] = pad.b;
+        object["turboA"] = pad.turboA;
+        object["turboB"] = pad.turboB;
         object["select"] = pad.select;
         object["start"] = pad.start;
         object["up"] = pad.up;
@@ -502,6 +603,9 @@ std::string ConfigService::toJson(const Config& config) {
     controllers["pad1"] = padJson(config.controllers.pad1);
     controllers["pad2"] = padJson(config.controllers.pad2);
 
+    Json emulation = Json::object();
+    emulation["region"] = regionName(config.region);
+
     Json document = Json::object();
     document["version"] = Config::kCurrentVersion;
     document["ui"] = std::move(ui);
@@ -511,6 +615,7 @@ std::string ConfigService::toJson(const Config& config) {
     document["input"] = std::move(input);
     document["library"] = std::move(library);
     document["controllers"] = std::move(controllers);
+    document["emulation"] = std::move(emulation);
     return document.dump(2);
 }
 

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(IrisEmulator
-    VERSION 0.11.0
+    VERSION 0.15.0
     DESCRIPTION "Iris Emulator"
     LANGUAGES C CXX
 )
@@ -24,6 +24,7 @@ add_subdirectory(src/common)
 add_subdirectory(src/platform)
 add_subdirectory(src/emulator)
 add_subdirectory(src/systems/nes)
+add_subdirectory(src/systems/snes)
 add_subdirectory(src/core)
 if(IRIS_DESKTOP)
     add_subdirectory(src/frontend)
@@ -43,6 +44,7 @@ if(IRIS_DESKTOP)
         DESTINATION .
     )
     install(FILES $<TARGET_FILE_DIR:iris>/iris_demo.nes DESTINATION . OPTIONAL)
+    install(FILES $<TARGET_FILE_DIR:iris>/iris_demo.sfc DESTINATION . OPTIONAL)
 
     set(CPACK_PACKAGE_NAME "IrisEmulator")
     set(CPACK_PACKAGE_VENDOR "Project Iris")

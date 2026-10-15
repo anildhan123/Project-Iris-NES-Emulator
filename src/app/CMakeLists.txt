@@ -7,7 +7,7 @@ add_executable(iris
 )
 
 target_include_directories(iris PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(iris PRIVATE iris_frontend iris_nes)
+target_link_libraries(iris PRIVATE iris_frontend iris_nes iris_snes)
 iris_set_warnings(iris)
 
 set(IRIS_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
@@ -19,9 +19,10 @@ if(WIN32)
     target_sources(iris PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/iris.rc)
 endif()
 
-add_dependencies(iris iris_make_demo)
+add_dependencies(iris iris_make_demo iris_make_snes_demo)
 add_custom_command(TARGET iris POST_BUILD
     COMMAND $<TARGET_FILE:iris_make_demo> "$<TARGET_FILE_DIR:iris>/iris_demo.nes"
+    COMMAND $<TARGET_FILE:iris_make_snes_demo> "$<TARGET_FILE_DIR:iris>/iris_demo.sfc"
     VERBATIM
 )
 

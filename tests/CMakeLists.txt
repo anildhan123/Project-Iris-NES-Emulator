@@ -10,12 +10,12 @@ add_executable(iris_tests
     nes_system_tests.cpp
     core_tests.cpp
     paths_tests.cpp
-    state_tests.cpp
+    snes_tests.cpp
     video_tests.cpp
 )
 
 target_include_directories(iris_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/ports/ios)
-target_link_libraries(iris_tests PRIVATE iris_common iris_platform iris_nes iris_core Catch2::Catch2WithMain)
+target_link_libraries(iris_tests PRIVATE iris_common iris_platform iris_nes iris_snes iris_core Catch2::Catch2WithMain)
 iris_set_warnings(iris_tests)
 
 set_target_properties(iris_tests PROPERTIES

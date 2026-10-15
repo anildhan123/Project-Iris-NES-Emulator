@@ -34,17 +34,13 @@ bool NesSystem::adopt(Cartridge cartridge, std::string& error) {
         return false;
     }
 
-    const RegionTiming& timing = regionTiming(cartridge.region());
     cartridge_ = std::move(cartridge);
     mapper_ = createMapper(cartridge_);
-    region_ = timing.region;
-    ppuNumerator_ = timing.ppuNumerator;
-    ppuDenominator_ = timing.ppuDenominator;
+    applyRegion();
     ppuAccum_ = 0;
     dmcStall_ = 0;
     bus_.connect(mapper_.get());
     ppu_.connect(mapper_.get(), cartridge_.mirroring());
-    ppu_.setTiming(timing.scanlines, timing.oddFrameSkip);
     title_ = cartridge_.name();
     refreshContentId();
     loaded_ = true;
@@ -54,7 +50,6 @@ bool NesSystem::adopt(Cartridge cartridge, std::string& error) {
     audio_.clear();
     bus_.power();
     ppu_.power();
-    apu_.setRegion(region_);
     apu_.reset();
     mapper_->reset();
     cpu_.reset(bus_);
@@ -72,6 +67,36 @@ void NesSystem::unload() {
     ppu_.connect(nullptr, Mirroring::Horizontal);
 }
 
+void NesSystem::applyRegion() {
+    Region region = cartridge_.region();
+    switch (regionChoice_) {
+    case iris::RegionChoice::Ntsc:
+        region = Region::Ntsc;
+        break;
+    case iris::RegionChoice::Pal:
+        region = Region::Pal;
+        break;
+    case iris::RegionChoice::Dendy:
+        region = Region::Dendy;
+        break;
+    case iris::RegionChoice::Automatic:
+        break;
+    }
+    const RegionTiming& timing = regionTiming(region);
+    region_ = timing.region;
+    ppuNumerator_ = timing.ppuNumerator;
+    ppuDenominator_ = timing.ppuDenominator;
+    ppu_.setTiming(timing.scanlines, timing.oddFrameSkip);
+    apu_.setRegion(region_);
+}
+
+void NesSystem::setRegionChoice(iris::RegionChoice choice) {
+    regionChoice_ = choice;
+    if (loaded_) {
+        applyRegion();
+    }
+}
+
 void NesSystem::reset() {
     if (!loaded_) {
         return;
@@ -83,6 +108,26 @@ void NesSystem::reset() {
     apu_.reset();
     bus_.reset();
     ppu_.reset();
+    if (mapper_) {
+        mapper_->reset();
+    }
+    cpu_.reset(bus_);
+}
+
+void NesSystem::powerCycle() {
+    if (!loaded_) {
+        return;
+    }
+    paused_ = false;
+    nmiLevel_ = false;
+    ppuAccum_ = 0;
+    dmcStall_ = 0;
+    cpuCycles_ = 0;
+    audio_.clear();
+    bus_.power();
+    ppu_.power();
+    applyRegion();
+    apu_.reset();
     if (mapper_) {
         mapper_->reset();
     }
