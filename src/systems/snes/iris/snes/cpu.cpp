@@ -1,5 +1,7 @@
 #include "iris/snes/cpu.hpp"
 
+#include "iris/byte_io.hpp"
+
 namespace iris::systems::snes {
 namespace {
 
@@ -851,6 +853,61 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
         stop(opcode);
         return 0;
     }
+}
+
+void Cpu::saveState(iris::ByteWriter& out) const {
+    out.u16(a_);
+    out.u16(x_);
+    out.u16(y_);
+    out.u16(sp_);
+    out.u16(d_);
+    out.u16(pc_);
+    out.u8(p_);
+    out.u8(pbr_);
+    out.u8(dbr_);
+    out.u8(stopOpcode_);
+    out.boolean(emulation_);
+    out.boolean(nmiPending_);
+    out.boolean(irqPending_);
+    out.boolean(waiting_);
+    out.boolean(stopped_);
+}
+
+bool Cpu::loadState(iris::ByteReader& in) {
+    const auto a = in.u16();
+    const auto x = in.u16();
+    const auto y = in.u16();
+    const auto sp = in.u16();
+    const auto d = in.u16();
+    const auto pc = in.u16();
+    const auto p = in.u8();
+    const auto pbr = in.u8();
+    const auto dbr = in.u8();
+    const auto stopOpcode = in.u8();
+    const auto emulation = in.boolean();
+    const auto nmiPending = in.boolean();
+    const auto irqPending = in.boolean();
+    const auto waiting = in.boolean();
+    const auto stopped = in.boolean();
+    if (!in.ok()) {
+        return false;
+    }
+    a_ = a;
+    x_ = x;
+    y_ = y;
+    sp_ = sp;
+    d_ = d;
+    pc_ = pc;
+    p_ = p;
+    pbr_ = pbr;
+    dbr_ = dbr;
+    stopOpcode_ = stopOpcode;
+    emulation_ = emulation;
+    nmiPending_ = nmiPending;
+    irqPending_ = irqPending;
+    waiting_ = waiting;
+    stopped_ = stopped;
+    return true;
 }
 
 }  // namespace iris::systems::snes

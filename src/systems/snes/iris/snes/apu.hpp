@@ -3,6 +3,11 @@
 #include <cstdint>
 #include <vector>
 
+namespace iris {
+class ByteReader;
+class ByteWriter;
+}
+
 namespace iris::systems::snes {
 
 // SPC700 and S-DSP. The Nintendo IPL ROM is not present. A transfer uses the
@@ -20,6 +25,8 @@ public:
     void writePort(int index, std::uint8_t value);
     [[nodiscard]] const float* samples() const { return samples_.data(); }
     [[nodiscard]] int sampleCount() const { return static_cast<int>(samples_.size()); }
+    void saveState(iris::ByteWriter& out) const;
+    [[nodiscard]] bool loadState(iris::ByteReader& in);
 
 private:
     struct Voice {

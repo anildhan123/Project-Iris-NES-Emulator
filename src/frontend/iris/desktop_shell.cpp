@@ -19,6 +19,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <mmsystem.h>
 #include <shellapi.h>
 #include <intrin.h>
 #endif
@@ -34,6 +35,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -49,6 +51,126 @@
 
 namespace iris {
 namespace {
+
+#if defined(_WIN32)
+// WASAPI shared mode on some Realtek drivers rejects every format, including the mix
+// format Windows reports. DirectSound ends up in that same engine and Play fails.
+// waveOut still accepts 16-bit stereo and consumes the buffer.
+class WavePlayback {
+public:
+    bool start() {
+        stop();
+        WAVEFORMATEX format{};
+        format.wFormatTag = WAVE_FORMAT_PCM;
+        format.nChannels = 2;
+        format.nSamplesPerSec = 48000;
+        format.wBitsPerSample = 16;
+        format.nBlockAlign = 4;
+        format.nAvgBytesPerSec = 48000 * 4;
+        if (waveOutOpen(&wave_, WAVE_MAPPER, &format, 0, 0, CALLBACK_NULL) != MMSYSERR_NOERROR) {
+            wave_ = nullptr;
+            return false;
+        }
+        open_ = true;
+        return true;
+    }
+
+    void stop() {
+        if (wave_ == nullptr) {
+            open_ = false;
+            return;
+        }
+        waveOutReset(wave_);
+        for (int slot = 0; slot < kSlots; ++slot) {
+            if ((headers_[slot].dwFlags & WHDR_PREPARED) != 0) {
+                waveOutUnprepareHeader(wave_, &headers_[slot], sizeof(WAVEHDR));
+            }
+            headers_[slot] = WAVEHDR{};
+        }
+        waveOutClose(wave_);
+        wave_ = nullptr;
+        open_ = false;
+        slot_ = 0;
+    }
+
+    ~WavePlayback() { stop(); }
+
+    [[nodiscard]] bool open() const { return open_; }
+
+    [[nodiscard]] int queuedFrames() const {
+        int frames = 0;
+        for (int slot = 0; slot < kSlots; ++slot) {
+            const WAVEHDR& header = headers_[slot];
+            if ((header.dwFlags & WHDR_PREPARED) != 0 && (header.dwFlags & WHDR_DONE) == 0) {
+                frames += static_cast<int>(header.dwBufferLength / 4);
+            }
+        }
+        return frames;
+    }
+
+    void clear() {
+        if (wave_ != nullptr) {
+            waveOutReset(wave_);
+        }
+    }
+
+    bool write(const float* samples, int count, float volume) {
+        if (wave_ == nullptr || samples == nullptr || count <= 0) {
+            return false;
+        }
+        int slot = -1;
+        for (int index = 0; index < kSlots; ++index) {
+            const int candidate = (slot_ + index) % kSlots;
+            const DWORD flags = headers_[candidate].dwFlags;
+            if ((flags & WHDR_PREPARED) == 0 || (flags & WHDR_DONE) != 0) {
+                slot = candidate;
+                break;
+            }
+        }
+        if (slot < 0) {
+            return false;
+        }
+        WAVEHDR& header = headers_[slot];
+        if ((header.dwFlags & WHDR_PREPARED) != 0) {
+            waveOutUnprepareHeader(wave_, &header, sizeof(header));
+        }
+        auto& storage = storage_[slot];
+        storage.resize(static_cast<std::size_t>(count) * 2);
+        for (int index = 0; index < count; ++index) {
+            float value = samples[index] * volume;
+            if (value > 1.0f) {
+                value = 1.0f;
+            }
+            if (value < -1.0f) {
+                value = -1.0f;
+            }
+            const auto sample = static_cast<std::int16_t>(value * 32767.0f);
+            storage[static_cast<std::size_t>(index) * 2] = sample;
+            storage[static_cast<std::size_t>(index) * 2 + 1] = sample;
+        }
+        header = WAVEHDR{};
+        header.lpData = reinterpret_cast<LPSTR>(storage.data());
+        header.dwBufferLength = static_cast<DWORD>(storage.size() * sizeof(std::int16_t));
+        if (waveOutPrepareHeader(wave_, &header, sizeof(header)) != MMSYSERR_NOERROR) {
+            return false;
+        }
+        if (waveOutWrite(wave_, &header, sizeof(header)) != MMSYSERR_NOERROR) {
+            waveOutUnprepareHeader(wave_, &header, sizeof(header));
+            return false;
+        }
+        slot_ = (slot + 1) % kSlots;
+        return true;
+    }
+
+private:
+    static constexpr int kSlots = 8;
+    HWAVEOUT wave_ = nullptr;
+    bool open_ = false;
+    int slot_ = 0;
+    WAVEHDR headers_[kSlots]{};
+    std::vector<std::int16_t> storage_[kSlots];
+};
+#endif
 
 struct SdlSession {
     SDL_Window* window = nullptr;
@@ -765,7 +887,7 @@ StartupPick pickSystem(
         ImGui::SetCursorPosX(startX);
         ImGui::Dummy(ImVec2(0.0f, 10.0f));
         ImGui::PushTextWrapPos(startX + contentWidth);
-        ImGui::TextUnformatted("Super NES sound is the SPC700 and DSP. LoROM, HiROM, ExHiROM, DSP-1, Super FX, and SA-1 are in this build. DMA, HDMA, and IRQs take cycles on the scanline. Timing inside an instruction is still approximate. The Nintendo IPL ROM, other enhancement chips, and save states are not.");
+        ImGui::TextUnformatted("Super NES sound is the SPC700 and DSP. LoROM, HiROM, ExHiROM, DSP-1, Super FX, and SA-1 are in this build. DMA, HDMA, and IRQs take cycles on the scanline. Timing inside an instruction is still approximate. Save states can be stored and restored for the loaded game. The Nintendo IPL ROM, other enhancement chips, and high resolution are not.");
         ImGui::PopTextWrapPos();
         ImGui::EndChild();
 
@@ -862,16 +984,48 @@ int DesktopShell::run() {
     }
 
     std::mutex audioLock;
+    std::atomic<int> playbackChannels{1};
+#if defined(_WIN32)
+    WavePlayback waveform;
+#endif
     const auto openPlayback = [&](const std::string& deviceName) {
         std::lock_guard playback(audioLock);
         if (session.audio != nullptr) {
             SDL_DestroyAudioStream(session.audio);
             session.audio = nullptr;
         }
-        SDL_AudioSpec spec{};
-        spec.format = SDL_AUDIO_F32;
-        spec.channels = 1;
-        spec.freq = 48000;
+        SDL_AudioSpec mono{};
+        mono.format = SDL_AUDIO_F32;
+        mono.channels = 1;
+        mono.freq = 48000;
+        const auto openDevice = [&](SDL_AudioDeviceID device) -> bool {
+            session.audio = SDL_OpenAudioDeviceStream(device, &mono, nullptr, nullptr);
+            if (session.audio != nullptr) {
+                playbackChannels.store(1);
+                return true;
+            }
+            const std::string monoError = SDL_GetError();
+            SDL_AudioSpec stereo = mono;
+            stereo.channels = 2;
+            session.audio = SDL_OpenAudioDeviceStream(device, &stereo, nullptr, nullptr);
+            if (session.audio != nullptr) {
+                playbackChannels.store(2);
+                log::info("Audio output is stereo because the device refused mono: " + monoError);
+                return true;
+            }
+            session.audio = SDL_OpenAudioDeviceStream(device, nullptr, nullptr, nullptr);
+            if (session.audio != nullptr && SDL_SetAudioStreamFormat(session.audio, &mono, nullptr)) {
+                playbackChannels.store(1);
+                log::info("Audio output is using the device's own format: " + monoError);
+                return true;
+            }
+            if (session.audio != nullptr) {
+                SDL_DestroyAudioStream(session.audio);
+                session.audio = nullptr;
+            }
+            log::warn("Audio output was not opened: " + monoError);
+            return false;
+        };
         SDL_AudioDeviceID device = SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
         bool named = false;
         if (!deviceName.empty()) {
@@ -892,15 +1046,26 @@ int DesktopShell::run() {
                 log::info("Audio device \"" + deviceName + "\" is not connected. Using the default playback device.");
             }
         }
-        session.audio = SDL_OpenAudioDeviceStream(device, &spec, nullptr, nullptr);
-        if (session.audio == nullptr && device != SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK) {
-            log::warn(std::string("The selected audio device did not open: ") + SDL_GetError());
-            session.audio = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, nullptr, nullptr);
+        if (!openDevice(device) && device != SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK) {
+            (void)openDevice(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK);
         }
         if (session.audio == nullptr) {
-            log::warn(std::string("Audio output was not opened: ") + SDL_GetError());
+#if defined(_WIN32)
+            // Shared-mode WASAPI rejects these speakers. Leave that subsystem so the
+            // waveform device can open the same endpoint without a stuck client.
+            SDL_QuitSubSystem(SDL_INIT_AUDIO);
+            if (waveform.start()) {
+                log::info("WASAPI rejected the speakers. Audio output is using the Windows waveform device.");
+                return;
+            }
+            log::warn("The Windows waveform device did not open.");
+            SDL_InitSubSystem(SDL_INIT_AUDIO);
+#endif
             return;
         }
+#if defined(_WIN32)
+        waveform.stop();
+#endif
         if (!SDL_ResumeAudioStreamDevice(session.audio)) {
             log::warn(std::string("Audio output was not started: ") + SDL_GetError());
             return;
@@ -985,8 +1150,10 @@ int DesktopShell::run() {
     }
     system_->setRegionChoice(config_.region);
 
+    std::string romFilterName = kind == SystemKind::Snes ? "Super NES ROM" : "NES ROM";
+    std::string romFilterPattern = kind == SystemKind::Snes ? "sfc;smc" : "nes";
     SDL_DialogFileFilter filters[2] = {
-        {kind == SystemKind::Snes ? "Super NES ROM" : "NES ROM", kind == SystemKind::Snes ? "sfc;smc" : "nes"},
+        {romFilterName.c_str(), romFilterPattern.c_str()},
         {"All files", "*"},
     };
 
@@ -1006,7 +1173,7 @@ int DesktopShell::run() {
     const std::string aboutText = std::string(kProductName) + " " + kVersionString +
                                    "\n\nThis build plays NES cartridges on NROM, MMC1, UxROM, CNROM, MMC3, AxROM, Color Dreams, BNROM, GxROM, and Camerica. "
                                    "A NES 2.0 header can select PAL timing. "
-                                   "Super NES plays a LoROM, HiROM, or ExHiROM board, including save RAM, four backgrounds, scroll, priority, mosaic, DMA, HDMA, windows, and color math. DMA, HDMA, and IRQs take their cycles on the scanline. Timing inside an instruction is still approximate. A cartridge can upload an SPC700 program, and the DSP mixes it to mono at 48000 Hz. DSP-1, Super FX, and SA-1 boards run in this build. The Nintendo IPL ROM is not included. Iris Demo moves a marker with the arrow keys and stays silent because it does not upload a program. Other enhancement chips, high resolution, and save states are not in this build. "
+                                   "Super NES plays a LoROM, HiROM, or ExHiROM board, including save RAM, four backgrounds, scroll, priority, mosaic, DMA, HDMA, windows, and color math. DMA, HDMA, and IRQs take their cycles on the scanline. Timing inside an instruction is still approximate. A cartridge can upload an SPC700 program, and the DSP mixes it to mono at 48000 Hz. DSP-1, Super FX, and SA-1 boards run in this build. The Nintendo IPL ROM is not included. Iris Demo moves a marker with the arrow keys and stays silent because it does not upload a program. Save states restore the running machine for the same game. Other enhancement chips and high resolution are not in this build. "
                                    "Iris Demo, written for this project, is generated beside the executable.\n\n"
                                    "Open a ROM with File, Open Game, or from the library. "
                                    "The default controls are the arrow keys, Z for A, X for B, A for Turbo A, S for Turbo B, Right Shift for Select, and Enter for Start. "
@@ -1226,13 +1393,22 @@ int DesktopShell::run() {
             bool waitForFrame = false;
             std::vector<float> chunk;
             bool clearPlayback = false;
+            bool useWave = false;
             {
                 int queuedSamples = -1;
                 {
                     std::lock_guard playback(audioLock);
+#if defined(_WIN32)
+                    if (waveform.open()) {
+                        useWave = true;
+                        queuedSamples = waveform.queuedFrames();
+                    } else
+#endif
                     if (session.audio != nullptr) {
                         const int queuedBytes = SDL_GetAudioStreamQueued(session.audio);
-                        queuedSamples = queuedBytes > 0 ? queuedBytes / static_cast<int>(sizeof(float)) : 0;
+                        const int channels = std::max(playbackChannels.load(), 1);
+                        queuedSamples =
+                            queuedBytes > 0 ? queuedBytes / (static_cast<int>(sizeof(float)) * channels) : 0;
                     }
                 }
                 std::unique_lock lock(gate, std::try_to_lock);
@@ -1300,9 +1476,13 @@ int DesktopShell::run() {
                             if (wantAudio && audio.samples != nullptr && audio.count > 0 && queuedSamples <= paceTarget &&
                                 queuedSamples + audio.count < audioQueueSamples(config_.audioLatency)) {
                                 const float volume = std::min(config_.volume, 1.0f);
-                                chunk.resize(static_cast<std::size_t>(audio.count));
+                                const int channels = useWave ? 1 : playbackChannels.load();
+                                chunk.resize(static_cast<std::size_t>(audio.count) * static_cast<std::size_t>(channels));
                                 for (int index = 0; index < audio.count; ++index) {
-                                    chunk[static_cast<std::size_t>(index)] = audio.samples[index] * volume;
+                                    const float sample = audio.samples[index] * volume;
+                                    for (int channel = 0; channel < channels; ++channel) {
+                                        chunk[static_cast<std::size_t>(index * channels + channel)] = sample;
+                                    }
                                 }
                             }
                             ++published.serial;
@@ -1324,6 +1504,15 @@ int DesktopShell::run() {
             }
             if (!chunk.empty() || clearPlayback) {
                 std::lock_guard playback(audioLock);
+#if defined(_WIN32)
+                if (waveform.open()) {
+                    if (clearPlayback) {
+                        waveform.clear();
+                    } else {
+                        waveform.write(chunk.data(), static_cast<int>(chunk.size()), 1.0f);
+                    }
+                } else
+#endif
                 if (session.audio != nullptr) {
                     if (clearPlayback) {
                         SDL_ClearAudioStream(session.audio);
@@ -1529,7 +1718,49 @@ int DesktopShell::run() {
         return true;
     };
 
+    const auto adoptKind = [&](SystemKind next) -> bool {
+        std::lock_guard lock(gate);
+        if (next == kind) {
+            return true;
+        }
+        flushBattery();
+        auto created = factory_(next);
+        if (created == nullptr) {
+            errorText = "The selected system could not be created.";
+            errorTitle = "Could not switch system";
+            openError = true;
+            return false;
+        }
+        system_ = std::move(created);
+        system_->setRegionChoice(config_.region);
+        kind = next;
+        romFilterName = kind == SystemKind::Snes ? "Super NES ROM" : "NES ROM";
+        romFilterPattern = kind == SystemKind::Snes ? "sfc;smc" : "nes";
+        filters[0].name = romFilterName.c_str();
+        filters[0].pattern = romFilterPattern.c_str();
+        published.rgba.clear();
+        published.width = 0;
+        published.height = 0;
+        ++published.serial;
+        loadedGamePath.clear();
+        libraryNote = kind == SystemKind::Snes ? "Switched to Super NES." : "Switched to NES.";
+        return true;
+    };
+
     const auto openRom = [&](const std::filesystem::path& path) -> bool {
+        std::string extension = path.extension().string();
+        for (char& character : extension) {
+            character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+        }
+        if ((extension == ".sfc" || extension == ".smc") && kind != SystemKind::Snes) {
+            if (!adoptKind(SystemKind::Snes)) {
+                return false;
+            }
+        } else if (extension == ".nes" && kind != SystemKind::Nes) {
+            if (!adoptKind(SystemKind::Nes)) {
+                return false;
+            }
+        }
         std::lock_guard lock(gate);
         flushBattery();
         std::string error;
@@ -1799,9 +2030,16 @@ int DesktopShell::run() {
                 queuedSerial = published.serial;
             }
         }
-        if (session.audio != nullptr && config_.muted && !wasMuted) {
+        if (config_.muted && !wasMuted) {
             std::lock_guard playback(audioLock);
-            SDL_ClearAudioStream(session.audio);
+#if defined(_WIN32)
+            if (waveform.open()) {
+                waveform.clear();
+            }
+#endif
+            if (session.audio != nullptr) {
+                SDL_ClearAudioStream(session.audio);
+            }
         }
         wasMuted = config_.muted;
 
@@ -1899,7 +2137,16 @@ int DesktopShell::run() {
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f * uiScale, 6.0f * uiScale));
             if (ImGui::BeginMenuBar()) {
                 if (ImGui::BeginMenu("File")) {
-                    ImGui::MenuItem(kind == SystemKind::Snes ? "System: Super NES" : "System: NES", nullptr, false, false);
+                    if (ImGui::BeginMenu("System")) {
+                        if (ImGui::MenuItem("NES", nullptr, kind == SystemKind::Nes) && kind != SystemKind::Nes) {
+                            (void)adoptKind(SystemKind::Nes);
+                        }
+                        if (ImGui::MenuItem("Super NES", nullptr, kind == SystemKind::Snes) &&
+                            kind != SystemKind::Snes) {
+                            (void)adoptKind(SystemKind::Snes);
+                        }
+                        ImGui::EndMenu();
+                    }
                     if (ImGui::MenuItem("Open Game...", openShortcut.c_str())) {
                         showOpenDialog();
                     }
@@ -2482,9 +2729,16 @@ int DesktopShell::run() {
                     if (deviceChanged) {
                         openPlayback(config_.audioDevice);
                     }
-                    if (config_.muted && session.audio != nullptr) {
+                    if (config_.muted) {
                         std::lock_guard playback(audioLock);
-                        SDL_ClearAudioStream(session.audio);
+#if defined(_WIN32)
+                        if (waveform.open()) {
+                            waveform.clear();
+                        }
+#endif
+                        if (session.audio != nullptr) {
+                            SDL_ClearAudioStream(session.audio);
+                        }
                     }
                     if (fullscreenChanged) {
                         config_.fullscreen = wasFullscreen;

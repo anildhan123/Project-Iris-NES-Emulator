@@ -1,5 +1,7 @@
 #include "iris/snes/gsu.hpp"
 
+#include "iris/byte_io.hpp"
+
 namespace iris::systems::snes {
 namespace {
 
@@ -370,6 +372,68 @@ bool Gsu::cpuWrite(std::uint8_t bank, std::uint16_t address, std::uint8_t value)
         ramb_ = value;
         return true;
     }
+    return true;
+}
+
+void Gsu::saveState(iris::ByteWriter& out) const {
+    for (const std::uint16_t value : r_) {
+        out.u16(value);
+    }
+    out.u16(sfr_);
+    out.u8(pbr_);
+    out.u8(rombr_);
+    out.u8(ramb_);
+    out.u8(scbr_);
+    out.u8(color_);
+    out.u8(source_);
+    out.u8(dest_);
+    out.boolean(alt1_);
+    out.boolean(useDest_);
+    out.boolean(useSource_);
+    out.u32(static_cast<std::uint32_t>(ram_.size()));
+    out.bytes(ram_.data(), ram_.size());
+}
+
+bool Gsu::loadState(iris::ByteReader& in) {
+    std::uint16_t r[16] = {};
+    for (std::uint16_t& value : r) {
+        value = in.u16();
+    }
+    const auto sfr = in.u16();
+    const auto pbr = in.u8();
+    const auto rombr = in.u8();
+    const auto ramb = in.u8();
+    const auto scbr = in.u8();
+    const auto color = in.u8();
+    const auto source = in.u8();
+    const auto dest = in.u8();
+    const auto alt1 = in.boolean();
+    const auto useDest = in.boolean();
+    const auto useSource = in.boolean();
+    const auto ramBytes = in.u32();
+    if (!in.ok() || ramBytes != ram_.size() || ramBytes > 128 * 1024) {
+        return false;
+    }
+    std::vector<std::uint8_t> ram(ramBytes);
+    in.bytes(ram.data(), ram.size());
+    if (!in.ok()) {
+        return false;
+    }
+    for (int index = 0; index < 16; ++index) {
+        r_[index] = r[index];
+    }
+    sfr_ = sfr;
+    pbr_ = pbr;
+    rombr_ = rombr;
+    ramb_ = ramb;
+    scbr_ = scbr;
+    color_ = color;
+    source_ = source;
+    dest_ = dest;
+    alt1_ = alt1;
+    useDest_ = useDest;
+    useSource_ = useSource;
+    ram_ = std::move(ram);
     return true;
 }
 

@@ -1,5 +1,7 @@
 #include "iris/snes/apu.hpp"
 
+#include "iris/byte_io.hpp"
+
 #include <algorithm>
 
 namespace iris::systems::snes {
@@ -268,7 +270,7 @@ std::uint8_t Apu::readReg(std::uint16_t address) {
     case 0x00F2:
         return dspAddress_;
     case 0x00F3:
-        return dspAddress_ == 0x7C ? endx_ : dsp_[dspAddress_];
+        return (dspAddress_ & 0x7F) == 0x7C ? endx_ : dsp_[dspAddress_ & 0x7F];
     case 0x00F4:
     case 0x00F5:
     case 0x00F6:
@@ -313,17 +315,22 @@ void Apu::writeReg(std::uint16_t address, std::uint8_t value) {
         }
         break;
     case 0x00F2:
-        dspAddress_ = static_cast<std::uint8_t>(value & 0x7F);
+        // Bit 7 is not a DSP register, but it is readable. A driver can add
+        // $10 until the address reads back as $8F, which never happens if the
+        // bit is discarded on write.
+        dspAddress_ = value;
         break;
-    case 0x00F3:
-        if (dspAddress_ == 0x4C) {
+    case 0x00F3: {
+        const auto index = static_cast<std::uint8_t>(dspAddress_ & 0x7F);
+        if (index == 0x4C) {
             keyOn_ = static_cast<std::uint8_t>(keyOn_ | value);
-        } else if (dspAddress_ == 0x5C) {
+        } else if (index == 0x5C) {
             keyOff_ = static_cast<std::uint8_t>(keyOff_ | value);
-        } else if (dspAddress_ != 0x7C && (dspAddress_ & 0x0F) != 0x08 && (dspAddress_ & 0x0F) != 0x09) {
-            dsp_[dspAddress_] = value;
+        } else if (index != 0x7C && (index & 0x0F) != 0x08 && (index & 0x0F) != 0x09) {
+            dsp_[index] = value;
         }
         break;
+    }
     case 0x00F4:
     case 0x00F5:
     case 0x00F6:
@@ -1302,6 +1309,182 @@ int Apu::instruction() {
     default:
         return 2;
     }
+}
+
+void Apu::saveState(iris::ByteWriter& out) const {
+    out.bytes(ram_.data(), ram_.size());
+    for (const Voice& voice : voice_) {
+        out.u32(static_cast<std::uint32_t>(voice.pointer));
+        out.u32(static_cast<std::uint32_t>(voice.loop));
+        out.u32(static_cast<std::uint32_t>(voice.phase));
+        out.u32(static_cast<std::uint32_t>(voice.older));
+        out.u32(static_cast<std::uint32_t>(voice.previous));
+        out.u32(static_cast<std::uint32_t>(voice.envelope));
+        out.u32(static_cast<std::uint32_t>(voice.output));
+        out.boolean(voice.playing);
+        out.boolean(voice.release);
+        out.boolean(voice.blockEnds);
+        out.boolean(voice.blockLoops);
+        for (const int sample : voice.decoded) {
+            out.u32(static_cast<std::uint32_t>(sample));
+        }
+    }
+    out.bytes(dsp_, sizeof(dsp_));
+    out.bytes(cpuIn_, sizeof(cpuIn_));
+    out.bytes(cpuOut_, sizeof(cpuOut_));
+    out.u8(control_);
+    out.u8(dspAddress_);
+    out.bytes(timerTarget_, sizeof(timerTarget_));
+    out.bytes(timerCount_, sizeof(timerCount_));
+    out.u8(endx_);
+    out.u8(keyOn_);
+    out.u8(keyOff_);
+    out.u16(pc_);
+    out.u16(dest_);
+    out.u8(a_);
+    out.u8(x_);
+    out.u8(y_);
+    out.u8(sp_);
+    out.u8(psw_);
+    out.u8(cursor_);
+    out.u8(seen_);
+    out.u32(static_cast<std::uint32_t>(clocked_));
+    out.u32(static_cast<std::uint32_t>(samplePhase_));
+    for (const int value : timerDivider_) {
+        out.u32(static_cast<std::uint32_t>(value));
+    }
+    for (const int value : timerStage_) {
+        out.u32(static_cast<std::uint32_t>(value));
+    }
+    out.u32(static_cast<std::uint32_t>(echoPos_));
+    out.u32(static_cast<std::uint32_t>(noise_));
+    out.u64(static_cast<std::uint64_t>(cycleAccum_));
+    out.u64(static_cast<std::uint64_t>(outputAccum_));
+    out.boolean(booting_);
+    out.boolean(transferring_);
+    out.boolean(halted_);
+    out.u32(static_cast<std::uint32_t>(echoLeft_.size()));
+    for (const int sample : echoLeft_) {
+        out.u32(static_cast<std::uint32_t>(sample));
+    }
+    for (const int sample : echoRight_) {
+        out.u32(static_cast<std::uint32_t>(sample));
+    }
+}
+
+bool Apu::loadState(iris::ByteReader& in) {
+    std::vector<std::uint8_t> ram(ram_.size());
+    in.bytes(ram.data(), ram.size());
+    Voice voice[8]{};
+    for (Voice& entry : voice) {
+        entry.pointer = static_cast<int>(in.u32());
+        entry.loop = static_cast<int>(in.u32());
+        entry.phase = static_cast<int>(in.u32());
+        entry.older = static_cast<int>(in.u32());
+        entry.previous = static_cast<int>(in.u32());
+        entry.envelope = static_cast<int>(in.u32());
+        entry.output = static_cast<int>(in.u32());
+        entry.playing = in.boolean();
+        entry.release = in.boolean();
+        entry.blockEnds = in.boolean();
+        entry.blockLoops = in.boolean();
+        for (int& sample : entry.decoded) {
+            sample = static_cast<int>(in.u32());
+        }
+    }
+    std::uint8_t dsp[128] = {};
+    std::uint8_t cpuIn[4] = {};
+    std::uint8_t cpuOut[4] = {};
+    in.bytes(dsp, sizeof(dsp));
+    in.bytes(cpuIn, sizeof(cpuIn));
+    in.bytes(cpuOut, sizeof(cpuOut));
+    const auto control = in.u8();
+    const auto dspAddress = in.u8();
+    std::uint8_t timerTarget[3] = {};
+    std::uint8_t timerCount[3] = {};
+    in.bytes(timerTarget, sizeof(timerTarget));
+    in.bytes(timerCount, sizeof(timerCount));
+    const auto endx = in.u8();
+    const auto keyOn = in.u8();
+    const auto keyOff = in.u8();
+    const auto pc = in.u16();
+    const auto dest = in.u16();
+    const auto a = in.u8();
+    const auto x = in.u8();
+    const auto y = in.u8();
+    const auto sp = in.u8();
+    const auto psw = in.u8();
+    const auto cursor = in.u8();
+    const auto seen = in.u8();
+    const auto clocked = static_cast<int>(in.u32());
+    const auto samplePhase = static_cast<int>(in.u32());
+    int timerDivider[3] = {};
+    int timerStage[3] = {};
+    for (int& value : timerDivider) {
+        value = static_cast<int>(in.u32());
+    }
+    for (int& value : timerStage) {
+        value = static_cast<int>(in.u32());
+    }
+    const auto echoPos = static_cast<int>(in.u32());
+    const auto noise = static_cast<int>(in.u32());
+    const auto cycleAccum = static_cast<std::int64_t>(in.u64());
+    const auto outputAccum = static_cast<std::int64_t>(in.u64());
+    const auto booting = in.boolean();
+    const auto transferring = in.boolean();
+    const auto halted = in.boolean();
+    const auto echoCount = in.u32();
+    if (!in.ok() || echoCount > 64 * 1024) {
+        return false;
+    }
+    std::vector<int> echoLeft(echoCount);
+    std::vector<int> echoRight(echoCount);
+    for (int& sample : echoLeft) {
+        sample = static_cast<int>(in.u32());
+    }
+    for (int& sample : echoRight) {
+        sample = static_cast<int>(in.u32());
+    }
+    if (!in.ok()) {
+        return false;
+    }
+    ram_ = std::move(ram);
+    for (int index = 0; index < 8; ++index) {
+        voice_[index] = voice[index];
+    }
+    std::copy(std::begin(dsp), std::end(dsp), std::begin(dsp_));
+    std::copy(std::begin(cpuIn), std::end(cpuIn), std::begin(cpuIn_));
+    std::copy(std::begin(cpuOut), std::end(cpuOut), std::begin(cpuOut_));
+    control_ = control;
+    dspAddress_ = dspAddress;
+    std::copy(std::begin(timerTarget), std::end(timerTarget), std::begin(timerTarget_));
+    std::copy(std::begin(timerCount), std::end(timerCount), std::begin(timerCount_));
+    endx_ = endx;
+    keyOn_ = keyOn;
+    keyOff_ = keyOff;
+    pc_ = pc;
+    dest_ = dest;
+    a_ = a;
+    x_ = x;
+    y_ = y;
+    sp_ = sp;
+    psw_ = psw;
+    cursor_ = cursor;
+    seen_ = seen;
+    clocked_ = clocked;
+    samplePhase_ = samplePhase;
+    std::copy(std::begin(timerDivider), std::end(timerDivider), std::begin(timerDivider_));
+    std::copy(std::begin(timerStage), std::end(timerStage), std::begin(timerStage_));
+    echoPos_ = echoPos;
+    noise_ = noise;
+    cycleAccum_ = cycleAccum;
+    outputAccum_ = outputAccum;
+    booting_ = booting;
+    transferring_ = transferring;
+    halted_ = halted;
+    echoLeft_ = std::move(echoLeft);
+    echoRight_ = std::move(echoRight);
+    return true;
 }
 
 }  // namespace iris::systems::snes

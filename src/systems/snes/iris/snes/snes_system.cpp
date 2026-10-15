@@ -288,27 +288,6 @@ std::int64_t SnesSystem::framePeriodNs() const {
     return standard_ == TvStandard::Pal ? kPalFrameNs : kNtscFrameNs;
 }
 
-bool SnesSystem::saveState(std::vector<std::uint8_t>& bytes, std::string_view description, std::string& error) {
-    (void)bytes;
-    (void)description;
-    error = "Super NES save states are not in this build yet.";
-    return false;
-}
-
-bool SnesSystem::loadState(const std::uint8_t* data, std::size_t size, std::string& error) {
-    (void)data;
-    (void)size;
-    error = "Super NES save states are not in this build yet.";
-    return false;
-}
-
-void SnesSystem::inspectState(const std::uint8_t* data, std::size_t size, StatePreview& preview) const {
-    (void)data;
-    (void)size;
-    preview = StatePreview{};
-    preview.error = "Super NES save states are not in this build yet.";
-}
-
 bool SnesSystem::copyBattery(std::vector<std::uint8_t>& bytes) const {
     if (!loaded_ || cartridge_.sramBytes == 0) {
         bytes.clear();

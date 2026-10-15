@@ -3,6 +3,11 @@
 #include <cstdint>
 #include <vector>
 
+namespace iris {
+class ByteReader;
+class ByteWriter;
+}
+
 namespace iris::systems::snes {
 
 // Super FX (GSU). The program runs when the GO flag is set. Plot writes one
@@ -17,6 +22,8 @@ public:
     [[nodiscard]] bool running() const { return (sfr_ & 0x20) != 0; }
     [[nodiscard]] bool cpuRead(std::uint8_t bank, std::uint16_t address, std::uint8_t& value) const;
     [[nodiscard]] bool cpuWrite(std::uint8_t bank, std::uint16_t address, std::uint8_t value);
+    void saveState(iris::ByteWriter& out) const;
+    [[nodiscard]] bool loadState(iris::ByteReader& in);
 
 private:
     [[nodiscard]] std::uint8_t fetch();

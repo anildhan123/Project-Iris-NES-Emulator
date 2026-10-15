@@ -1,5 +1,6 @@
 #include "iris/snes/bus.hpp"
 
+#include "iris/byte_io.hpp"
 #include "iris/emulated_system.hpp"
 
 #include <algorithm>
@@ -15,6 +16,9 @@ void Bus::power() {
     wmadd_ = 0;
     joyLow_ = 0;
     joyHigh_ = 0;
+    joyShift_ = 0;
+    joyBitsLeft_ = 0;
+    joyStrobe_ = false;
     nmitimen_ = 0;
     hdmaen_ = 0;
     apu_.power();
@@ -224,6 +228,7 @@ void Bus::setCycle(int cycle) {
 
 void Bus::raiseNmi() {
     nmiFlag_ = true;
+    ppu_.reloadOam();
 }
 
 void Bus::raiseIrq() {
@@ -262,32 +267,59 @@ bool Bus::sramIndex(std::uint8_t bank, std::uint16_t address, std::size_t& index
     return true;
 }
 
+void Bus::latchJoypad() {
+    joyShift_ = static_cast<std::uint16_t>((static_cast<std::uint16_t>(joyHigh_) << 8) | joyLow_);
+    joyBitsLeft_ = 16;
+}
+
+std::uint8_t Bus::readJoypad(bool portTwo) {
+    if (portTwo) {
+        return 0;
+    }
+    // Bits leave most-significant first: B, then Y, Select, Start, and the D-pad, then A, X, L, R.
+    // Reads after those sixteen bits stay high, which is how a game sees a connected controller.
+    std::uint8_t bit = 1;
+    if (joyStrobe_) {
+        bit = (joyHigh_ & 0x80) != 0 ? 1 : 0;
+    } else if (joyBitsLeft_ > 0) {
+        bit = static_cast<std::uint8_t>((joyShift_ >> 15) & 0x01);
+        joyShift_ = static_cast<std::uint16_t>(joyShift_ << 1);
+        --joyBitsLeft_;
+    }
+    return bit;
+}
+
 void Bus::setController(std::uint8_t buttons) {
+    // $4218 is A, X, L, R and a zero signature. $4219 is B, Y, Select, Start, then the D-pad.
+    // A 16-bit read of $4218 is how games sample both bytes. The shell bits stay in NES order.
     joyLow_ = 0;
     joyHigh_ = 0;
-    if ((buttons & kButtonB) != 0) {
-        joyLow_ = static_cast<std::uint8_t>(joyLow_ | 0x01);
-    }
-    if ((buttons & kButtonSelect) != 0) {
-        joyLow_ = static_cast<std::uint8_t>(joyLow_ | 0x04);
-    }
-    if ((buttons & kButtonStart) != 0) {
-        joyLow_ = static_cast<std::uint8_t>(joyLow_ | 0x08);
-    }
-    if ((buttons & kButtonUp) != 0) {
-        joyLow_ = static_cast<std::uint8_t>(joyLow_ | 0x10);
-    }
-    if ((buttons & kButtonDown) != 0) {
-        joyLow_ = static_cast<std::uint8_t>(joyLow_ | 0x20);
-    }
-    if ((buttons & kButtonLeft) != 0) {
-        joyLow_ = static_cast<std::uint8_t>(joyLow_ | 0x40);
-    }
-    if ((buttons & kButtonRight) != 0) {
+    if ((buttons & kButtonA) != 0) {
         joyLow_ = static_cast<std::uint8_t>(joyLow_ | 0x80);
     }
-    if ((buttons & kButtonA) != 0) {
+    if ((buttons & kButtonB) != 0) {
+        joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x80);
+    }
+    if ((buttons & kButtonSelect) != 0) {
+        joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x20);
+    }
+    if ((buttons & kButtonStart) != 0) {
+        joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x10);
+    }
+    if ((buttons & kButtonUp) != 0) {
+        joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x08);
+    }
+    if ((buttons & kButtonDown) != 0) {
+        joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x04);
+    }
+    if ((buttons & kButtonLeft) != 0) {
+        joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x02);
+    }
+    if ((buttons & kButtonRight) != 0) {
         joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x01);
+    }
+    if (joyStrobe_) {
+        latchJoypad();
     }
 }
 
@@ -390,6 +422,9 @@ std::uint8_t Bus::read(std::uint8_t bank, std::uint16_t address) {
         if (address == 0x4217) {
             return static_cast<std::uint8_t>(product_ >> 8);
         }
+        if (address == 0x4016 || address == 0x4017) {
+            return readJoypad(address == 0x4017);
+        }
         if (address == 0x4218) {
             return joyLow_;
         }
@@ -447,6 +482,14 @@ void Bus::write(std::uint8_t bank, std::uint16_t address, std::uint8_t value) {
         }
         if (address >= 0x2140 && address <= 0x2143) {
             apu_.writePort(address & 0x03, value);
+            return;
+        }
+        if (address == 0x4016) {
+            const bool strobe = (value & 0x01) != 0;
+            if (strobe) {
+                latchJoypad();
+            }
+            joyStrobe_ = strobe;
             return;
         }
         if (address == 0x4200) {
@@ -720,6 +763,145 @@ std::uint8_t Bus::readWramPort(std::uint16_t address) {
 
 std::uint8_t Bus::read24(std::uint32_t address) {
     return read(static_cast<std::uint8_t>(address >> 16), static_cast<std::uint16_t>(address & 0xFFFF));
+}
+
+void Bus::saveState(iris::ByteWriter& out) const {
+    out.bytes(wram_.data(), wram_.size());
+    out.u32(static_cast<std::uint32_t>(sram_.size()));
+    out.bytes(sram_.data(), sram_.size());
+    out.u32(static_cast<std::uint32_t>(iram_.size()));
+    out.bytes(iram_.data(), iram_.size());
+    out.u32(static_cast<std::uint32_t>(bwram_.size()));
+    out.bytes(bwram_.data(), bwram_.size());
+    for (const DmaChannel& channel : dma_) {
+        out.u8(channel.control);
+        out.u8(channel.destination);
+        out.u32(channel.source);
+        out.u16(channel.count);
+        out.u8(channel.indirectBank);
+        out.u16(channel.table);
+        out.u16(channel.indirect);
+        out.u8(channel.lineCounter);
+        out.boolean(channel.hdmaActive);
+        out.boolean(channel.hdmaTransfer);
+    }
+    out.u32(wmadd_);
+    out.u8(joyLow_);
+    out.u8(joyHigh_);
+    out.u8(nmitimen_);
+    out.u8(hdmaen_);
+    out.u8(ccnt_);
+    out.u16(crv_);
+    out.boolean(sa1Running_);
+    out.boolean(sa1Start_);
+    out.boolean(sa1Access_);
+    out.u8(mulA_);
+    out.u16(dividend_);
+    out.u16(quotient_);
+    out.u16(product_);
+    out.u16(vtime_);
+    out.u16(htime_);
+    out.u32(static_cast<std::uint32_t>(dmaStall_));
+    out.u32(static_cast<std::uint32_t>(cycle_));
+    out.boolean(nmiFlag_);
+    out.boolean(irqFlag_);
+    ppu_.saveState(out);
+    apu_.saveState(out);
+    gsu_.saveState(out);
+    dsp_.saveState(out);
+}
+
+bool Bus::loadState(iris::ByteReader& in) {
+    if (wram_.size() != 128 * 1024) {
+        return false;
+    }
+    std::vector<std::uint8_t> wram(wram_.size());
+    in.bytes(wram.data(), wram.size());
+    const auto sramBytes = in.u32();
+    if (!in.ok() || sramBytes != sram_.size() || sramBytes > 512 * 1024) {
+        return false;
+    }
+    std::vector<std::uint8_t> sram(sramBytes);
+    in.bytes(sram.data(), sram.size());
+    const auto iramBytes = in.u32();
+    if (!in.ok() || iramBytes != iram_.size() || iramBytes > 2048) {
+        return false;
+    }
+    std::vector<std::uint8_t> iram(iramBytes);
+    in.bytes(iram.data(), iram.size());
+    const auto bwramBytes = in.u32();
+    if (!in.ok() || bwramBytes != bwram_.size() || bwramBytes > 256 * 1024) {
+        return false;
+    }
+    std::vector<std::uint8_t> bwram(bwramBytes);
+    in.bytes(bwram.data(), bwram.size());
+    DmaChannel dma[8]{};
+    for (DmaChannel& channel : dma) {
+        channel.control = in.u8();
+        channel.destination = in.u8();
+        channel.source = in.u32();
+        channel.count = in.u16();
+        channel.indirectBank = in.u8();
+        channel.table = in.u16();
+        channel.indirect = in.u16();
+        channel.lineCounter = in.u8();
+        channel.hdmaActive = in.boolean();
+        channel.hdmaTransfer = in.boolean();
+    }
+    const auto wmadd = in.u32();
+    const auto joyLow = in.u8();
+    const auto joyHigh = in.u8();
+    const auto nmitimen = in.u8();
+    const auto hdmaen = in.u8();
+    const auto ccnt = in.u8();
+    const auto crv = in.u16();
+    const auto sa1Running = in.boolean();
+    const auto sa1Start = in.boolean();
+    const auto sa1Access = in.boolean();
+    const auto mulA = in.u8();
+    const auto dividend = in.u16();
+    const auto quotient = in.u16();
+    const auto product = in.u16();
+    const auto vtime = in.u16();
+    const auto htime = in.u16();
+    const auto dmaStall = static_cast<int>(in.u32());
+    const auto cycle = static_cast<int>(in.u32());
+    const auto nmiFlag = in.boolean();
+    const auto irqFlag = in.boolean();
+    if (!in.ok() || !ppu_.loadState(in) || !apu_.loadState(in) || !gsu_.loadState(in) || !dsp_.loadState(in)) {
+        return false;
+    }
+    wram_ = std::move(wram);
+    sram_ = std::move(sram);
+    iram_ = std::move(iram);
+    bwram_ = std::move(bwram);
+    for (int index = 0; index < 8; ++index) {
+        dma_[index] = dma[index];
+    }
+    wmadd_ = wmadd;
+    joyLow_ = joyLow;
+    joyHigh_ = joyHigh;
+    joyShift_ = 0;
+    joyBitsLeft_ = 0;
+    joyStrobe_ = false;
+    nmitimen_ = nmitimen;
+    hdmaen_ = hdmaen;
+    ccnt_ = ccnt;
+    crv_ = crv;
+    sa1Running_ = sa1Running;
+    sa1Start_ = sa1Start;
+    sa1Access_ = sa1Access;
+    mulA_ = mulA;
+    dividend_ = dividend;
+    quotient_ = quotient;
+    product_ = product;
+    vtime_ = vtime;
+    htime_ = htime;
+    dmaStall_ = dmaStall;
+    cycle_ = cycle;
+    nmiFlag_ = nmiFlag;
+    irqFlag_ = irqFlag;
+    return true;
 }
 
 }  // namespace iris::systems::snes

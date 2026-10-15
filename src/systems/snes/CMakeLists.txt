@@ -26,6 +26,7 @@ add_library(iris_snes STATIC
     iris/snes/ppu.hpp
     iris/snes/snes_system.cpp
     iris/snes/snes_system.hpp
+    iris/snes/snes_state.cpp
 )
 
 target_include_directories(iris_snes PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

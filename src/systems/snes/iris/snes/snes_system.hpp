@@ -48,6 +48,8 @@ private:
     bool adopt(Cartridge cartridge, std::string& error);
     void applyRegion();
     [[nodiscard]] std::string detailText() const;
+    [[nodiscard]] bool exportComponents(std::vector<std::uint8_t>& bytes) const;
+    [[nodiscard]] bool importComponents(const std::uint8_t* data, std::size_t size);
 
     Cartridge cartridge_;
     Bus bus_;

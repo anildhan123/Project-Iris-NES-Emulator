@@ -3,6 +3,11 @@
 #include <cstdint>
 #include <vector>
 
+namespace iris {
+class ByteReader;
+class ByteWriter;
+}
+
 namespace iris::systems::snes {
 
 class Ppu {
@@ -15,10 +20,13 @@ public:
     void write(std::uint16_t address, std::uint8_t value);
     void render();
     void renderLine(int y);
+    void reloadOam() { oamByte_ = static_cast<int>(oamWord_ & 0x1FF) * 2; }
 
     [[nodiscard]] const std::uint8_t* pixels() const { return frame_.data(); }
     [[nodiscard]] int width() const { return kWidth; }
     [[nodiscard]] int height() const { return kHeight; }
+    void saveState(iris::ByteWriter& out) const;
+    [[nodiscard]] bool loadState(iris::ByteReader& in);
 
     static constexpr int kWidth = 256;
     static constexpr int kHeight = 224;

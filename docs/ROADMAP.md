@@ -205,3 +205,12 @@ Full mobile frontends and other consoles are not started.
 - Version 0.21.0. The configuration schema stays at version 7.
 
 Full mobile frontends and other consoles are not started.
+
+## Milestone 22 — Super NES save states (implemented)
+
+- A Super NES state uses the `IRSN` envelope. It stores both 65816s, work RAM, video RAM, the picture, the SPC700 and DSP, the DSP-1 port, and the Super FX and SA-1 memory that the loaded board owns. It does not store the ROM. A file for a different game is refused, and a damaged file leaves the running machine as it was.
+- File → System switches between NES and Super NES after one system is already open. Opening a `.nes` file from Super NES, or a `.sfc` or `.smc` file from NES, switches to the system that file belongs to.
+- DSP-2, DSP-3, DSP-4, and the other enhancement chips are still refused. Modes 5 and 6 stay 256 pixels wide. Timing inside an instruction is still approximate. The Nintendo IPL ROM is not included. A cartridge this build does not cover still will not play, and a commercial soundtrack is not claimed.
+- Version 0.22.0. The configuration schema stays at version 7.
+
+Full mobile frontends and other consoles are not started.

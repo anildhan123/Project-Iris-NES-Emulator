@@ -137,6 +137,16 @@ TEST_CASE("LoROM and HiROM images report their titles") {
     REQUIRE(system.debugRead(0x0020) == 0x00);
 }
 
+TEST_CASE("a Super NES controller reports Start on the high byte and A on the low byte") {
+    iris::systems::snes::SnesSystem system;
+    system.setController(0, static_cast<std::uint8_t>(iris::kButtonStart | iris::kButtonA | iris::kButtonRight));
+    REQUIRE(system.debugRead(0x4219) == 0x11);
+    REQUIRE(system.debugRead(0x4218) == 0x80);
+    system.setController(0, iris::kButtonB);
+    REQUIRE(system.debugRead(0x4219) == 0x80);
+    REQUIRE(system.debugRead(0x4218) == 0x00);
+}
+
 TEST_CASE("the Super NES demo moves its marker with the controller") {
     iris::systems::snes::SnesSystem system;
     const std::vector<std::uint8_t> demo = iris::systems::snes::makeIrisSnesDemo();
@@ -898,9 +908,78 @@ TEST_CASE("vblank sets the NMI flag while NMI is disabled") {
     REQUIRE(system.info().detail.find("Stopped") == std::string::npos);
 }
 
+TEST_CASE("a Super NES save state restores work RAM and refuses another game") {
+    std::vector<std::uint8_t> code = {0x18, 0xFB, 0xC2, 0x20, 0xA9, 0x5A, 0x00, 0x8F, 0x10, 0x00, 0x7E};
+    finishIdle(code);
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> rom = loRom(code);
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x7E0010) == 0x5A);
+    std::vector<std::uint8_t> bytes;
+    REQUIRE(system.saveState(bytes, "checkpoint", error));
+    iris::StatePreview preview;
+    system.inspectState(bytes.data(), bytes.size(), preview);
+    REQUIRE(preview.readable);
+    REQUIRE(preview.sameGame);
+    REQUIRE(preview.description == "checkpoint");
+    REQUIRE(preview.thumbnailWidth == 64);
+    REQUIRE(preview.thumbnailHeight == 56);
+    REQUIRE(preview.thumbnailRgba.size() == 64 * 56 * 4);
+    system.powerCycle();
+    REQUIRE(system.debugRead(0x7E0010) == 0x00);
+    REQUIRE(system.loadState(bytes.data(), bytes.size(), error));
+    REQUIRE(system.debugRead(0x7E0010) == 0x5A);
+    std::vector<std::uint8_t> damaged = bytes;
+    damaged.back() ^= 0xFF;
+    REQUIRE_FALSE(system.loadState(damaged.data(), damaged.size(), error));
+    REQUIRE(system.debugRead(0x7E0010) == 0x5A);
+    std::vector<std::uint8_t> otherCode = code;
+    otherCode[5] = 0x11;
+    iris::systems::snes::SnesSystem other;
+    const std::vector<std::uint8_t> otherRom = loRom(otherCode);
+    REQUIRE(other.loadBytes(otherRom.data(), otherRom.size(), error));
+    other.runFrame();
+    REQUIRE(other.debugRead(0x7E0010) == 0x11);
+    REQUIRE_FALSE(other.loadState(bytes.data(), bytes.size(), error));
+    REQUIRE(other.debugRead(0x7E0010) == 0x11);
+}
+
+TEST_CASE("the DSP address keeps the high bit that a driver compares") {
+    const std::vector<std::uint8_t> program = {0x8F, 0x7F, 0xF2, 0x98, 0x10, 0xF2, 0xE4, 0xF2, 0xC4, 0xF4, 0x2F, 0xFE};
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> rom = loRom(transferProgram(0x0200, {{static_cast<std::uint16_t>(0x0200), program}}));
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x2140) == 0x8F);
+}
+
 TEST_CASE("a Super NES path selects that system and a NES path does not") {
     REQUIRE(iris::systemKindForPath("game.sfc") == iris::SystemKind::Snes);
     REQUIRE(iris::systemKindForPath("game.smc") == iris::SystemKind::Snes);
     REQUIRE(iris::systemKindForPath("game.nes") == iris::SystemKind::Nes);
     REQUIRE(std::string(iris::systemKindName(iris::SystemKind::Snes)) == "Super NES");
+}
+
+TEST_CASE("vblank reloads the sprite address before the next object list") {
+    std::vector<std::uint8_t> program = {
+        0x78, 0x9C, 0x02, 0x21, 0x9C, 0x03, 0x21, 0xA9, 0x01, 0x8D, 0x04, 0x21, 0xA9, 0x02, 0x8D, 0x04, 0x21,
+        0xA9, 0x03, 0x8D, 0x04, 0x21, 0xA9, 0x04, 0x8D, 0x04, 0x21, 0xA9, 0x80, 0x8D, 0x00, 0x42, 0xCB, 0xA9,
+        0x10, 0x8D, 0x04, 0x21, 0xA9, 0x20, 0x8D, 0x04, 0x21, 0xA9, 0x30, 0x8D, 0x04, 0x21, 0xA9, 0x40, 0x8D,
+        0x04, 0x21, 0x9C, 0x02, 0x21, 0xDB, 0x40,
+    };
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    std::vector<std::uint8_t> rom = loRom(program);
+    const auto handler = static_cast<std::uint16_t>(0x8000 + program.size() - 1);
+    rom[0x7FFA] = static_cast<std::uint8_t>(handler);
+    rom[0x7FFB] = static_cast<std::uint8_t>(handler >> 8);
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x2138) == 0x10);
+    REQUIRE(system.debugRead(0x2138) == 0x20);
+    REQUIRE(system.debugRead(0x2138) == 0x30);
+    REQUIRE(system.debugRead(0x2138) == 0x40);
 }

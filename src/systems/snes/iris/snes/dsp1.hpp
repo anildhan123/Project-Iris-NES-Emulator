@@ -2,6 +2,11 @@
 
 #include <cstdint>
 
+namespace iris {
+class ByteReader;
+class ByteWriter;
+}
+
 namespace iris::systems::snes {
 
 // DSP-1 data and status ports. Multiply, inverse, triangle, and rotate are
@@ -12,6 +17,8 @@ public:
     void power();
     [[nodiscard]] bool read(std::uint8_t bank, std::uint16_t address, bool hiRom, std::uint8_t& value);
     [[nodiscard]] bool write(std::uint8_t bank, std::uint16_t address, bool hiRom, std::uint8_t value);
+    void saveState(iris::ByteWriter& out) const;
+    [[nodiscard]] bool loadState(iris::ByteReader& in);
 
 private:
     enum class Phase { Command, Input, Output };

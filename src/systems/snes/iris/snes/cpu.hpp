@@ -4,6 +4,11 @@
 
 #include <cstdint>
 
+namespace iris {
+class ByteReader;
+class ByteWriter;
+}
+
 namespace iris::systems::snes {
 
 // 65816, including the addressing modes used by LoROM and HiROM games.
@@ -25,6 +30,8 @@ public:
     [[nodiscard]] std::uint8_t sp() const { return static_cast<std::uint8_t>(sp_); }
     [[nodiscard]] std::uint8_t p() const { return p_; }
     [[nodiscard]] bool emulation() const { return emulation_; }
+    void saveState(iris::ByteWriter& out) const;
+    [[nodiscard]] bool loadState(iris::ByteReader& in);
 
 private:
     [[nodiscard]] std::uint8_t fetch(Bus& bus);

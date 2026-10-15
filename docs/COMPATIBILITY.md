@@ -1,6 +1,6 @@
 # Compatibility
 
-Version 0.21.0 records what this Windows build was tested to do. The Ubuntu and macOS jobs cited below compiled and tested 0.9.0. It is not a catalogue of commercial games, and it does not include those games.
+Version 0.22.0 records what this Windows build was tested to do. The Ubuntu and macOS jobs cited below compiled and tested 0.9.0. It is not a catalogue of commercial games, and it does not include those games.
 
 Run the suite from a configured build tree:
 
@@ -38,7 +38,7 @@ The debug suite fails if those 180 demo frames average 100 ms or more. That limi
 
 ## Super NES
 
-The suite loads LoROM and HiROM, draws the Iris Demo marker, and checks the picture features from milestones 16 and 17. A 65816 program uploads an SPC700 payload through `$2140`–`$2143`, and the output port returns `$5A`. A second upload plays a BRR sample through the DSP. That host buffer is 48000 Hz mono, and its peak is above silence. An idle frame still produces samples. Those samples stay silent when the cartridge did not upload a program. The Nintendo IPL ROM is not in the test or the build. A 16-bit store to `$2140` can finish that transfer: the boot handshake reads both port bytes after the instruction, and an 8-bit index sign-extends when it moves into the 16-bit accumulator. This does not claim that a commercial soundtrack plays.
+The suite loads LoROM and HiROM, draws the Iris Demo marker, and checks the picture features from milestones 16 and 17. A 65816 program uploads an SPC700 payload through `$2140`–`$2143`, and the output port returns `$5A`. A second upload plays a BRR sample through the DSP. That host buffer is 48000 Hz mono, and its peak is above silence. An idle frame still produces samples. Those samples stay silent when the cartridge did not upload a program. The Nintendo IPL ROM is not in the test or the build. A 16-bit store to `$2140` can finish that transfer: the boot handshake reads both port bytes after the instruction, and an 8-bit index sign-extends when it moves into the 16-bit accumulator. A save state restores work RAM for the same game, and a damaged file or a state from another game is refused. This does not claim that a commercial soundtrack plays.
 
 A DSP-1 image multiplies `$4000` by `$4000` and reads `$2000`, then checks inverse of zero and a zero-angle triangle. A Super FX image stores `$A5` through the GSU and plots that color. An SA-1 image starts the coprocessor at its reset vector and reads `$5A` back from I-RAM. An ExHiROM image reads `$A5` from the first half at `$C0:0000` and `$5A` from the second half at `$40:0000`. A map-mode 5 byte in the LoROM header slot is still refused. A HiROM program that writes work RAM at `$7E:0010` reads zero from `$FE:0010`. This does not claim that every DSP-1, Super FX, SA-1, or ExHiROM game plays. DSP-2, DSP-3, DSP-4, and the other enhancement chips are not in this build.
 
@@ -69,13 +69,13 @@ An unexpected C++ exception, or a Windows access violation, integer division by 
 
 ## Release candidate
 
-0.21.0 is an unsigned build. The Windows executable's version resource says 0.21.0. Build it with `cmake --build --preset windows-msvc-release`. Package it with `cpack -G ZIP -C Release` from the build directory. The zip contains the executable, Iris Demo, the readme, and the license files. It is not a signed installer.
+0.22.0 is an unsigned build. The Windows executable's version resource says 0.22.0. Build it with `cmake --build --preset windows-msvc-release`. Package it with `cpack -G ZIP -C Release` from the build directory. The zip contains the executable, Iris Demo, the readme, and the license files. It is not a signed installer.
 
-The frame-time numbers above were measured for 0.7.0 on this Windows 11 machine. A later `--profile` run prints `Iris Emulator 0.21.0` and its own host times. The target line stays the NTSC frame period. The 0.7.0 numbers were not remeasured for 0.10.0.
+The frame-time numbers above were measured for 0.7.0 on this Windows 11 machine. A later `--profile` run prints `Iris Emulator 0.22.0` and its own host times. The target line stays the NTSC frame period. The 0.7.0 numbers were not remeasured for 0.10.0.
 
 ## Portability
 
-The development machine is Windows. The C API test and the Windows and XDG data-root tests ran here. `iris --version` on this machine prints `Iris Emulator 0.21.0`. A second configure with the desktop turned off built the core and passed the unit tests, and it did not produce the window executable.
+The development machine is Windows. The C API test and the Windows and XDG data-root tests ran here. `iris --version` on this machine prints `Iris Emulator 0.22.0`. A second configure with the desktop turned off built the core and passed the unit tests, and it did not produce the window executable.
 
 The desktop window draws its own title bar, caption buttons, and border. Themes are Blue, Olive, and Silver. Fullscreen hides that frame. This is the window chrome; it does not change the emulated picture.
 

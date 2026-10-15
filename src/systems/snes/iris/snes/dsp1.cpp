@@ -1,5 +1,7 @@
 #include "iris/snes/dsp1.hpp"
 
+#include "iris/byte_io.hpp"
+
 #include <cmath>
 
 namespace iris::systems::snes {
@@ -133,6 +135,58 @@ void Dsp1::execute() {
         outputCount_ = 2;
     }
     phase_ = outputCount_ == 0 ? Phase::Command : Phase::Output;
+}
+
+void Dsp1::saveState(iris::ByteWriter& out) const {
+    for (const std::int16_t value : input_) {
+        out.u16(static_cast<std::uint16_t>(value));
+    }
+    for (const std::int16_t value : output_) {
+        out.u16(static_cast<std::uint16_t>(value));
+    }
+    out.u16(word_);
+    out.u32(static_cast<std::uint32_t>(inputCount_));
+    out.u32(static_cast<std::uint32_t>(inputNeed_));
+    out.u32(static_cast<std::uint32_t>(outputCount_));
+    out.u32(static_cast<std::uint32_t>(outputIndex_));
+    out.u32(static_cast<std::uint32_t>(byteIndex_));
+    out.u8(command_);
+    out.u8(static_cast<std::uint8_t>(phase_));
+}
+
+bool Dsp1::loadState(iris::ByteReader& in) {
+    std::int16_t input[8] = {};
+    std::int16_t output[8] = {};
+    for (std::int16_t& value : input) {
+        value = static_cast<std::int16_t>(in.u16());
+    }
+    for (std::int16_t& value : output) {
+        value = static_cast<std::int16_t>(in.u16());
+    }
+    const auto word = in.u16();
+    const auto inputCount = static_cast<int>(in.u32());
+    const auto inputNeed = static_cast<int>(in.u32());
+    const auto outputCount = static_cast<int>(in.u32());
+    const auto outputIndex = static_cast<int>(in.u32());
+    const auto byteIndex = static_cast<int>(in.u32());
+    const auto command = in.u8();
+    const auto phase = in.u8();
+    if (!in.ok() || phase > static_cast<std::uint8_t>(Phase::Output)) {
+        return false;
+    }
+    for (int index = 0; index < 8; ++index) {
+        input_[index] = input[index];
+        output_[index] = output[index];
+    }
+    word_ = word;
+    inputCount_ = inputCount;
+    inputNeed_ = inputNeed;
+    outputCount_ = outputCount;
+    outputIndex_ = outputIndex;
+    byteIndex_ = byteIndex;
+    command_ = command;
+    phase_ = static_cast<Phase>(phase);
+    return true;
 }
 
 int Dsp1::inputsFor(std::uint8_t command) {

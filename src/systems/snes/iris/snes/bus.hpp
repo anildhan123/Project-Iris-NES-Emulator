@@ -9,6 +9,11 @@
 #include <cstdint>
 #include <vector>
 
+namespace iris {
+class ByteReader;
+class ByteWriter;
+}
+
 namespace iris::systems::snes {
 
 class Bus {
@@ -42,6 +47,8 @@ public:
     void drawLine(int line);
     void copySram(std::vector<std::uint8_t>& bytes) const;
     [[nodiscard]] bool restoreSram(const std::uint8_t* data, std::size_t size);
+    void saveState(iris::ByteWriter& out) const;
+    [[nodiscard]] bool loadState(iris::ByteReader& in);
 
     [[nodiscard]] std::uint8_t read(std::uint8_t bank, std::uint16_t address);
     void write(std::uint8_t bank, std::uint16_t address, std::uint8_t value);
@@ -84,8 +91,14 @@ private:
     Ppu ppu_;
     DmaChannel dma_[8]{};
     std::uint32_t wmadd_ = 0;
+    void latchJoypad();
+    [[nodiscard]] std::uint8_t readJoypad(bool portTwo);
+
     std::uint8_t joyLow_ = 0;
     std::uint8_t joyHigh_ = 0;
+    std::uint16_t joyShift_ = 0;
+    int joyBitsLeft_ = 0;
+    bool joyStrobe_ = false;
     std::uint8_t nmitimen_ = 0;
     std::uint8_t hdmaen_ = 0;
     Apu apu_;

@@ -1,5 +1,7 @@
 #include "iris/snes/ppu.hpp"
 
+#include "iris/byte_io.hpp"
+
 namespace iris::systems::snes {
 namespace {
 
@@ -99,6 +101,15 @@ std::uint8_t Ppu::read(std::uint16_t address) {
         const std::uint8_t value = vram_[byte];
         if ((address == 0x213A) == ((vmain_ & 0x80) != 0)) {
             vramAddress_ = static_cast<std::uint16_t>((vramAddress_ + 1) & 0x7FFF);
+        }
+        return value;
+    }
+    if (address == 0x2138) {
+        const int index = oamByte_;
+        const std::uint8_t value =
+            index >= 0 && static_cast<std::size_t>(index) < oam_.size() ? oam_[static_cast<std::size_t>(index)] : 0;
+        if (oamByte_ < 544) {
+            ++oamByte_;
         }
         return value;
     }
@@ -742,6 +753,186 @@ void Ppu::collectSprites(int y, Texel* dots) const {
             }
         }
     }
+}
+
+
+void Ppu::saveState(iris::ByteWriter& out) const {
+    out.u8(inidisp_);
+    out.u8(obsel_);
+    out.u8(bgmode_);
+    out.u8(bg1sc_);
+    out.u8(bg2sc_);
+    out.u8(bg3sc_);
+    out.u8(bg4sc_);
+    out.u8(bg12nba_);
+    out.u8(bg34nba_);
+    for (int layer = 0; layer < 4; ++layer) {
+        out.u16(hofs_[layer]);
+        out.u16(vofs_[layer]);
+    }
+    out.u8(scrollLatch_);
+    out.u8(mosaic_);
+    out.u8(tm_);
+    out.u8(ts_);
+    out.u8(vmain_);
+    out.u16(vramAddress_);
+    out.u16(oamWord_);
+    out.u32(static_cast<std::uint32_t>(oamByte_));
+    out.u8(cgAddress_);
+    out.boolean(cgHigh_);
+    out.u8(cgLatch_);
+    out.u8(m7Latch_);
+    out.u16(static_cast<std::uint16_t>(m7a_));
+    out.u16(static_cast<std::uint16_t>(m7b_));
+    out.u16(static_cast<std::uint16_t>(m7c_));
+    out.u16(static_cast<std::uint16_t>(m7d_));
+    out.u32(static_cast<std::uint32_t>(m7x_));
+    out.u32(static_cast<std::uint32_t>(m7y_));
+    out.u32(static_cast<std::uint32_t>(m7hofs_));
+    out.u32(static_cast<std::uint32_t>(m7vofs_));
+    out.u8(w12sel_);
+    out.u8(w34sel_);
+    out.u8(wobjsel_);
+    out.u8(wlog_);
+    out.u8(wobjlog_);
+    out.u8(wh0_);
+    out.u8(wh1_);
+    out.u8(wh2_);
+    out.u8(wh3_);
+    out.u8(tmw_);
+    out.u8(tsw_);
+    out.u8(cgwsel_);
+    out.u8(cgadsub_);
+    out.u8(fixedR_);
+    out.u8(fixedG_);
+    out.u8(fixedB_);
+    out.bytes(vram_.data(), vram_.size());
+    out.bytes(oam_.data(), oam_.size());
+    for (const std::uint16_t entry : cgram_) {
+        out.u16(entry);
+    }
+    out.bytes(frame_.data(), frame_.size());
+}
+
+bool Ppu::loadState(iris::ByteReader& in) {
+    const auto inidisp = in.u8();
+    const auto obsel = in.u8();
+    const auto bgmode = in.u8();
+    const auto bg1sc = in.u8();
+    const auto bg2sc = in.u8();
+    const auto bg3sc = in.u8();
+    const auto bg4sc = in.u8();
+    const auto bg12nba = in.u8();
+    const auto bg34nba = in.u8();
+    std::uint16_t hofs[4] = {};
+    std::uint16_t vofs[4] = {};
+    for (int layer = 0; layer < 4; ++layer) {
+        hofs[layer] = in.u16();
+        vofs[layer] = in.u16();
+    }
+    const auto scrollLatch = in.u8();
+    const auto mosaic = in.u8();
+    const auto tm = in.u8();
+    const auto ts = in.u8();
+    const auto vmain = in.u8();
+    const auto vramAddress = in.u16();
+    const auto oamWord = in.u16();
+    const auto oamByte = static_cast<int>(in.u32());
+    const auto cgAddress = in.u8();
+    const auto cgHigh = in.boolean();
+    const auto cgLatch = in.u8();
+    const auto m7Latch = in.u8();
+    const auto m7a = static_cast<std::int16_t>(in.u16());
+    const auto m7b = static_cast<std::int16_t>(in.u16());
+    const auto m7c = static_cast<std::int16_t>(in.u16());
+    const auto m7d = static_cast<std::int16_t>(in.u16());
+    const auto m7x = static_cast<int>(in.u32());
+    const auto m7y = static_cast<int>(in.u32());
+    const auto m7hofs = static_cast<int>(in.u32());
+    const auto m7vofs = static_cast<int>(in.u32());
+    const auto w12sel = in.u8();
+    const auto w34sel = in.u8();
+    const auto wobjsel = in.u8();
+    const auto wlog = in.u8();
+    const auto wobjlog = in.u8();
+    const auto wh0 = in.u8();
+    const auto wh1 = in.u8();
+    const auto wh2 = in.u8();
+    const auto wh3 = in.u8();
+    const auto tmw = in.u8();
+    const auto tsw = in.u8();
+    const auto cgwsel = in.u8();
+    const auto cgadsub = in.u8();
+    const auto fixedR = in.u8();
+    const auto fixedG = in.u8();
+    const auto fixedB = in.u8();
+    std::vector<std::uint8_t> vram(vram_.size());
+    std::vector<std::uint8_t> oam(oam_.size());
+    std::vector<std::uint16_t> cgram(cgram_.size());
+    std::vector<std::uint8_t> frame(frame_.size());
+    in.bytes(vram.data(), vram.size());
+    in.bytes(oam.data(), oam.size());
+    for (std::uint16_t& entry : cgram) {
+        entry = in.u16();
+    }
+    in.bytes(frame.data(), frame.size());
+    if (!in.ok()) {
+        return false;
+    }
+    inidisp_ = inidisp;
+    obsel_ = obsel;
+    bgmode_ = bgmode;
+    bg1sc_ = bg1sc;
+    bg2sc_ = bg2sc;
+    bg3sc_ = bg3sc;
+    bg4sc_ = bg4sc;
+    bg12nba_ = bg12nba;
+    bg34nba_ = bg34nba;
+    for (int layer = 0; layer < 4; ++layer) {
+        hofs_[layer] = hofs[layer];
+        vofs_[layer] = vofs[layer];
+    }
+    scrollLatch_ = scrollLatch;
+    mosaic_ = mosaic;
+    tm_ = tm;
+    ts_ = ts;
+    vmain_ = vmain;
+    vramAddress_ = vramAddress;
+    oamWord_ = oamWord;
+    oamByte_ = oamByte;
+    cgAddress_ = cgAddress;
+    cgHigh_ = cgHigh;
+    cgLatch_ = cgLatch;
+    m7Latch_ = m7Latch;
+    m7a_ = m7a;
+    m7b_ = m7b;
+    m7c_ = m7c;
+    m7d_ = m7d;
+    m7x_ = m7x;
+    m7y_ = m7y;
+    m7hofs_ = m7hofs;
+    m7vofs_ = m7vofs;
+    w12sel_ = w12sel;
+    w34sel_ = w34sel;
+    wobjsel_ = wobjsel;
+    wlog_ = wlog;
+    wobjlog_ = wobjlog;
+    wh0_ = wh0;
+    wh1_ = wh1;
+    wh2_ = wh2;
+    wh3_ = wh3;
+    tmw_ = tmw;
+    tsw_ = tsw;
+    cgwsel_ = cgwsel;
+    cgadsub_ = cgadsub;
+    fixedR_ = fixedR;
+    fixedG_ = fixedG;
+    fixedB_ = fixedB;
+    vram_ = std::move(vram);
+    oam_ = std::move(oam);
+    cgram_ = std::move(cgram);
+    frame_ = std::move(frame);
+    return true;
 }
 
 }  // namespace iris::systems::snes
