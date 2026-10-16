@@ -1,3 +1,11 @@
+if(MSVC)
+    # The shell draws every host frame. A debug build of that loop, plus the
+    # emulator, misses NTSC on battery and the audio device underruns.
+    string(REGEX REPLACE "(^| )/RTC(1|su|s|u|c)" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    string(REGEX REPLACE "(^| )/Od" " /O2" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+    string(REGEX REPLACE "(^| )/Ob0" " /Ob2" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
+endif()
+
 add_library(iris_frontend STATIC
     iris/desktop_shell.cpp
     iris/desktop_shell.hpp

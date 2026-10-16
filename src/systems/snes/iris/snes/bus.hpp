@@ -99,6 +99,9 @@ private:
     std::uint16_t joyShift_ = 0;
     int joyBitsLeft_ = 0;
     bool joyStrobe_ = false;
+    // Auto-read is busy for a few scanlines after vblank starts. Games wait for this bit to clear
+    // before trusting $4218. Leaving it clear makes that wait fall through and some games skip the read.
+    int joyBusyUntil_ = 0;
     std::uint8_t nmitimen_ = 0;
     std::uint8_t hdmaen_ = 0;
     Apu apu_;

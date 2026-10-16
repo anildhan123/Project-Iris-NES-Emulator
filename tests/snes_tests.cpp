@@ -137,6 +137,39 @@ TEST_CASE("LoROM and HiROM images report their titles") {
     REQUIRE(system.debugRead(0x0020) == 0x00);
 }
 
+TEST_CASE("a Super NES controller shifts B first and then the direction pad") {
+    // Strobe, release, then sixteen reads. B is first. Right is the eighth bit.
+    const std::vector<std::uint8_t> program = {
+        0x78, 0xA9, 0x01, 0x8D, 0x16, 0x40, 0x9C, 0x16, 0x40, 0x64, 0x20, 0x64, 0x21, 0xA2, 0x10, 0xAD, 0x16,
+        0x40, 0x4A, 0x26, 0x21, 0x26, 0x20, 0xCA, 0xD0, 0xF5, 0xDB,
+    };
+    const std::vector<std::uint8_t> rom = loRom(program);
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.setController(0, static_cast<std::uint8_t>(iris::kButtonB | iris::kButtonRight));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0020) == 0x81);
+    REQUIRE(system.debugRead(0x0021) == 0x00);
+}
+
+TEST_CASE("automatic joypad read is busy at vblank and then reports the direction pad") {
+    const std::vector<std::uint8_t> program = {
+        0x78, 0xA9, 0x01, 0x8D, 0x00, 0x42, 0x64, 0x10, 0x64, 0x11, 0x64, 0x12, 0xAD, 0x12, 0x42, 0x10, 0xFB,
+        0xAD, 0x12, 0x42, 0x29, 0x01, 0xF0, 0x04, 0xA9, 0x01, 0x85, 0x10, 0xAD, 0x12, 0x42, 0x29, 0x01, 0xD0,
+        0xF9, 0xAD, 0x18, 0x42, 0x85, 0x11, 0xAD, 0x19, 0x42, 0x85, 0x12, 0xDB,
+    };
+    const std::vector<std::uint8_t> rom = loRom(program);
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.setController(0, static_cast<std::uint8_t>(iris::kButtonB | iris::kButtonUp));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) == 0x01);
+    REQUIRE(system.debugRead(0x0011) == 0x00);
+    REQUIRE(system.debugRead(0x0012) == 0x88);
+}
+
 TEST_CASE("a Super NES controller reports Start on the high byte and A on the low byte") {
     iris::systems::snes::SnesSystem system;
     system.setController(0, static_cast<std::uint8_t>(iris::kButtonStart | iris::kButtonA | iris::kButtonRight));

@@ -19,6 +19,7 @@ void Bus::power() {
     joyShift_ = 0;
     joyBitsLeft_ = 0;
     joyStrobe_ = false;
+    joyBusyUntil_ = 0;
     nmitimen_ = 0;
     hdmaen_ = 0;
     apu_.power();
@@ -212,6 +213,7 @@ bool Bus::writeSa1(std::uint8_t bank, std::uint16_t address, std::uint8_t value)
 
 void Bus::beginFrame() {
     apu_.beginFrame();
+    joyBusyUntil_ = 0;
 }
 
 void Bus::catchUpApu(int masterCycle, int masterClock) {
@@ -229,6 +231,10 @@ void Bus::setCycle(int cycle) {
 void Bus::raiseNmi() {
     nmiFlag_ = true;
     ppu_.reloadOam();
+    // $4200 bit 0 enables the automatic read. It occupies about three scanlines from vblank.
+    if ((nmitimen_ & 0x01) != 0) {
+        joyBusyUntil_ = cycle_ + 1364 * 3;
+    }
 }
 
 void Bus::raiseIrq() {
@@ -408,7 +414,11 @@ std::uint8_t Bus::read(std::uint8_t bank, std::uint16_t address) {
             return value;
         }
         if (address == 0x4212) {
-            return cycle_ >= 1364 * 225 ? 0x80 : 0;
+            std::uint8_t value = cycle_ >= 1364 * 225 ? 0x80 : 0;
+            if (cycle_ < joyBusyUntil_) {
+                value = static_cast<std::uint8_t>(value | 0x01);
+            }
+            return value;
         }
         if (address == 0x4214) {
             return static_cast<std::uint8_t>(quotient_);
@@ -884,6 +894,7 @@ bool Bus::loadState(iris::ByteReader& in) {
     joyShift_ = 0;
     joyBitsLeft_ = 0;
     joyStrobe_ = false;
+    joyBusyUntil_ = 0;
     nmitimen_ = nmitimen;
     hdmaen_ = hdmaen;
     ccnt_ = ccnt;

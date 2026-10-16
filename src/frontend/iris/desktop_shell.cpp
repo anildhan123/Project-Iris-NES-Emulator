@@ -493,8 +493,10 @@ int audioPaceSamples(AudioLatency latency) {
     return 48000 * 40 / 1000;
 }
 
-// Below this the device can run dry before the next paced frame.
-constexpr int kAudioRefillSamples = 400;
+// Below this the device can run dry before the next paced frame. One NTSC frame is
+// 800 samples at 48000 Hz, so 400 ran out during a late battery frame and the
+// waveform device clicked. Two frames of cushion still lets the frame clock lead.
+constexpr int kAudioRefillSamples = 1600;
 
 const char* playbackDeviceItem(void* data, int index) {
     const auto* items = static_cast<const std::vector<std::string>*>(data);
@@ -524,13 +526,14 @@ struct PadSample {
     std::uint8_t turbo = 0;
 };
 
-PadSample controllerButtons(const InputBindings& bindings) {
+PadSample controllerButtons(const InputBindings& bindings, const bool* pressed, int pressedCount) {
     int count = 0;
     const bool* keys = SDL_GetKeyboardState(&count);
-    if (keys == nullptr || count <= 0) {
-        return {};
-    }
-    const auto down = [&](int code) { return code >= 0 && code < count && keys[code]; };
+    const auto down = [&](int code) {
+        const bool fromState = keys != nullptr && code >= 0 && code < count && keys[code];
+        const bool fromEvent = pressed != nullptr && code >= 0 && code < pressedCount && pressed[code];
+        return fromState || fromEvent;
+    };
     PadSample sample;
     if (down(bindings.a)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonA);
     if (down(bindings.b)) sample.held = static_cast<std::uint8_t>(sample.held | kButtonB);
@@ -650,6 +653,8 @@ void keepHostResponsive() {
         PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION;
     processPower.StateMask = 0;
     SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &processPower, sizeof(processPower));
+    // A background priority on battery lets the shell and the emulator share a throttled core.
+    SetPriorityClass(GetCurrentProcess(), ABOVE_NORMAL_PRIORITY_CLASS);
     log::info("Battery power throttling is off so NES and Super NES frames stay on time.");
 #endif
 }
@@ -661,6 +666,7 @@ void keepWorkerResponsive() {
     threadPower.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
     threadPower.StateMask = 0;
     SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &threadPower, sizeof(threadPower));
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
 #endif
 }
 
@@ -677,16 +683,16 @@ __declspec(dllimport) unsigned int __stdcall timeEndPeriod(unsigned int);
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
 
-// One high-resolution wait for the bulk of the frame. The last millisecond is
-// yielded, and only the last fraction spins. A second 1 ms sleep is what the
-// battery timer stretches to about 15 ms, which is why a frame used to take
-// two ticks and the game ran at about half speed.
+// One high-resolution wait, then a short spin. Yielding the last millisecond
+// is what the battery scheduler stretches into the next 15 ms tick. The game
+// then runs slow and the audio device runs dry, which sounds like clipping.
 class FrameClock {
 public:
     FrameClock() {
         timeBeginPeriod(1);
         timer_ = CreateWaitableTimerExW(
             nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+        highResolution_ = timer_ != nullptr;
         if (timer_ == nullptr) {
             timer_ = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
         }
@@ -708,13 +714,9 @@ public:
         if (now >= deadline) {
             return;
         }
-        constexpr auto kYieldTail = milliseconds(1);
         constexpr auto kSpinTail = microseconds(200);
-        if (now + kYieldTail < deadline) {
-            sleepOnce(duration_cast<nanoseconds>(deadline - kYieldTail - now));
-        }
-        while (steady_clock::now() + kSpinTail < deadline) {
-            std::this_thread::yield();
+        if (now + kSpinTail < deadline) {
+            sleepOnce(duration_cast<nanoseconds>(deadline - kSpinTail - now));
         }
         while (steady_clock::now() < deadline) {
 #if defined(_M_IX86) || defined(_M_X64)
@@ -727,6 +729,18 @@ public:
 
     void sleepOnce(std::chrono::nanoseconds duration) {
         if (duration.count() <= 0) {
+            return;
+        }
+        // A coarse timer rounds a short wait up to the battery tick.
+        if (!highResolution_ && duration < std::chrono::milliseconds(8)) {
+            const auto end = std::chrono::steady_clock::now() + duration;
+            while (std::chrono::steady_clock::now() < end) {
+#if defined(_M_IX86) || defined(_M_X64)
+                _mm_pause();
+#else
+                std::this_thread::yield();
+#endif
+            }
             return;
         }
         if (timer_ != nullptr) {
@@ -745,6 +759,7 @@ public:
 
 private:
     HANDLE timer_ = nullptr;
+    bool highResolution_ = false;
 };
 #endif
 
@@ -1084,7 +1099,9 @@ int DesktopShell::run() {
     ImGui::CreateContext();
     session.imguiContext = true;
     ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    // Arrow keys are the Super NES direction pad. Keyboard navigation would
+    // move the library instead, and a focused text field can swallow them.
+    io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
     io.IniFilename = nullptr;
 
     applyShellTheme(config_.theme, contentScale);
@@ -1257,6 +1274,8 @@ int DesktopShell::run() {
     SystemInfo viewInfo;
     std::uint64_t queuedSerial = 0;
     double shownEmulationMs = 0.0;
+    // Key events as well as SDL_GetKeyboardState. Text input can clear the state array for arrows.
+    std::array<bool, SDL_SCANCODE_COUNT> keyboardDown{};
     struct OpenPad {
         SDL_JoystickID id = 0;
         SDL_Gamepad* pad = nullptr;
@@ -1311,7 +1330,7 @@ int DesktopShell::run() {
             return PadSample{};
         }
         if (device == "keyboard") {
-            return controllerButtons(config_.input);
+            return controllerButtons(config_.input, keyboardDown.data(), static_cast<int>(keyboardDown.size()));
         }
         for (const OpenPad& pad : pads) {
             if (pad.name != device || pad.pad == nullptr) {
@@ -1880,10 +1899,24 @@ int DesktopShell::run() {
             onOpenFile, &dialog, session.window, basePath.empty() ? nullptr : basePath.c_str(), false);
     };
 
+#if defined(_WIN32)
+    FrameClock hostClock;
+#endif
     while (!requestExit) {
+        const auto hostFrameStart = std::chrono::steady_clock::now();
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL3_ProcessEvent(&event);
+            if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) {
+                const int code = static_cast<int>(event.key.scancode);
+                if (code > 0 && code < SDL_SCANCODE_COUNT) {
+                    keyboardDown[static_cast<std::size_t>(code)] = event.type == SDL_EVENT_KEY_DOWN;
+                }
+            }
+            if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST &&
+                event.window.windowID == SDL_GetWindowID(session.window)) {
+                keyboardDown.fill(false);
+            }
             if (event.type == SDL_EVENT_QUIT) {
                 requestExit = true;
             }
@@ -3206,6 +3239,11 @@ int DesktopShell::run() {
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(session.window);
+#if defined(_WIN32)
+        // The shell was drawing as fast as the GPU allowed. On battery that
+        // work took the core the emulator needs, and the audio queue ran dry.
+        hostClock.waitUntil(hostFrameStart + std::chrono::nanoseconds(16'666'667));
+#endif
         ++hostFrames;
         const double fpsElapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - fpsWindow).count();
         if (fpsElapsed >= 0.5) {
