@@ -426,7 +426,8 @@ void Apu::decodeBlock(Voice& voice) {
     voice.blockLoops = (header & 0x01) != 0;
     for (int pair = 0; pair < 8; ++pair) {
         const int byte = ram_[static_cast<std::size_t>((voice.pointer + 1 + pair) & 0xFFFF)];
-        const int nibbles[2] = {byte >> 4, byte & 0x0F};
+        // The low nibble is the earlier sample. Swapping the pair makes a tone buzz.
+        const int nibbles[2] = {byte & 0x0F, byte >> 4};
         for (int side = 0; side < 2; ++side) {
             int nibble = nibbles[side];
             if ((nibble & 0x08) != 0) {
@@ -494,6 +495,9 @@ float Apu::renderSample() {
     noise_ = (noise_ >> 1) | (noiseBit << 14);
     int left = 0;
     int right = 0;
+    int echoInLeft = 0;
+    int echoInRight = 0;
+    const std::uint8_t echoEnable = dsp_[0x4D];
     for (int index = 0; index < 8; ++index) {
         Voice& voice = voice_[index];
         const int base = index << 4;
@@ -554,7 +558,10 @@ float Apu::renderSample() {
         if (voice.playing && (dsp_[0x3D] & (1 << index)) != 0) {
             sample = (noise_ & 1) != 0 ? 12000 : -12000;
         } else if (voice.playing) {
-            sample = voice.decoded[cursor];
+            const int fraction = (voice.phase >> 4) & 0xFF;
+            const int current = voice.decoded[cursor];
+            const int upcoming = cursor + 1 < 16 ? voice.decoded[cursor + 1] : current;
+            sample = current + ((upcoming - current) * fraction >> 8);
         }
         int pitch = dsp_[base | 0x02] | ((dsp_[base | 0x03] & 0x3F) << 8);
         if (index > 0 && (dsp_[0x2D] & (1 << index)) != 0) {
@@ -573,15 +580,21 @@ float Apu::renderSample() {
         dsp_[base | 0x09] = static_cast<std::uint8_t>(shaped >> 8);
         const auto volumeLeft = static_cast<std::int8_t>(dsp_[base]);
         const auto volumeRight = static_cast<std::int8_t>(dsp_[base | 0x01]);
-        left += (shaped * volumeLeft) >> 7;
-        right += (shaped * volumeRight) >> 7;
+        const int voicedLeft = (shaped * volumeLeft) >> 7;
+        const int voicedRight = (shaped * volumeRight) >> 7;
+        left += voicedLeft;
+        right += voicedRight;
+        if ((echoEnable & (1 << index)) != 0) {
+            echoInLeft += voicedLeft;
+            echoInRight += voicedRight;
+        }
     }
     const auto mainLeft = static_cast<std::int8_t>(dsp_[0x0C]);
     const auto mainRight = static_cast<std::int8_t>(dsp_[0x1C]);
     left = (left * mainLeft) >> 7;
     right = (right * mainRight) >> 7;
     const int delay = (dsp_[0x7D] & 0x0F) * 512;
-    if (delay > 1 && (flags & 0x20) == 0) {
+    if (delay > 0) {
         if (static_cast<int>(echoLeft_.size()) != delay) {
             echoLeft_.assign(static_cast<std::size_t>(delay), 0);
             echoRight_.assign(static_cast<std::size_t>(delay), 0);
@@ -590,8 +603,8 @@ float Apu::renderSample() {
         int filteredLeft = 0;
         int filteredRight = 0;
         for (int tap = 0; tap < 8; ++tap) {
-            int position = echoPos_ - tap;
-            if (position < 0) {
+            int position = echoPos_ - 1 - tap;
+            while (position < 0) {
                 position += delay;
             }
             const auto coefficient = static_cast<std::int8_t>(dsp_[0x0F + tap * 0x10]);
@@ -602,10 +615,14 @@ float Apu::renderSample() {
         const auto echoRight = static_cast<std::int8_t>(dsp_[0x3C]);
         left += (filteredLeft * echoLeft) >> 7;
         right += (filteredRight * echoRight) >> 7;
-        const auto feedback = static_cast<std::int8_t>(dsp_[0x0D]);
-        echoLeft_[static_cast<std::size_t>(echoPos_)] = clamp16(left + ((left * feedback) >> 7));
-        echoRight_[static_cast<std::size_t>(echoPos_)] = clamp16(right + ((right * feedback) >> 7));
-        echoPos_ = (echoPos_ + 1) % delay;
+        // Bit 5 stops new echo writes. The buffer that is already there still plays.
+        // Feedback uses the echo, not the dry mix, so a reverb does not pump the melody.
+        if ((flags & 0x20) == 0) {
+            const auto feedback = static_cast<std::int8_t>(dsp_[0x0D]);
+            echoLeft_[static_cast<std::size_t>(echoPos_)] = clamp16(echoInLeft + ((filteredLeft * feedback) >> 7));
+            echoRight_[static_cast<std::size_t>(echoPos_)] = clamp16(echoInRight + ((filteredRight * feedback) >> 7));
+            echoPos_ = (echoPos_ + 1) % delay;
+        }
     }
     if ((flags & 0x40) != 0) {
         return 0.0f;

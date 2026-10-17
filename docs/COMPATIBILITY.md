@@ -42,7 +42,7 @@ The suite loads LoROM and HiROM, draws the Iris Demo marker, and checks the pict
 
 A DSP-1 image multiplies `$4000` by `$4000` and reads `$2000`, then checks inverse of zero and a zero-angle triangle. A Super FX image stores `$A5` through the GSU and plots that color. An SA-1 image starts the coprocessor at its reset vector and reads `$5A` back from I-RAM. An ExHiROM image reads `$A5` from the first half at `$C0:0000` and `$5A` from the second half at `$40:0000`. A map-mode 5 byte in the LoROM header slot is still refused. A HiROM program that writes work RAM at `$7E:0010` reads zero from `$FE:0010`. This does not claim that every DSP-1, Super FX, SA-1, or ExHiROM game plays. DSP-2, DSP-3, DSP-4, and the other enhancement chips are not in this build.
 
-A program can turn NMI off and still see the vblank flag in `$4210`. HDMA on a scanline leaves fewer instructions before vblank than the same program with HDMA off. A 65536-byte DMA does not reach the store that follows it in that frame, and a one-byte DMA does. A vertical IRQ and a horizontal IRQ each run their handler. This does not claim dot-accurate timing, and it does not claim that every cartridge plays.
+A program can turn NMI off and still see the vblank flag in `$4210`. `$4212` bit 6 is set in the last portion of each scanline and clear again on the next line, which is the wait Final Fantasy VI uses before it continues. HDMA on a scanline leaves fewer instructions before vblank than the same program with HDMA off. A 65536-byte DMA does not reach the store that follows it in that frame, and a one-byte DMA does. A vertical IRQ and a horizontal IRQ each run their handler. This does not claim dot-accurate timing, and it does not claim that every cartridge plays.
 
 ## Frame time
 

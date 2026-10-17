@@ -28,7 +28,7 @@ iris_jni (Android only)
 | `iris_platform` | Data directories, safe path joins, atomic file replacement | SDL, ImGui, UI widgets |
 | `iris_emulator` | `IEmulatedSystem`, frame and audio views, controller button bits | SDL, ImGui, CPU, PPU, or mapper types |
 | `iris_nes` | iNES parsing, NROM, MMC1, UxROM, CNROM, MMC3, CPU, bus, PPU, APU, controllers | SDL, ImGui, Win32 UI |
-| `iris_snes` | LoROM, HiROM, and ExHiROM, 65816, SRAM, DMA and HDMA on the scanline, horizontal and vertical IRQ, windows, fixed and subscreen color math, modes 0–7, four backgrounds, scroll, priority, offset-per-tile, mosaic, sprite sizes, SPC700, DSP, DSP-1, Super FX, SA-1, and save states. The IPL ROM is not included | SDL, ImGui, Win32 UI, the NES core |
+| `iris_snes` | LoROM, HiROM, and ExHiROM, 65816, SRAM, DMA and HDMA on the scanline, horizontal and vertical IRQ, horizontal blank in `$4212`, windows, fixed and subscreen color math, modes 0–7, four backgrounds, scroll, priority, offset-per-tile, mosaic, sprite sizes, SPC700, DSP, DSP-1, Super FX, SA-1, and save states. The IPL ROM is not included | SDL, ImGui, Win32 UI, the NES core |
 | `iris_core` | C functions around the NES system: load, run, frame, audio, and save state | SDL, ImGui, CPU, PPU, or mapper types in the header |
 | `iris_frontend` | SDL3 window, OpenGL context, ImGui presentation, file dialog, audio queue | CPU, PPU, APU, or mapper types |
 | `iris_app` | Process startup, `--version`, optional ROM path, shutdown | Emulator internals |

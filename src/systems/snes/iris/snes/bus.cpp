@@ -434,7 +434,13 @@ std::uint8_t Bus::read(std::uint8_t bank, std::uint16_t address) {
             return value;
         }
         if (address == 0x4212) {
+            const int linePos = cycle_ % 1364;
             std::uint8_t value = cycle_ >= 1364 * 225 ? 0x80 : 0;
+            // Bit 6 is horizontal blank, the last portion of every scanline.
+            // Final Fantasy VI waits for this bit before it will leave a screen.
+            if (linePos >= 1096) {
+                value = static_cast<std::uint8_t>(value | 0x40);
+            }
             if (cycle_ < joyBusyUntil_) {
                 value = static_cast<std::uint8_t>(value | 0x01);
             }

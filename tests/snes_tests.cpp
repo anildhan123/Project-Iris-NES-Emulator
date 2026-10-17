@@ -170,6 +170,21 @@ TEST_CASE("automatic joypad read is busy at vblank and then reports the directio
     REQUIRE(system.debugRead(0x0012) == 0x88);
 }
 
+TEST_CASE("horizontal blank is reported and then clears on the next scanline") {
+    // Wait until $4212 bit 6 is set, then until it clears. A game that writes
+    // video memory outside vblank, including Final Fantasy VI, spins on this bit.
+    const std::vector<std::uint8_t> program = {
+        0x78, 0x64, 0x10, 0xAD, 0x12, 0x42, 0x29, 0x40, 0xF0, 0xF9, 0xAD, 0x12, 0x42, 0x29, 0x40, 0xD0,
+        0xF9, 0xA9, 0x01, 0x85, 0x10, 0xDB,
+    };
+    const std::vector<std::uint8_t> rom = loRom(program);
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) == 0x01);
+}
+
 TEST_CASE("a Super NES controller reports Start on the high byte and A on the low byte") {
     iris::systems::snes::SnesSystem system;
     system.setController(0, static_cast<std::uint8_t>(iris::kButtonStart | iris::kButtonA | iris::kButtonRight));
