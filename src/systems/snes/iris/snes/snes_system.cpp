@@ -176,12 +176,53 @@ void SnesSystem::runFrame() {
                 cpu_.signalIrq();
                 vIrqDone = true;
             }
+            if (cpu_.parked()) {
+                int wake = lineEnd;
+                if (!signaled && nmiCycle > cycles && nmiCycle < wake) {
+                    wake = nmiCycle;
+                }
+                const int irqAt = line * kDotsPerLine + bus_.irqDot() * 4;
+                const bool irqDue = (vOn && !hOn && !vIrqDone && line >= bus_.irqLine()) ||
+                                    (hOn && !vOn && !hIrqDone && irqAt >= cycles) ||
+                                    (vOn && hOn && !vIrqDone && line >= bus_.irqLine() && irqAt >= cycles);
+                if (irqDue) {
+                    const int irqWake = (vOn && !hOn) ? cycles : irqAt;
+                    if (irqWake >= cycles && irqWake < wake) {
+                        wake = irqWake;
+                    }
+                }
+                if (wake > cycles) {
+                    cycles = wake;
+                    const int caught = cycles < frameCycles ? cycles : frameCycles;
+                    bus_.catchUpApu(caught, clock);
+                    continue;
+                }
+            }
             const int used = cpu_.step(bus_);
             if (used == 0 && cpu_.stopped()) {
                 break;
             }
             cycles += used > 0 ? used : 1;
             cycles += bus_.takeDmaStall();
+            if (cpu_.consumeSpin() && cycles < lineEnd) {
+                int wake = lineEnd;
+                if (!signaled && nmiCycle > cycles && nmiCycle < wake) {
+                    wake = nmiCycle;
+                }
+                const int irqAt = line * kDotsPerLine + bus_.irqDot() * 4;
+                const bool irqDue = (vOn && !hOn && !vIrqDone && line >= bus_.irqLine() && cycles >= line * kDotsPerLine) ||
+                                    (hOn && !vOn && !hIrqDone && irqAt > cycles) ||
+                                    (vOn && hOn && !vIrqDone && line >= bus_.irqLine() && irqAt > cycles);
+                if (irqDue) {
+                    const int irqWake = (vOn && !hOn) ? cycles : irqAt;
+                    if (irqWake > cycles && irqWake < wake) {
+                        wake = irqWake;
+                    }
+                }
+                if (wake > cycles) {
+                    cycles = wake;
+                }
+            }
             const int caught = cycles < frameCycles ? cycles : frameCycles;
             bus_.catchUpApu(caught, clock);
             if (bus_.takeSa1Start()) {

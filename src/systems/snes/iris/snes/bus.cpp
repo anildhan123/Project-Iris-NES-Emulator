@@ -370,6 +370,23 @@ std::uint8_t Bus::romByte(std::uint8_t bank, std::uint16_t address) const {
 }
 
 std::uint8_t Bus::read(std::uint8_t bank, std::uint16_t address) {
+    // Instruction fetches are ROM or low work RAM. A cartridge with no
+    // enhancement chip can return those without probing the coprocessors.
+    if (chip_ == Chip::None) {
+        if (bank == 0x7E) {
+            return wram_[address];
+        }
+        if (bank == 0x7F) {
+            return wram_[0x10000 + address];
+        }
+        const std::uint8_t mapped = static_cast<std::uint8_t>(bank & 0x7F);
+        if (mapped < 0x40 && address < 0x2000) {
+            return wram_[address];
+        }
+        if (address >= 0x8000 && mapped < 0x7E) {
+            return romByte(bank, address);
+        }
+    }
     if (chip_ == Chip::SuperFx) {
         std::uint8_t value = 0;
         if (gsu_.cpuRead(bank, address, value)) {
@@ -465,6 +482,21 @@ std::uint8_t Bus::read(std::uint8_t bank, std::uint16_t address) {
 }
 
 void Bus::write(std::uint8_t bank, std::uint16_t address, std::uint8_t value) {
+    if (chip_ == Chip::None) {
+        if (bank == 0x7E) {
+            wram_[address] = value;
+            return;
+        }
+        if (bank == 0x7F) {
+            wram_[0x10000 + address] = value;
+            return;
+        }
+        const std::uint8_t mapped = static_cast<std::uint8_t>(bank & 0x7F);
+        if (mapped < 0x40 && address < 0x2000) {
+            wram_[address] = value;
+            return;
+        }
+    }
     if (chip_ == Chip::SuperFx && gsu_.cpuWrite(bank, address, value)) {
         return;
     }

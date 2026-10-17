@@ -642,6 +642,41 @@ bool writeBmp(const std::filesystem::path& path, const std::uint8_t* rgba, int w
     return output.good();
 }
 
+void preferPowerSavingGpu() {
+#if defined(_WIN32)
+    // A laptop shares one power budget. Leaving the discrete GPU awake for a
+    // 256 by 224 picture slows the CPU that is running the emulator. Windows
+    // reads this when the graphics device is created.
+    wchar_t path[32768];
+    const DWORD length = GetModuleFileNameW(nullptr, path, static_cast<DWORD>(std::size(path)));
+    if (length == 0 || length >= std::size(path)) {
+        return;
+    }
+    HKEY key = nullptr;
+    if (RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\DirectX\\UserGpuPreferences",
+            0,
+            nullptr,
+            0,
+            KEY_SET_VALUE,
+            nullptr,
+            &key,
+            nullptr) != ERROR_SUCCESS) {
+        return;
+    }
+    const wchar_t preference[] = L"GpuPreference=1;";
+    RegSetValueExW(
+        key,
+        path,
+        0,
+        REG_SZ,
+        reinterpret_cast<const BYTE*>(preference),
+        static_cast<DWORD>(sizeof(preference)));
+    RegCloseKey(key);
+#endif
+}
+
 void keepHostResponsive() {
 #if defined(_WIN32)
     // Battery mode otherwise coalesces short sleeps and caps a light process.
@@ -717,10 +752,16 @@ public:
         if (now + milliseconds(2) < deadline) {
             sleepOnce(duration_cast<nanoseconds>(deadline - milliseconds(1) - now));
         }
-        // If the timer returns early, sleep in 1 ms steps. A pause-spin for the
-        // rest of the frame keeps a core and the discrete GPU awake on battery.
-        while (steady_clock::now() + milliseconds(1) < deadline) {
+        // Sleep(1) covers an early timer. The last slice stays under a few
+        // hundred microseconds so a waiting frame does not hold a core awake.
+        while (steady_clock::now() + milliseconds(2) < deadline) {
             Sleep(1);
+        }
+        if (highResolution_) {
+            const auto left = deadline - microseconds(200) - steady_clock::now();
+            if (left > microseconds(200)) {
+                sleepOnce(duration_cast<nanoseconds>(left));
+            }
         }
         while (steady_clock::now() < deadline) {
 #if defined(_M_IX86) || defined(_M_X64)
@@ -947,6 +988,7 @@ DesktopShell::DesktopShell(const Config& config, SystemFactory factory, std::str
 
 int DesktopShell::run() {
     hideSpawnedConsole();
+    preferPowerSavingGpu();
     keepHostResponsive();
     SdlSession session;
     if (!SDL_Init(SDL_INIT_VIDEO)) {

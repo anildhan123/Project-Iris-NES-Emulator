@@ -25,6 +25,7 @@ void Cpu::resetTo(std::uint16_t pc) {
     nmiPending_ = false;
     irqPending_ = false;
     waiting_ = false;
+    spinning_ = false;
     emulation_ = true;
     pbr_ = 0;
     dbr_ = 0;
@@ -193,6 +194,16 @@ void Cpu::interrupt(Bus& bus, std::uint16_t vector) {
     pc_ = static_cast<std::uint16_t>(bus.read(0, vector) | (bus.read(0, static_cast<std::uint16_t>(vector + 1)) << 8));
 }
 
+bool Cpu::parked() const {
+    return waiting_ && !stopped_ && !nmiPending_ && !(irqPending_ && (p_ & kIrqDisable) == 0);
+}
+
+bool Cpu::consumeSpin() {
+    const bool spin = spinning_;
+    spinning_ = false;
+    return spin;
+}
+
 int Cpu::step(Bus& bus) {
     if (stopped_) {
         return 0;
@@ -322,6 +333,31 @@ bool decodeExtra(std::uint8_t opcode, Kind& kind, Mode& mode) {
 }  // namespace
 
 int Cpu::execute(Bus& bus, std::uint8_t opcode) {
+    // Branches and jumps are the idle loop between vblanks. Handling them
+    // before the arithmetic decoder keeps that spin off the large switch.
+    switch (opcode) {
+    case 0xEA:
+        return 2;
+    case 0x4C: {
+        const std::uint16_t target = static_cast<std::uint16_t>(fetch(bus) | (fetch(bus) << 8));
+        if (target == static_cast<std::uint16_t>(pc_ - 3)) {
+            spinning_ = true;
+        }
+        pc_ = target;
+        return 3;
+    }
+    case 0x10: branch(bus, (p_ & kNegative) == 0); return 2;
+    case 0x30: branch(bus, (p_ & kNegative) != 0); return 2;
+    case 0x50: branch(bus, (p_ & kOverflow) == 0); return 2;
+    case 0x70: branch(bus, (p_ & kOverflow) != 0); return 2;
+    case 0x90: branch(bus, (p_ & kCarry) == 0); return 2;
+    case 0xB0: branch(bus, (p_ & kCarry) != 0); return 2;
+    case 0xD0: branch(bus, (p_ & kZero) == 0); return 2;
+    case 0xF0: branch(bus, (p_ & kZero) != 0); return 2;
+    case 0x80: branch(bus, true); return 2;
+    default:
+        break;
+    }
     Kind kind{};
     Mode mode{};
     if (grid(opcode, kind, mode) || decodeExtra(opcode, kind, mode)) {
@@ -634,8 +670,6 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
         return static_cast<std::uint16_t>(low | (high << 8));
     };
     switch (opcode) {
-    case 0xEA:
-        return 2;
     case 0x42:
         (void)fetch(bus);
         return 2;
@@ -663,15 +697,6 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
     case 0xFB: exchangeCarry(); return 2;
     case 0xE2: p_ = static_cast<std::uint8_t>(p_ | fetch(bus)); applyWidths(); return 3;
     case 0xC2: p_ = static_cast<std::uint8_t>(p_ & static_cast<std::uint8_t>(~fetch(bus))); applyWidths(); return 3;
-    case 0x10: branch(bus, (p_ & kNegative) == 0); return 2;
-    case 0x30: branch(bus, (p_ & kNegative) != 0); return 2;
-    case 0x50: branch(bus, (p_ & kOverflow) == 0); return 2;
-    case 0x70: branch(bus, (p_ & kOverflow) != 0); return 2;
-    case 0x90: branch(bus, (p_ & kCarry) == 0); return 2;
-    case 0xB0: branch(bus, (p_ & kCarry) != 0); return 2;
-    case 0xD0: branch(bus, (p_ & kZero) == 0); return 2;
-    case 0xF0: branch(bus, (p_ & kZero) != 0); return 2;
-    case 0x80: branch(bus, true); return 2;
     case 0x82: pc_ = static_cast<std::uint16_t>(pc_ + static_cast<std::int16_t>(fetch(bus) | (fetch(bus) << 8))); return 3;
     case 0x1A:
         if (accumulator8()) { a_ = static_cast<std::uint16_t>((a_ & 0xFF00) | static_cast<std::uint8_t>(a_ + 1)); setZN(static_cast<std::uint8_t>(a_)); }
@@ -781,7 +806,6 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
     case 0xF4: push16(static_cast<std::uint16_t>(fetch(bus) | (fetch(bus) << 8))); return 5;
     case 0xD4: push16(read16(bus, static_cast<std::uint16_t>(directBase() + fetch(bus)))); return 6;
     case 0x62: push16(static_cast<std::uint16_t>(pc_ + static_cast<std::int16_t>(fetch(bus) | (fetch(bus) << 8)))); return 6;
-    case 0x4C: pc_ = static_cast<std::uint16_t>(fetch(bus) | (fetch(bus) << 8)); return 3;
     case 0x6C: pc_ = read16(bus, static_cast<std::uint16_t>(fetch(bus) | (fetch(bus) << 8))); return 5;
     case 0x7C: {
         const std::uint16_t pointer = static_cast<std::uint16_t>((fetch(bus) | (fetch(bus) << 8)) + indexValue());
@@ -906,6 +930,7 @@ bool Cpu::loadState(iris::ByteReader& in) {
     nmiPending_ = nmiPending;
     irqPending_ = irqPending;
     waiting_ = waiting;
+    spinning_ = false;
     stopped_ = stopped;
     return true;
 }

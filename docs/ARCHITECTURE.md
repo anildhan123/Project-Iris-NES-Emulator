@@ -152,7 +152,7 @@ The built-in shaders are original and compiled into the frontend. Each one has a
 
 ## Threading
 
-Emulation runs on a worker thread. The window copies the finished picture under the same lock used by save, load, reset, and opening a game. The worker waits until the next frame is due on `framePeriodNs()`, with one high-resolution sleep and a short yield for the last millisecond. Each frame's samples are queued unless fast forward is on, the sound is muted, or the queue is already past the latency target. A queue that is about to run dry runs that frame early so the picture and the samples stay together. Fast forward skips the wait and does not queue audio. On Windows the process opts out of battery execution-speed limits so a light workload is not parked on a throttled core.
+Emulation runs on a worker thread. The window copies the finished picture under the same lock used by save, load, reset, and opening a game. The worker waits until the next frame is due on `framePeriodNs()`, with one high-resolution sleep and a short pause for the last fraction of a millisecond. Each frame's samples are queued unless fast forward is on, the sound is muted, or the queue is already past the latency target. A queue that is about to run dry runs that frame early so the picture and the samples stay together. Fast forward skips the wait and does not queue audio. On Windows the process opts out of battery execution-speed limits so a light workload is not parked on a throttled core.
 
 ## Process boundary
 

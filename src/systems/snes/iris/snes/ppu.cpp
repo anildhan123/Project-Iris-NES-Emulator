@@ -604,52 +604,234 @@ void Ppu::render() {
     }
 }
 
+void Ppu::paintLayer(int layer, int y, Texel* row) const {
+    for (int x = 0; x < kWidth; ++x) {
+        row[x] = {};
+    }
+    const int mode = bgmode_ & 0x07;
+    if (mode == 7 || layer < 0 || layer > 3) {
+        return;
+    }
+    int bpp = 0;
+    if (layer == 0) {
+        bpp = mode == 0 ? 2 : (mode == 3 || mode == 4 ? 8 : 4);
+    } else if (layer == 1) {
+        if (mode == 6) {
+            return;
+        }
+        bpp = (mode == 0 || mode == 4 || mode == 5) ? 2 : 4;
+    } else if (layer == 2) {
+        if (mode == 0 || mode == 1) {
+            bpp = 2;
+        }
+    } else if (mode == 0) {
+        bpp = 2;
+    }
+    if (bpp == 0) {
+        return;
+    }
+    std::uint8_t screen = bg1sc_;
+    int nameNibble = bg12nba_ & 0x0F;
+    if (layer == 1) {
+        screen = bg2sc_;
+        nameNibble = bg12nba_ >> 4;
+    } else if (layer == 2) {
+        screen = bg3sc_;
+        nameNibble = bg34nba_ & 0x0F;
+    } else if (layer == 3) {
+        screen = bg4sc_;
+        nameNibble = bg34nba_ >> 4;
+    }
+    const int bytesPerTile = bpp == 2 ? 16 : (bpp == 8 ? 64 : 32);
+    const int charBase = nameNibble << 13;
+    const int planeSpan = bpp == 8 ? 49 : (bpp == 4 ? 17 : 1);
+    const bool useOffset = (mode == 2 || mode == 4 || mode == 6) && layer <= 1 && !(mode == 6 && layer != 0);
+    const bool mosaic = (mosaic_ & (0x10 << layer)) != 0;
+    const int mosaicSize = (mosaic_ & 0x0F) + 1;
+    const std::uint8_t* vram = vram_.data();
+    const std::size_t vramSize = vram_.size();
+    int cacheTileX = 0x7FFFFFFF;
+    int cacheTileY = 0;
+    int cacheFineY = -1;
+    int cachePriority = 0;
+    int cachePalette = 0;
+    bool cacheFlipX = false;
+    bool cacheEmpty = true;
+    std::uint8_t plane[8] = {};
+    for (int x = 0; x < kWidth; ++x) {
+        int sampleX = x;
+        int sampleY = y;
+        if (mosaic) {
+            sampleX -= sampleX % mosaicSize;
+            sampleY -= sampleY % mosaicSize;
+        }
+        const int scrolledX = sampleX;
+        sampleX += hofs_[layer] & 0x3FF;
+        sampleY += vofs_[layer] & 0x3FF;
+        if (useOffset) {
+            const int column = scrolledX >> 3;
+            const int rowIndex = static_cast<int>(vofs_[2]) >> 3;
+            const int table = static_cast<int>(hofs_[2]) >> 3;
+            const auto applyOffset = [&](int word, int pixel, int& sample) {
+                if ((word & 0x2000) == 0) {
+                    return;
+                }
+                if (mode != 6 && ((word & 0x8000) != 0) != (layer == 1)) {
+                    return;
+                }
+                sample = pixel + (word & 0x03FF);
+            };
+            applyOffset(mapWord(bg3sc_, table + column * 2, rowIndex), scrolledX, sampleX);
+            applyOffset(mapWord(bg3sc_, table + column * 2 + 1, rowIndex), sampleY - (vofs_[layer] & 0x3FF), sampleY);
+        }
+        const int tileX = sampleX >> 3;
+        const int tileY = sampleY >> 3;
+        const int fineY = sampleY & 7;
+        if (tileX != cacheTileX || tileY != cacheTileY || fineY != cacheFineY) {
+            cacheTileX = tileX;
+            cacheTileY = tileY;
+            cacheFineY = fineY;
+            cacheEmpty = true;
+            const int word = mapWord(screen, tileX, tileY);
+            const int tile = word & 0x3FF;
+            cachePalette = (word >> 10) & 0x07;
+            cachePriority = (word & 0x2000) != 0 ? 1 : 0;
+            cacheFlipX = (word & 0x4000) != 0;
+            const bool flipY = (word & 0x8000) != 0;
+            const int tileRow = flipY ? 7 - (sampleY & 7) : (sampleY & 7);
+            const std::size_t tileByte = static_cast<std::size_t>(charBase + tile * bytesPerTile + tileRow * 2);
+            if (tileByte + static_cast<std::size_t>(planeSpan) < vramSize) {
+                plane[0] = vram[tileByte];
+                plane[1] = vram[tileByte + 1];
+                if (bpp >= 4) {
+                    plane[2] = vram[tileByte + 16];
+                    plane[3] = vram[tileByte + 17];
+                }
+                if (bpp == 8) {
+                    plane[4] = vram[tileByte + 32];
+                    plane[5] = vram[tileByte + 33];
+                    plane[6] = vram[tileByte + 48];
+                    plane[7] = vram[tileByte + 49];
+                }
+                cacheEmpty = false;
+            }
+        }
+        if (cacheEmpty) {
+            continue;
+        }
+        const int column = cacheFlipX ? (sampleX & 7) : 7 - (sampleX & 7);
+        int pixel = ((plane[0] >> column) & 1) | (((plane[1] >> column) & 1) << 1);
+        if (bpp >= 4) {
+            pixel |= ((plane[2] >> column) & 1) << 2;
+            pixel |= ((plane[3] >> column) & 1) << 3;
+        }
+        if (bpp == 8) {
+            pixel |= ((plane[4] >> column) & 1) << 4;
+            pixel |= ((plane[5] >> column) & 1) << 5;
+            pixel |= ((plane[6] >> column) & 1) << 6;
+            pixel |= ((plane[7] >> column) & 1) << 7;
+        }
+        if (pixel == 0) {
+            continue;
+        }
+        row[x].priority = cachePriority;
+        row[x].index = bpp == 8 ? pixel : ((cachePalette << (bpp == 2 ? 2 : 4)) | pixel);
+    }
+}
+
 void Ppu::renderLine(int y) {
     if (y < 0 || y >= kHeight) {
         return;
     }
+    std::uint8_t* pixelOut = frame_.data() + static_cast<std::size_t>(y * kWidth * 4);
     const int level = inidisp_ & 0x0F;
     const bool blank = (inidisp_ & 0x80) != 0 || level == 0;
+    if (blank) {
+        for (int x = 0; x < kWidth; ++x) {
+            pixelOut[x * 4] = 0;
+            pixelOut[x * 4 + 1] = 0;
+            pixelOut[x * 4 + 2] = 0;
+            pixelOut[x * 4 + 3] = 255;
+        }
+        return;
+    }
     const int mode = bgmode_ & 0x07;
     const bool mode7 = mode == 7;
-    const std::uint16_t backdrop = cgram_.empty() ? 0 : cgram_[0];
+    const bool useSub = (cgwsel_ & 0x02) != 0 && (cgadsub_ & 0x3F) != 0;
+    const std::uint8_t enabled = static_cast<std::uint8_t>(tm_ | (useSub ? ts_ : 0));
+    Texel layers[4][kWidth];
+    bool layerReady[4] = {};
+    if (!mode7) {
+        for (int layer = 0; layer < 4; ++layer) {
+            if ((enabled & (1 << layer)) == 0) {
+                continue;
+            }
+            paintLayer(layer, y, layers[layer]);
+            layerReady[layer] = true;
+        }
+    }
+    int mode7Index[kWidth] = {};
+    if (mode7 && (enabled & 0x01) != 0) {
+        for (int x = 0; x < kWidth; ++x) {
+            mode7Index[x] = mode7Pixel(x, y);
+        }
+    }
     Texel sprites[kWidth] = {};
-    if (!blank && ((tm_ | ts_) & 0x10) != 0) {
+    if ((enabled & 0x10) != 0) {
         collectSprites(y, sprites);
     }
+    int rank[5][4];
+    for (int source = 0; source < 5; ++source) {
+        for (int priority = 0; priority < 4; ++priority) {
+            rank[source][priority] = stackRank(mode, source, priority);
+        }
+    }
+    const std::uint16_t backdrop = cgram_.empty() ? 0 : cgram_[0];
+    const std::uint16_t* cgram = cgram_.data();
+    const std::size_t cgramSize = cgram_.size();
+    struct Hit {
+        bool opaque = false;
+        int index = 0;
+        int mathBit = 0;
+        int placed = 100;
+    };
+    const auto consider = [&](Hit& best, int index, int source, int priority, int mathBit) {
+        if (index <= 0) {
+            return;
+        }
+        const int placed = rank[source][priority];
+        if (placed < 0) {
+            return;
+        }
+        if (!best.opaque || placed < best.placed) {
+            best.opaque = true;
+            best.index = index;
+            best.mathBit = mathBit;
+            best.placed = placed;
+        }
+    };
     for (int x = 0; x < kWidth; ++x) {
-        struct Hit {
-            bool opaque = false;
-            int index = 0;
-            int mathBit = 0;
-            int rank = 100;
-        };
-        const auto consider = [&](Hit& best, int index, int source, int priority, int mathBit) {
-            if (index <= 0) {
-                return;
-            }
-            const int rank = stackRank(mode, source, priority);
-            if (rank < 0) {
-                return;
-            }
-            if (!best.opaque || rank < best.rank) {
-                best.opaque = true;
-                best.index = index;
-                best.mathBit = mathBit;
-                best.rank = rank;
-            }
-        };
         const auto sampleScreen = [&](std::uint8_t enable, std::uint8_t windowMask) {
             Hit best;
             if (mode7 && (enable & 0x01) != 0 && !layerMasked(x, w12sel_, (windowMask & 0x01) != 0, wlog_ & 0x03)) {
-                consider(best, mode7Pixel(x, y), 0, 0, 0x01);
+                consider(best, mode7Index[x], 0, 0, 0x01);
             } else if (!mode7) {
                 for (int layer = 3; layer >= 0; --layer) {
-                    if ((enable & (1 << layer)) == 0) {
+                    if ((enable & (1 << layer)) == 0 || !layerReady[layer]) {
                         continue;
                     }
-                    const Texel texel = sampleLayer(layer, x, y, windowMask);
-                    consider(best, texel.index, layer, texel.priority, 1 << layer);
+                    std::uint8_t window = w12sel_;
+                    if (layer == 1) {
+                        window = static_cast<std::uint8_t>(w12sel_ >> 4);
+                    } else if (layer == 2) {
+                        window = w34sel_;
+                    } else if (layer == 3) {
+                        window = static_cast<std::uint8_t>(w34sel_ >> 4);
+                    }
+                    if (layerMasked(x, window, (windowMask & (1 << layer)) != 0, static_cast<std::uint8_t>(wlog_ >> (layer * 2)))) {
+                        continue;
+                    }
+                    consider(best, layers[layer][x].index, layer, layers[layer][x].priority, 1 << layer);
                 }
             }
             if ((enable & 0x10) != 0 &&
@@ -658,25 +840,25 @@ void Ppu::renderLine(int y) {
             }
             return best;
         };
-        const Hit main = blank ? Hit{} : sampleScreen(tm_, tmw_);
-        const Hit sub = blank ? Hit{} : sampleScreen(ts_, tsw_);
-        std::uint16_t color = blank ? 0 : backdrop;
+        const Hit main = sampleScreen(tm_, tmw_);
+        const Hit sub = useSub ? sampleScreen(ts_, tsw_) : Hit{};
+        std::uint16_t color = backdrop;
         int mathBit = 0;
-        if (main.opaque && static_cast<std::size_t>(main.index) < cgram_.size()) {
-            color = cgram_[static_cast<std::size_t>(main.index)];
+        if (main.opaque && static_cast<std::size_t>(main.index) < cgramSize) {
+            color = cgram[static_cast<std::size_t>(main.index)];
             mathBit = main.mathBit;
         }
         const bool mathBackdrop = !main.opaque && (cgadsub_ & 0x20) != 0;
-        if (!blank && (mathBackdrop || (mathBit != 0 && (cgadsub_ & mathBit) != 0))) {
+        if (mathBackdrop || (mathBit != 0 && (cgadsub_ & mathBit) != 0)) {
             int addRed = fixedR_;
             int addGreen = fixedG_;
             int addBlue = fixedB_;
-            if ((cgwsel_ & 0x02) != 0) {
+            if (useSub) {
                 addRed = 0;
                 addGreen = 0;
                 addBlue = 0;
-                if (sub.opaque && static_cast<std::size_t>(sub.index) < cgram_.size()) {
-                    const std::uint16_t behind = cgram_[static_cast<std::size_t>(sub.index)];
+                if (sub.opaque && static_cast<std::size_t>(sub.index) < cgramSize) {
+                    const std::uint16_t behind = cgram[static_cast<std::size_t>(sub.index)];
                     addRed = behind & 0x1F;
                     addGreen = (behind >> 5) & 0x1F;
                     addBlue = (behind >> 10) & 0x1F;
@@ -684,14 +866,10 @@ void Ppu::renderLine(int y) {
             }
             color = applyMath(color, addRed, addGreen, addBlue);
         }
-        const int red = brightness(color & 0x1F, blank ? 0 : level);
-        const int green = brightness((color >> 5) & 0x1F, blank ? 0 : level);
-        const int blue = brightness((color >> 10) & 0x1F, blank ? 0 : level);
-        const std::size_t pixelIndex = static_cast<std::size_t>((y * kWidth + x) * 4);
-        frame_[pixelIndex] = static_cast<std::uint8_t>(red);
-        frame_[pixelIndex + 1] = static_cast<std::uint8_t>(green);
-        frame_[pixelIndex + 2] = static_cast<std::uint8_t>(blue);
-        frame_[pixelIndex + 3] = 255;
+        pixelOut[x * 4] = static_cast<std::uint8_t>(brightness(color & 0x1F, level));
+        pixelOut[x * 4 + 1] = static_cast<std::uint8_t>(brightness((color >> 5) & 0x1F, level));
+        pixelOut[x * 4 + 2] = static_cast<std::uint8_t>(brightness((color >> 10) & 0x1F, level));
+        pixelOut[x * 4 + 3] = 255;
     }
 }
 

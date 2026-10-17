@@ -20,6 +20,10 @@ public:
     void signalNmi();
     void signalIrq();
     int step(Bus& bus);
+    // WAI is asleep until NMI or an IRQ the flags allow. The frame loop can
+    // advance to that event instead of stepping two cycles at a time.
+    [[nodiscard]] bool parked() const;
+    [[nodiscard]] bool consumeSpin();
 
     [[nodiscard]] bool stopped() const { return stopped_; }
     [[nodiscard]] std::uint8_t stopOpcode() const { return stopOpcode_; }
@@ -70,6 +74,7 @@ private:
     bool nmiPending_ = false;
     bool irqPending_ = false;
     bool waiting_ = false;
+    bool spinning_ = false;
     bool stopped_ = false;
     std::uint8_t stopOpcode_ = 0;
 };

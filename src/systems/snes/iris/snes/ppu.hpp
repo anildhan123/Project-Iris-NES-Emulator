@@ -44,6 +44,7 @@ private:
     [[nodiscard]] int mode7Pixel(int x, int y) const;
     [[nodiscard]] int mapWord(std::uint8_t screen, int tileX, int tileY) const;
     [[nodiscard]] Texel sampleLayer(int layer, int x, int y, std::uint8_t windowMask) const;
+    void paintLayer(int layer, int y, Texel* row) const;
     [[nodiscard]] bool layerMasked(int x, std::uint8_t select, bool enabled, std::uint8_t combine) const;
     [[nodiscard]] std::uint16_t applyMath(std::uint16_t color, int addRed, int addGreen, int addBlue) const;
     [[nodiscard]] int stackRank(int mode, int source, int priority) const;
