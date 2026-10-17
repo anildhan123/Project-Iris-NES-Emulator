@@ -722,15 +722,14 @@ void Ppu::collectSprites(int y, Texel* dots) const {
         const int priority = (oam_[entry + 3] >> 4) & 0x03;
         const bool flipX = (oam_[entry + 3] & 0x40) != 0;
         const bool flipY = (oam_[entry + 3] & 0x80) != 0;
-        for (int py = 0; py < spriteHeight; ++py) {
-            const int screenY = originY + py;
-            if (screenY != y) {
-                continue;
-            }
-            const int localY = flipY ? spriteHeight - 1 - py : py;
-            const int row = localY & 7;
-            const int tileRow = localY >> 3;
-            for (int px = 0; px < spriteWidth; ++px) {
+        const int rowFromTop = y - originY;
+        if (rowFromTop < 0 || rowFromTop >= spriteHeight) {
+            continue;
+        }
+        const int localY = flipY ? spriteHeight - 1 - rowFromTop : rowFromTop;
+        const int row = localY & 7;
+        const int tileRow = localY >> 3;
+        for (int px = 0; px < spriteWidth; ++px) {
                 const int screenX = (originX + px) & 0x1FF;
                 if (screenX >= kWidth) {
                     continue;
@@ -752,7 +751,6 @@ void Ppu::collectSprites(int y, Texel* dots) const {
                 dots[screenX].priority = priority;
             }
         }
-    }
 }
 
 

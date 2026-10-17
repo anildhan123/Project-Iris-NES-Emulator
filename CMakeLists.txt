@@ -16,6 +16,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(cmake/CompilerWarnings.cmake)
+if(MSVC)
+    # Debug builds otherwise check every container access. That cost, not the
+    # graphics chip, is what makes a Super NES frame miss its time on battery.
+    add_compile_definitions($<$<CONFIG:Debug>:_ITERATOR_DEBUG_LEVEL=0>)
+endif()
 include(cmake/Dependencies.cmake)
 
 enable_testing()

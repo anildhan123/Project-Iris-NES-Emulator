@@ -173,7 +173,11 @@ TEST_CASE("automatic joypad read is busy at vblank and then reports the directio
 TEST_CASE("a Super NES controller reports Start on the high byte and A on the low byte") {
     iris::systems::snes::SnesSystem system;
     system.setController(0, static_cast<std::uint8_t>(iris::kButtonStart | iris::kButtonA | iris::kButtonRight));
-    REQUIRE(system.debugRead(0x4219) == 0x11);
+    // A is the low byte. The same key also holds Y, which is how a game runs or rolls.
+    REQUIRE(system.debugRead(0x4219) == 0x51);
+    REQUIRE(system.debugRead(0x4218) == 0x80);
+    system.setController(0, iris::kButtonA);
+    REQUIRE(system.debugRead(0x4219) == 0x40);
     REQUIRE(system.debugRead(0x4218) == 0x80);
     system.setController(0, iris::kButtonB);
     REQUIRE(system.debugRead(0x4219) == 0x80);

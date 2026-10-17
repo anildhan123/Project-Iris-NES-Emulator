@@ -714,9 +714,13 @@ public:
         if (now >= deadline) {
             return;
         }
-        constexpr auto kSpinTail = microseconds(200);
-        if (now + kSpinTail < deadline) {
-            sleepOnce(duration_cast<nanoseconds>(deadline - kSpinTail - now));
+        if (now + milliseconds(2) < deadline) {
+            sleepOnce(duration_cast<nanoseconds>(deadline - milliseconds(1) - now));
+        }
+        // If the timer returns early, sleep in 1 ms steps. A pause-spin for the
+        // rest of the frame keeps a core and the discrete GPU awake on battery.
+        while (steady_clock::now() + milliseconds(1) < deadline) {
+            Sleep(1);
         }
         while (steady_clock::now() < deadline) {
 #if defined(_M_IX86) || defined(_M_X64)
@@ -1193,7 +1197,7 @@ int DesktopShell::run() {
                                    "Super NES plays a LoROM, HiROM, or ExHiROM board, including save RAM, four backgrounds, scroll, priority, mosaic, DMA, HDMA, windows, and color math. DMA, HDMA, and IRQs take their cycles on the scanline. Timing inside an instruction is still approximate. A cartridge can upload an SPC700 program, and the DSP mixes it to mono at 48000 Hz. DSP-1, Super FX, and SA-1 boards run in this build. The Nintendo IPL ROM is not included. Iris Demo moves a marker with the arrow keys and stays silent because it does not upload a program. Save states restore the running machine for the same game. Other enhancement chips and high resolution are not in this build. "
                                    "Iris Demo, written for this project, is generated beside the executable.\n\n"
                                    "Open a ROM with File, Open Game, or from the library. "
-                                   "The default controls are the arrow keys, Z for A, X for B, A for Turbo A, S for Turbo B, Right Shift for Select, and Enter for Start. "
+                                   "The arrow keys move. On Super NES, Z and A hold Y so a game can run or roll, X is B, and S repeats B. On NES, Z is A, X is B, A repeats A, and S repeats B. Right Shift is Select, and Enter is Start. "
                                    "Numpad Enter also presses Start. Escape pauses. F9 toggles fast forward. "
                                    "F5 saves the selected state slot and F7 loads it. F12 saves a screenshot. Ctrl+R resets. "
                                    "Options, Settings changes the theme, picture, audio, region, and keys. "
@@ -2042,8 +2046,17 @@ int DesktopShell::run() {
             turboPort0.store(0);
             turboPort1.store(0);
         } else {
-            const PadSample port0 = padButtons(config_.controllers.port1, config_.controllers.pad1);
-            const PadSample port1 = padButtons(config_.controllers.port2, config_.controllers.pad2);
+            PadSample port0 = padButtons(config_.controllers.port1, config_.controllers.pad1);
+            PadSample port1 = padButtons(config_.controllers.port2, config_.controllers.pad2);
+            if (kind == SystemKind::Snes) {
+                // Turbo A is the A key, and it only pulses. A roll needs Y held.
+                const auto holdRun = [](PadSample& sample) {
+                    sample.held = static_cast<std::uint8_t>(sample.held | (sample.turbo & kButtonA));
+                    sample.turbo = static_cast<std::uint8_t>(sample.turbo & static_cast<std::uint8_t>(~kButtonA));
+                };
+                holdRun(port0);
+                holdRun(port1);
+            }
             livePort0.store(port0.held);
             livePort1.store(port1.held);
             turboPort0.store(port0.turbo);

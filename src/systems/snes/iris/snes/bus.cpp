@@ -302,6 +302,9 @@ void Bus::setController(std::uint8_t buttons) {
     joyHigh_ = 0;
     if ((buttons & kButtonA) != 0) {
         joyLow_ = static_cast<std::uint8_t>(joyLow_ | 0x80);
+        // The shell has one A key. Super NES games use Y for run and roll, and
+        // often ignore A, so the same key holds Y as well.
+        joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x40);
     }
     if ((buttons & kButtonB) != 0) {
         joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x80);
