@@ -3,6 +3,7 @@
 #include "iris/snes/apu.hpp"
 #include "iris/snes/cartridge.hpp"
 #include "iris/snes/dsp1.hpp"
+#include "iris/snes/expansion.hpp"
 #include "iris/snes/gsu.hpp"
 #include "iris/snes/ppu.hpp"
 
@@ -19,15 +20,21 @@ namespace iris::systems::snes {
 class Bus {
 public:
     void power();
-    void map(std::vector<std::uint8_t> rom, bool hiRom, bool exHiRom, std::size_t sramBytes, Chip chip);
+    void map(std::vector<std::uint8_t> rom, bool hiRom, bool exHiRom, std::size_t sramBytes, Chip chip,
+             bool fastRom = false);
     void setController(std::uint8_t buttons);
     void setCycle(int cycle);
+    // Charge master clocks for one memory access so mid-instruction timing reaches the APU and IRQs.
+    void tickAccess(std::uint8_t bank, std::uint16_t address);
+    void setMasterClock(int masterClock) { masterClock_ = masterClock; }
+    [[nodiscard]] int cycle() const { return cycle_; }
     void raiseNmi();
     void raiseIrq();
     void present();
     void resetApu();
     void resetChips();
     void stepGsu(int budget);
+    [[nodiscard]] int gsuBudgetForLine() const;
     [[nodiscard]] bool takeSa1Start();
     [[nodiscard]] bool sa1Running() const { return sa1Running_; }
     [[nodiscard]] std::uint16_t sa1ResetVector() const { return crv_; }
@@ -35,6 +42,7 @@ public:
     void beginFrame();
     void catchUpApu(int masterCycle, int masterClock);
     void finishAudio(int masterCycles, int masterClock);
+    void pollApuBoot() { apu_.pollBoot(); }
     [[nodiscard]] const float* audioSamples() const { return apu_.samples(); }
     [[nodiscard]] int audioCount() const { return apu_.sampleCount(); }
     [[nodiscard]] int audioChannels() const { return apu_.channels(); }
@@ -110,6 +118,7 @@ private:
     Apu apu_;
     Dsp1 dsp_;
     Gsu gsu_;
+    Expansion expansion_;
     std::vector<std::uint8_t> iram_;
     std::vector<std::uint8_t> bwram_;
     Chip chip_ = Chip::None;
@@ -134,6 +143,11 @@ private:
     bool irqFlag_ = false;
     bool hiRom_ = false;
     bool exHiRom_ = false;
+    bool fastRom_ = false;
+    int masterClock_ = 21477272;
+    std::uint32_t sa1BitData_ = 0;
+    int sa1BitCount_ = 0;
+    std::uint8_t sa1BitmapReg_ = 0;
 };
 
 }  // namespace iris::systems::snes

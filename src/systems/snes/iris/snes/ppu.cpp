@@ -38,11 +38,26 @@ int Ppu::width() const {
     return highResolution() ? kHiResWidth : kWidth;
 }
 
+int Ppu::height() const {
+    return overscan() ? kOverscanHeight : kHeight;
+}
+
+void Ppu::beginLine(int y) {
+    // Snapshot registers for this line. Writes during the line apply from the next
+    // beginLine call (typical mid-frame BGMODE/TM/TS races).
+    if (y == 0 && interlaced()) {
+        field_ ^= 1;
+    }
+    latchedBgmode_ = bgmode_;
+    latchedTm_ = tm_;
+    latchedTs_ = ts_;
+}
+
 void Ppu::power() {
     vram_.assign(64 * 1024, 0);
     oam_.assign(544, 0);
     cgram_.assign(256, 0);
-    frame_.assign(static_cast<std::size_t>(kMaxWidth * kHeight * 4), 0);
+    frame_.assign(static_cast<std::size_t>(kMaxWidth * kMaxHeight * 4), 0);
     reset();
 }
 
@@ -96,11 +111,17 @@ void Ppu::reset() {
     fixedR_ = 0;
     fixedG_ = 0;
     fixedB_ = 0;
+    setini_ = 0;
+    latchedBgmode_ = 0;
+    latchedTm_ = 0;
+    latchedTs_ = 0;
+    field_ = 0;
 }
 
 std::uint8_t Ppu::read(std::uint16_t address) {
     if (address == 0x213F) {
-        return 0x01;
+        // Bit 0: 5C77. Bit 7: interlace field when SETINI selects interlaced output.
+        return static_cast<std::uint8_t>(0x01 | ((field_ & 1) != 0 ? 0x80 : 0));
     }
     if (address == 0x2139 || address == 0x213A) {
         const std::size_t byte = static_cast<std::size_t>(vramAddress_ & 0x7FFF) * 2 + (address == 0x213A ? 1 : 0);
@@ -245,6 +266,9 @@ void Ppu::write(std::uint16_t address, std::uint8_t value) {
         if ((value & 0x80) != 0) {
             fixedB_ = static_cast<std::uint8_t>(value & 0x1F);
         }
+        break;
+    case 0x2133:
+        setini_ = value;
         break;
     case 0x2106:
         mosaic_ = value;
@@ -751,7 +775,7 @@ void Ppu::paintLayer(int layer, int y, Texel* row, int lineWidth) const {
 }
 
 void Ppu::renderLine(int y) {
-    if (y < 0 || y >= kHeight) {
+    if (y < 0 || y >= height()) {
         return;
     }
     const int lineWidth = width();
@@ -767,10 +791,13 @@ void Ppu::renderLine(int y) {
         }
         return;
     }
-    const int mode = bgmode_ & 0x07;
+    const int mode = latchedBgmode_ & 0x07;
     const bool mode7 = mode == 7;
     const bool useSub = (cgwsel_ & 0x02) != 0 && (cgadsub_ & 0x3F) != 0;
-    const std::uint8_t enabled = static_cast<std::uint8_t>(tm_ | (useSub ? ts_ : 0));
+    const std::uint8_t enabled =
+        static_cast<std::uint8_t>(latchedTm_ | (useSub ? latchedTs_ : 0));
+    // Odd interlaced fields sample one line lower so the picture weaves.
+    const int sampleY = interlaced() && (field_ & 1) != 0 ? y + 1 : y;
     Texel layers[4][kMaxWidth];
     bool layerReady[4] = {};
     if (!mode7) {
@@ -778,19 +805,19 @@ void Ppu::renderLine(int y) {
             if ((enabled & (1 << layer)) == 0) {
                 continue;
             }
-            paintLayer(layer, y, layers[layer], lineWidth);
+            paintLayer(layer, sampleY, layers[layer], lineWidth);
             layerReady[layer] = true;
         }
     }
     int mode7Index[kMaxWidth] = {};
     if (mode7 && (enabled & 0x01) != 0) {
         for (int x = 0; x < lineWidth; ++x) {
-            mode7Index[x] = mode7Pixel(x, y);
+            mode7Index[x] = mode7Pixel(x, sampleY);
         }
     }
     Texel sprites[kMaxWidth] = {};
     if ((enabled & 0x10) != 0) {
-        collectSprites(y, sprites, lineWidth);
+        collectSprites(sampleY, sprites, lineWidth);
     }
     int rank[5][4];
     for (int source = 0; source < 5; ++source) {
@@ -1003,6 +1030,11 @@ void Ppu::saveState(iris::ByteWriter& out) const {
     out.u8(fixedR_);
     out.u8(fixedG_);
     out.u8(fixedB_);
+    out.u8(setini_);
+    out.u8(latchedBgmode_);
+    out.u8(latchedTm_);
+    out.u8(latchedTs_);
+    out.u32(static_cast<std::uint32_t>(field_));
     out.bytes(vram_.data(), vram_.size());
     out.bytes(oam_.data(), oam_.size());
     for (const std::uint16_t entry : cgram_) {
@@ -1063,6 +1095,11 @@ bool Ppu::loadState(iris::ByteReader& in) {
     const auto fixedR = in.u8();
     const auto fixedG = in.u8();
     const auto fixedB = in.u8();
+    const auto setini = in.u8();
+    const auto latchedBgmode = in.u8();
+    const auto latchedTm = in.u8();
+    const auto latchedTs = in.u8();
+    const auto field = static_cast<int>(in.u32());
     std::vector<std::uint8_t> vram(vram_.size());
     std::vector<std::uint8_t> oam(oam_.size());
     std::vector<std::uint16_t> cgram(cgram_.size());
@@ -1125,6 +1162,11 @@ bool Ppu::loadState(iris::ByteReader& in) {
     fixedR_ = fixedR;
     fixedG_ = fixedG;
     fixedB_ = fixedB;
+    setini_ = setini;
+    latchedBgmode_ = latchedBgmode;
+    latchedTm_ = latchedTm;
+    latchedTs_ = latchedTs;
+    field_ = field;
     vram_ = std::move(vram);
     oam_ = std::move(oam);
     cgram_ = std::move(cgram);

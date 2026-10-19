@@ -59,6 +59,18 @@ constexpr int kGauss[512] = {
     0x502, 0x503, 0x504, 0x506, 0x507, 0x508, 0x50A, 0x50B, 0x50C, 0x50D, 0x50E, 0x50F, 0x510, 0x511, 0x511, 0x512,
     0x513, 0x514, 0x514, 0x515, 0x516, 0x516, 0x517, 0x517, 0x517, 0x518, 0x518, 0x518, 0x518, 0x518, 0x519, 0x519};
 
+// Samples between envelope steps for S-DSP rates 0–31. Rate 0 never advances.
+constexpr int kEnvRate[32] = {0,    2048, 1536, 1280, 1024, 768, 640, 512, 384, 320, 256, 192, 160, 128, 96, 80,
+                              64,   48,   40,   32,   24,  20,  16,  12,  10,  8,   6,   5,   4,   3,  2,  1};
+
+int signed16(int low, int high) {
+    int value = low | (high << 8);
+    if ((value & 0x8000) != 0) {
+        value |= ~0xFFFF;
+    }
+    return value;
+}
+
 }  // namespace
 
 void Apu::power() {
@@ -126,6 +138,11 @@ bool Apu::installIpl(const std::uint8_t* data, std::size_t size) {
 }
 
 void Apu::enterBoot() {
+    // Software upload protocol: clear APU RAM like a fresh IPL entry. A user IPL
+    // image keeps its own RAM; Nintendo's dump is never shipped.
+    if (!hasIpl_ && !ram_.empty()) {
+        std::fill(ram_.begin(), ram_.end(), static_cast<std::uint8_t>(0));
+    }
     booting_ = true;
     transferring_ = false;
     halted_ = false;
@@ -143,9 +160,8 @@ void Apu::beginFrame() {
 }
 
 void Apu::catchUp(int masterCycle, int masterClock) {
-    if (booting_ && !hasIpl_) {
-        bootPoll();
-    }
+    // Do not bootPoll here: a 16-bit store to $2140 writes both port bytes in one
+    // instruction, and the handshake must see them together after that instruction.
     if (masterClock <= 0 || masterCycle < clocked_) {
         return;
     }
@@ -220,6 +236,12 @@ void Apu::writePort(int index, std::uint8_t value) {
         return;
     }
     cpuIn_[index] = value;
+}
+
+void Apu::pollBoot() {
+    if (booting_ && !hasIpl_) {
+        bootPoll();
+    }
 }
 
 void Apu::bootPoll() {
@@ -532,10 +554,97 @@ void Apu::keyOn(int voice) {
     current.previous = 0;
     current.envelope = 0;
     current.output = 0;
+    current.rateCounter = 0;
+    current.envState = EnvState::Attack;
     current.playing = true;
     current.release = false;
     decodeBlock(current);
     endx_ = static_cast<std::uint8_t>(endx_ & ~(1 << voice));
+}
+
+bool Apu::envelopeClock(Voice& voice, int rate) {
+    if (rate <= 0 || rate > 31) {
+        return false;
+    }
+    const int period = kEnvRate[rate];
+    if (period <= 0) {
+        return false;
+    }
+    ++voice.rateCounter;
+    if (voice.rateCounter < period) {
+        return false;
+    }
+    voice.rateCounter = 0;
+    return true;
+}
+
+void Apu::tickEnvelope(Voice& voice, int index) {
+    const int base = index << 4;
+    if (voice.release || voice.envState == EnvState::Release) {
+        voice.envState = EnvState::Release;
+        if (envelopeClock(voice, 31)) {
+            voice.envelope -= 8;
+            if (voice.envelope <= 0) {
+                voice.envelope = 0;
+                voice.playing = false;
+            }
+        }
+        return;
+    }
+    if ((dsp_[base | 0x05] & 0x80) == 0) {
+        const int gain = dsp_[base | 0x07];
+        if ((gain & 0x80) == 0) {
+            voice.envelope = (gain & 0x7F) << 4;
+        } else {
+            const int rate = gain & 0x1F;
+            const int mode = (gain >> 5) & 0x03;
+            if (envelopeClock(voice, rate)) {
+                if (mode == 0) {
+                    voice.envelope -= 32;
+                } else if (mode == 1) {
+                    voice.envelope -= ((voice.envelope - 1) >> 8) + 1;
+                } else if (mode == 2) {
+                    voice.envelope += 32;
+                } else {
+                    voice.envelope += voice.envelope < 0x600 ? 32 : 8;
+                }
+            }
+        }
+    } else {
+        const int ar = dsp_[base | 0x05] & 0x0F;
+        const int dr = (dsp_[base | 0x05] >> 4) & 0x07;
+        const int sl = (dsp_[base | 0x06] >> 5) & 0x07;
+        const int sr = dsp_[base | 0x06] & 0x1F;
+        const int sustain = (sl + 1) * 0x100;
+        if (voice.envState == EnvState::Attack) {
+            if (ar == 0x0F) {
+                voice.envelope = 0x7FF;
+                voice.envState = EnvState::Decay;
+            } else if (envelopeClock(voice, (ar << 1) + 1)) {
+                voice.envelope += voice.envelope < 0x600 ? 0x20 : 0x08;
+                if (voice.envelope >= 0x7FF) {
+                    voice.envelope = 0x7FF;
+                    voice.envState = EnvState::Decay;
+                }
+            }
+        } else if (voice.envState == EnvState::Decay) {
+            if (envelopeClock(voice, 0x10 + (dr << 1))) {
+                voice.envelope -= ((voice.envelope - 1) >> 8) + 1;
+                if (voice.envelope <= sustain) {
+                    voice.envelope = sustain;
+                    voice.envState = EnvState::Sustain;
+                }
+            }
+        } else if (sr != 0 && envelopeClock(voice, sr)) {
+            voice.envelope -= ((voice.envelope - 1) >> 8) + 1;
+        }
+    }
+    if (voice.envelope < 0) {
+        voice.envelope = 0;
+    }
+    if (voice.envelope > 0x7FF) {
+        voice.envelope = 0x7FF;
+    }
 }
 
 int Apu::interpolate(const Voice& voice, int cursor) const {
@@ -591,36 +700,9 @@ void Apu::renderSample(float& outLeft, float& outRight) {
             continue;
         }
         if (voice.release) {
-            voice.envelope -= 8;
-            if (voice.envelope <= 0) {
-                voice.envelope = 0;
-                voice.playing = false;
-            }
-        } else if ((dsp_[base | 0x05] & 0x80) == 0) {
-            const int gain = dsp_[base | 0x07];
-            if ((gain & 0x80) == 0) {
-                voice.envelope = (gain & 0x7F) << 4;
-            } else {
-                const int step = 1 << ((gain & 0x1F) / 4);
-                const int mode = (gain >> 5) & 0x03;
-                voice.envelope += (mode >= 2 ? step : -step);
-            }
-        } else {
-            const int sustain = (((dsp_[base | 0x06] >> 5) & 0x07) + 1) * 0x100;
-            if (voice.envelope < 0x7FF) {
-                voice.envelope += 16 + (dsp_[base | 0x05] & 0x0F);
-            } else if (voice.envelope > sustain) {
-                voice.envelope -= 8;
-            } else if ((dsp_[base | 0x06] & 0x1F) != 0) {
-                voice.envelope -= 1;
-            }
+            voice.envState = EnvState::Release;
         }
-        if (voice.envelope < 0) {
-            voice.envelope = 0;
-        }
-        if (voice.envelope > 0x7FF) {
-            voice.envelope = 0x7FF;
-        }
+        tickEnvelope(voice, index);
         int cursor = voice.phase >> 12;
         while (cursor >= 16 && voice.playing) {
             cursor -= 16;
@@ -685,6 +767,7 @@ void Apu::renderSample(float& outLeft, float& outRight) {
     const auto mainRight = static_cast<std::int8_t>(dsp_[0x1C]);
     left = (left * mainLeft) >> 7;
     right = (right * mainRight) >> 7;
+    // Echo lives in APU RAM at ESA. EDL selects EDL*0x800 bytes (EDL*512 stereo samples).
     const int delay = (dsp_[0x7D] & 0x0F) * 512;
     if (delay > 0) {
         if (static_cast<int>(echoLeft_.size()) != delay) {
@@ -692,6 +775,7 @@ void Apu::renderSample(float& outLeft, float& outRight) {
             echoRight_.assign(static_cast<std::size_t>(delay), 0);
             echoPos_ = 0;
         }
+        const int echoBase = dsp_[0x6D] << 8;
         int filteredLeft = 0;
         int filteredRight = 0;
         for (int tap = 0; tap < 8; ++tap) {
@@ -699,9 +783,16 @@ void Apu::renderSample(float& outLeft, float& outRight) {
             while (position < 0) {
                 position += delay;
             }
+            const int ramIndex = (echoBase + position * 4) & 0xFFFF;
+            const int sampleLeft =
+                signed16(ram_[static_cast<std::size_t>(ramIndex)], ram_[static_cast<std::size_t>((ramIndex + 1) & 0xFFFF)]);
+            const int sampleRight = signed16(ram_[static_cast<std::size_t>((ramIndex + 2) & 0xFFFF)],
+                                             ram_[static_cast<std::size_t>((ramIndex + 3) & 0xFFFF)]);
+            echoLeft_[static_cast<std::size_t>(position)] = sampleLeft;
+            echoRight_[static_cast<std::size_t>(position)] = sampleRight;
             const auto coefficient = static_cast<std::int8_t>(dsp_[0x0F + tap * 0x10]);
-            filteredLeft += (echoLeft_[static_cast<std::size_t>(position)] * coefficient) >> 7;
-            filteredRight += (echoRight_[static_cast<std::size_t>(position)] * coefficient) >> 7;
+            filteredLeft += (sampleLeft * coefficient) >> 7;
+            filteredRight += (sampleRight * coefficient) >> 7;
         }
         const auto echoLeft = static_cast<std::int8_t>(dsp_[0x2C]);
         const auto echoRight = static_cast<std::int8_t>(dsp_[0x3C]);
@@ -709,13 +800,11 @@ void Apu::renderSample(float& outLeft, float& outRight) {
         right += (filteredRight * echoRight) >> 7;
         if ((flags & 0x20) == 0) {
             const auto feedback = static_cast<std::int8_t>(dsp_[0x0D]);
-            echoLeft_[static_cast<std::size_t>(echoPos_)] = clamp16(echoInLeft + ((filteredLeft * feedback) >> 7));
-            echoRight_[static_cast<std::size_t>(echoPos_)] = clamp16(echoInRight + ((filteredRight * feedback) >> 7));
-            // Mirror the echo buffer into APU RAM at ESA for drivers that read it.
-            const int echoBase = dsp_[0x6D] << 8;
+            const int storedLeft = clamp16(echoInLeft + ((filteredLeft * feedback) >> 7));
+            const int storedRight = clamp16(echoInRight + ((filteredRight * feedback) >> 7));
+            echoLeft_[static_cast<std::size_t>(echoPos_)] = storedLeft;
+            echoRight_[static_cast<std::size_t>(echoPos_)] = storedRight;
             const int ramIndex = (echoBase + echoPos_ * 4) & 0xFFFF;
-            const int storedLeft = echoLeft_[static_cast<std::size_t>(echoPos_)];
-            const int storedRight = echoRight_[static_cast<std::size_t>(echoPos_)];
             ram_[static_cast<std::size_t>(ramIndex)] = static_cast<std::uint8_t>(storedLeft);
             ram_[static_cast<std::size_t>((ramIndex + 1) & 0xFFFF)] = static_cast<std::uint8_t>(storedLeft >> 8);
             ram_[static_cast<std::size_t>((ramIndex + 2) & 0xFFFF)] = static_cast<std::uint8_t>(storedRight);

@@ -24,8 +24,11 @@ public:
 
     [[nodiscard]] const std::uint8_t* pixels() const { return frame_.data(); }
     [[nodiscard]] int width() const;
-    [[nodiscard]] int height() const { return kHeight; }
+    [[nodiscard]] int height() const;
     [[nodiscard]] bool highResolution() const;
+    [[nodiscard]] bool interlaced() const { return (setini_ & 0x01) != 0; }
+    [[nodiscard]] bool overscan() const { return (setini_ & 0x04) != 0; }
+    void beginLine(int y);
     void saveState(iris::ByteWriter& out) const;
     [[nodiscard]] bool loadState(iris::ByteReader& in);
 
@@ -33,6 +36,8 @@ public:
     static constexpr int kHiResWidth = 512;
     static constexpr int kMaxWidth = 512;
     static constexpr int kHeight = 224;
+    static constexpr int kOverscanHeight = 239;
+    static constexpr int kMaxHeight = 239;
 
 private:
     struct Texel {
@@ -101,6 +106,11 @@ private:
     std::uint8_t fixedR_ = 0;
     std::uint8_t fixedG_ = 0;
     std::uint8_t fixedB_ = 0;
+    std::uint8_t setini_ = 0;
+    std::uint8_t latchedBgmode_ = 0;
+    std::uint8_t latchedTm_ = 0;
+    std::uint8_t latchedTs_ = 0;
+    int field_ = 0;
     std::vector<std::uint8_t> vram_;
     std::vector<std::uint8_t> oam_;
     std::vector<std::uint16_t> cgram_;

@@ -1087,3 +1087,54 @@ TEST_CASE("vblank reloads the sprite address before the next object list") {
     REQUIRE(system.debugRead(0x2138) == 0x30);
     REQUIRE(system.debugRead(0x2138) == 0x40);
 }
+
+TEST_CASE("SETINI overscan grows the picture and exotic map modes stay refused") {
+    std::vector<std::uint8_t> program;
+    store(program, 0x04, 0x33, 0x21);
+    store(program, 0x0F, 0x00, 0x21);
+    finishIdle(program);
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> rom = loRom(program);
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.frame().height == 239);
+
+    std::vector<std::uint8_t> exotic = loRom({});
+    exotic[0x7FD5] = 0x24;  // map mode 4
+    REQUIRE_FALSE(system.loadBytes(exotic.data(), exotic.size(), error));
+    REQUIRE(error.find("not supported") != std::string::npos);
+}
+
+TEST_CASE("Cx4 and SA-1 bitstream slices answer the cartridge") {
+    std::vector<std::uint8_t> cx4;
+    store(cx4, 0xA5, 0x00, 0x60);
+    cx4.insert(cx4.end(), {0xAD, 0x00, 0x60, 0x8D, 0x10, 0x00});
+    finishIdle(cx4);
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> cx4Rom = boardRom(cx4, 0x20, 0xF3);
+    REQUIRE(system.loadBytes(cx4Rom.data(), cx4Rom.size(), error));
+    REQUIRE(system.info().detail == "LoROM, NTSC, Cx4");
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) == 0xA5);
+
+    std::vector<std::uint8_t> bits;
+    store(bits, 0xA5, 0x58, 0x22);
+    store(bits, 0x5A, 0x59, 0x22);
+    store(bits, 0x00, 0x5A, 0x22);
+    store(bits, 0x08, 0x5B, 0x22);
+    bits.insert(bits.end(), {0xAD, 0x0E, 0x23, 0x8D, 0x10, 0x00});
+    finishIdle(bits);
+    const std::vector<std::uint8_t> sa1Rom = boardRom(bits, 0x23, 0x35);
+    REQUIRE(system.loadBytes(sa1Rom.data(), sa1Rom.size(), error));
+    REQUIRE(system.info().detail == "SA-1, NTSC");
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) == 0xA5);
+
+    std::vector<std::uint8_t> sdd1;
+    finishIdle(sdd1);
+    const std::vector<std::uint8_t> sdd1Rom = boardRom(sdd1, 0x20, 0x43);
+    REQUIRE(system.loadBytes(sdd1Rom.data(), sdd1Rom.size(), error));
+    REQUIRE(system.info().detail == "LoROM, NTSC, S-DD1");
+}

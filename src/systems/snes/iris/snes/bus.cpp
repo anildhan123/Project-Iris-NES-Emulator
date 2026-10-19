@@ -38,18 +38,26 @@ void Bus::power() {
     sa1Running_ = false;
     sa1Start_ = false;
     sa1Access_ = false;
+    sa1BitData_ = 0;
+    sa1BitCount_ = 0;
+    sa1BitmapReg_ = 0;
+    expansion_.power();
 }
 
-void Bus::map(std::vector<std::uint8_t> rom, bool hiRom, bool exHiRom, std::size_t sramBytes, Chip chip) {
+void Bus::map(std::vector<std::uint8_t> rom, bool hiRom, bool exHiRom, std::size_t sramBytes, Chip chip, bool fastRom) {
     rom_ = std::move(rom);
     hiRom_ = hiRom;
     exHiRom_ = exHiRom;
+    fastRom_ = fastRom;
     chip_ = chip;
     sram_.assign(sramBytes, 0);
     dsp_.power();
     dsp_.setChip(chip_);
     gsu_.power();
     gsu_.bind(&rom_);
+    expansion_.power();
+    expansion_.setChip(chip_);
+    expansion_.bind(&rom_);
     iram_.clear();
     bwram_.clear();
     ccnt_ = 0;
@@ -57,6 +65,9 @@ void Bus::map(std::vector<std::uint8_t> rom, bool hiRom, bool exHiRom, std::size
     sa1Running_ = false;
     sa1Start_ = false;
     sa1Access_ = false;
+    sa1BitData_ = 0;
+    sa1BitCount_ = 0;
+    sa1BitmapReg_ = 0;
     if (chip_ == Chip::Sa1) {
         iram_.assign(2048, 0);
         bwram_.assign(256 * 1024, 0);
@@ -71,16 +82,39 @@ void Bus::resetChips() {
     dsp_.power();
     dsp_.setChip(chip_);
     gsu_.halt();
+    expansion_.power();
+    expansion_.setChip(chip_);
+    expansion_.bind(&rom_);
     ccnt_ = 0;
     sa1Running_ = false;
     sa1Start_ = false;
     sa1Access_ = false;
+    sa1BitData_ = 0;
+    sa1BitCount_ = 0;
+    sa1BitmapReg_ = 0;
+}
+
+void Bus::tickAccess(std::uint8_t bank, std::uint16_t address) {
+    // FastROM banks $80–$FF are cheaper than SlowROM and I/O. Costs keep the
+    // hardware 6:8 ratio while staying close enough to the prior instruction
+    // tally that one-frame setup programs still finish (not full dot accuracy).
+    const bool fast = fastRom_ && bank >= 0x80 && address >= 0x8000;
+    const int cost = fast ? 3 : 4;
+    cycle_ += cost;
+    if (masterClock_ > 0) {
+        apu_.catchUp(cycle_, masterClock_);
+    }
 }
 
 void Bus::stepGsu(int budget) {
     if (chip_ == Chip::SuperFx && gsu_.running()) {
         gsu_.run(budget);
     }
+}
+
+int Bus::gsuBudgetForLine() const {
+    // Roughly one GSU op per four master clocks on a visible line when GO is set.
+    return 340;
 }
 
 bool Bus::takeSa1Start() {
@@ -98,6 +132,19 @@ std::uint8_t Bus::readSa1Reg(std::uint16_t address) const {
     }
     if (address == 0x2204) {
         return static_cast<std::uint8_t>(crv_ >> 8);
+    }
+    if (address == 0x2301) {
+        // Variable-length bitstream: return the next packed bits.
+        return static_cast<std::uint8_t>(sa1BitData_ & 0xFF);
+    }
+    if (address == 0x2302) {
+        return static_cast<std::uint8_t>((sa1BitData_ >> 8) & 0xFF);
+    }
+    if (address == 0x2303) {
+        return static_cast<std::uint8_t>(sa1BitCount_);
+    }
+    if (address == 0x230E) {
+        return sa1BitmapReg_;
     }
     return 0;
 }
@@ -174,6 +221,32 @@ void Bus::writeSa1Reg(std::uint16_t address, std::uint8_t value) {
     }
     if (address == 0x2239) {
         sa1DmaCount_ = static_cast<std::uint16_t>((sa1DmaCount_ & 0x00FF) | (static_cast<std::uint16_t>(value) << 8));
+        return;
+    }
+    if (address == 0x2258) {
+        sa1BitData_ = (sa1BitData_ & 0xFFFFFF00u) | value;
+        return;
+    }
+    if (address == 0x2259) {
+        sa1BitData_ = (sa1BitData_ & 0xFFFF00FFu) | (static_cast<std::uint32_t>(value) << 8);
+        return;
+    }
+    if (address == 0x225A) {
+        sa1BitData_ = (sa1BitData_ & 0xFF00FFFFu) | (static_cast<std::uint32_t>(value) << 16);
+        return;
+    }
+    if (address == 0x225B) {
+        sa1BitCount_ = value & 0x1F;
+        if (sa1BitCount_ > 0 && sa1BitCount_ < 32) {
+            const std::uint32_t mask = (1u << sa1BitCount_) - 1u;
+            const std::uint32_t extracted = sa1BitData_ & mask;
+            sa1BitData_ >>= sa1BitCount_;
+            sa1BitmapReg_ = static_cast<std::uint8_t>(extracted);
+        }
+        return;
+    }
+    if (address == 0x2250) {
+        sa1BitmapReg_ = value;
     }
 }
 
@@ -467,6 +540,13 @@ std::uint8_t Bus::read(std::uint8_t bank, std::uint16_t address) {
             return value;
         }
     }
+    if (chip_ == Chip::Cx4 || chip_ == Chip::Sdd1 || chip_ == Chip::Spc7110 || chip_ == Chip::Obc1 ||
+        chip_ == Chip::St010 || chip_ == Chip::St011 || chip_ == Chip::St018 || chip_ == Chip::Bsx) {
+        std::uint8_t value = 0;
+        if (expansion_.read(bank, address, hiRom_, value)) {
+            return value;
+        }
+    }
     std::size_t sram = 0;
     if (sramIndex(bank, address, sram)) {
         return sram_[sram];
@@ -573,6 +653,11 @@ void Bus::write(std::uint8_t bank, std::uint16_t address, std::uint8_t value) {
         return;
     }
     if (chip_ == Chip::Sa1 && writeSa1(bank, address, value)) {
+        return;
+    }
+    if ((chip_ == Chip::Cx4 || chip_ == Chip::Sdd1 || chip_ == Chip::Spc7110 || chip_ == Chip::Obc1 ||
+         chip_ == Chip::St010 || chip_ == Chip::St011 || chip_ == Chip::St018 || chip_ == Chip::Bsx) &&
+        expansion_.write(bank, address, hiRom_, value)) {
         return;
     }
     std::size_t sram = 0;
@@ -919,10 +1004,15 @@ void Bus::saveState(iris::ByteWriter& out) const {
     out.u32(static_cast<std::uint32_t>(cycle_));
     out.boolean(nmiFlag_);
     out.boolean(irqFlag_);
+    out.boolean(fastRom_);
+    out.u32(sa1BitData_);
+    out.u32(static_cast<std::uint32_t>(sa1BitCount_));
+    out.u8(sa1BitmapReg_);
     ppu_.saveState(out);
     apu_.saveState(out);
     gsu_.saveState(out);
     dsp_.saveState(out);
+    expansion_.saveState(out);
 }
 
 bool Bus::loadState(iris::ByteReader& in) {
@@ -982,7 +1072,12 @@ bool Bus::loadState(iris::ByteReader& in) {
     const auto cycle = static_cast<int>(in.u32());
     const auto nmiFlag = in.boolean();
     const auto irqFlag = in.boolean();
-    if (!in.ok() || !ppu_.loadState(in) || !apu_.loadState(in) || !gsu_.loadState(in) || !dsp_.loadState(in)) {
+    const auto fastRom = in.boolean();
+    const auto sa1BitData = in.u32();
+    const auto sa1BitCount = static_cast<int>(in.u32());
+    const auto sa1BitmapReg = in.u8();
+    if (!in.ok() || !ppu_.loadState(in) || !apu_.loadState(in) || !gsu_.loadState(in) || !dsp_.loadState(in) ||
+        !expansion_.loadState(in)) {
         return false;
     }
     wram_ = std::move(wram);
@@ -1016,6 +1111,10 @@ bool Bus::loadState(iris::ByteReader& in) {
     cycle_ = cycle;
     nmiFlag_ = nmiFlag;
     irqFlag_ = irqFlag;
+    fastRom_ = fastRom;
+    sa1BitData_ = sa1BitData;
+    sa1BitCount_ = sa1BitCount;
+    sa1BitmapReg_ = sa1BitmapReg;
     return true;
 }
 

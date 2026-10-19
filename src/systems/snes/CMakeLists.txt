@@ -18,6 +18,8 @@ add_library(iris_snes STATIC
     iris/snes/cpu.hpp
     iris/snes/dsp1.cpp
     iris/snes/dsp1.hpp
+    iris/snes/expansion.cpp
+    iris/snes/expansion.hpp
     iris/snes/gsu.cpp
     iris/snes/gsu.hpp
     iris/snes/demo_rom.cpp

@@ -232,3 +232,16 @@ Full mobile frontends and other consoles are not started.
 - The DSP mixes stereo at 48000 Hz with Gaussian BRR interpolation. A cartridge that uploads an SPC700 soundtrack plays through that path. Timing inside an instruction is still approximate.
 
 Full mobile frontends and other consoles are not started.
+
+## Super NES depth follow-up (implemented)
+
+- Memory accesses charge FastROM or SlowROM clocks inside an instruction (6:8 ratio, scaled so typical setup programs still finish a frame). Mid-instruction and mid-scanline edge cases can still break picky games; this is not a claim of full dot accuracy.
+- The software IPL upload protocol clears APU RAM on entry. A user may still supply `firmware/ipl.rom`. Nintendo's dump is not shipped.
+- Cx4, S-DD1, SPC7110, OBC-1, ST010/011/018, and BS-X answer MMIO slices so boards load. DSP math stays host arithmetic without a coefficient ROM. Full silicon for every chip path is not claimed.
+- SA-1 exposes bitmap register and variable-length bitstream ports plus I-RAM/BW-RAM DMA. Character conversion and complete bitstream hardware remain incomplete. Super FX runs on a per-scanline GO budget with an 8-pixel plot cache; the full opcode set and scanline-accurate GSU timing are not claimed.
+- `$2133` selects interlace and overscan. BGMODE, TM, and TS latch at the start of each visible line. Odd mid-frame register races beyond the suite are still open.
+- ADSR uses rate tables closer to the S-DSP. Echo reads and writes APU RAM at ESA. Not every commercial soundtrack is proven end to end.
+- Map modes beyond LoROM, HiROM, ExHiROM, FastROM, LoROM variants 2 / `$A`, and SA-1 stay refused.
+- The suite proves these features. It does not claim that every cartridge plays.
+
+Full mobile frontends and other consoles are not started.

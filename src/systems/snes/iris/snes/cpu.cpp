@@ -45,16 +45,19 @@ void Cpu::stop(std::uint8_t opcode) {
 }
 
 std::uint8_t Cpu::fetch(Bus& bus) {
+    bus.tickAccess(pbr_, pc_);
     const std::uint8_t value = bus.read(pbr_, pc_);
     pc_ = static_cast<std::uint16_t>(pc_ + 1);
     return value;
 }
 
 std::uint8_t Cpu::read(Bus& bus, std::uint16_t address) {
+    bus.tickAccess(0, address);
     return bus.read(0, address);
 }
 
 void Cpu::write(Bus& bus, std::uint16_t address, std::uint8_t value) {
+    bus.tickAccess(0, address);
     bus.write(0, address, value);
 }
 
@@ -478,11 +481,14 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
             if (accumulator) {
                 return narrow ? static_cast<std::uint16_t>(a_ & 0xFF) : a_;
             }
+            bus.tickAccess(bank, address);
             const std::uint8_t low = bus.read(bank, address);
             if (narrow) {
                 return static_cast<std::uint16_t>(low);
             }
-            return static_cast<std::uint16_t>(low | (bus.read(bank, static_cast<std::uint16_t>(address + 1)) << 8));
+            const auto next = static_cast<std::uint16_t>(address + 1);
+            bus.tickAccess(bank, next);
+            return static_cast<std::uint16_t>(low | (bus.read(bank, next) << 8));
         };
         const auto storeMem = [&](std::uint16_t value) {
             if (accumulator) {
@@ -495,9 +501,12 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
                 }
                 return;
             }
+            bus.tickAccess(bank, address);
             bus.write(bank, address, static_cast<std::uint8_t>(value));
             if (!narrow) {
-                bus.write(bank, static_cast<std::uint16_t>(address + 1), static_cast<std::uint8_t>(value >> 8));
+                const auto next = static_cast<std::uint16_t>(address + 1);
+                bus.tickAccess(bank, next);
+                bus.write(bank, next, static_cast<std::uint8_t>(value >> 8));
             }
         };
         const auto setA = [&](std::uint16_t value) {

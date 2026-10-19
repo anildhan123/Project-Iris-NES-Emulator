@@ -22,6 +22,9 @@ public:
     void beginFrame();
     void catchUp(int masterCycle, int masterClock);
     void finishAudio(int masterCycles, int masterClock);
+    // Run the software IPL handshake after a CPU instruction so 16-bit port stores
+    // are visible as a pair. Nintendo firmware is not required for this path.
+    void pollBoot();
 
     // Install a 64-byte IPL image. Empty clears the image and returns to the
     // software protocol. Nintendo firmware must not be redistributed with Iris.
@@ -38,6 +41,13 @@ public:
     [[nodiscard]] bool loadState(iris::ByteReader& in);
 
 private:
+    enum class EnvState : std::uint8_t {
+        Attack,
+        Decay,
+        Sustain,
+        Release,
+    };
+
     struct Voice {
         int pointer = 0;
         int loop = 0;
@@ -46,7 +56,9 @@ private:
         int previous = 0;
         int envelope = 0;
         int output = 0;
+        int rateCounter = 0;
         int history[4] = {};
+        EnvState envState = EnvState::Attack;
         bool playing = false;
         bool release = false;
         bool blockEnds = false;
@@ -61,6 +73,8 @@ private:
     void tickTimers(int cycles);
     void renderSample(float& left, float& right);
     void keyOn(int voice);
+    void tickEnvelope(Voice& voice, int index);
+    [[nodiscard]] bool envelopeClock(Voice& voice, int rate);
     void decodeBlock(Voice& voice);
     [[nodiscard]] int interpolate(const Voice& voice, int cursor) const;
     [[nodiscard]] std::uint8_t read8(std::uint16_t address);

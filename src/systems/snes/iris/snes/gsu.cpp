@@ -2,6 +2,8 @@
 
 #include "iris/byte_io.hpp"
 
+#include <algorithm>
+
 namespace iris::systems::snes {
 namespace {
 
@@ -30,9 +32,15 @@ void Gsu::power() {
     alt1_ = false;
     useDest_ = false;
     useSource_ = false;
+    cacheX_ = -1;
+    cacheY_ = -1;
+    cacheDirty_ = false;
+    std::fill(std::begin(cachePixels_), std::end(cachePixels_), static_cast<std::uint8_t>(0));
+    std::fill(std::begin(cacheValid_), std::end(cacheValid_), false);
 }
 
 void Gsu::halt() {
+    flushPixelCache();
     sfr_ = static_cast<std::uint16_t>(sfr_ & ~kGo);
     alt1_ = false;
     useDest_ = false;
@@ -107,6 +115,60 @@ void Gsu::finishPrefix() {
     dest_ = 0;
 }
 
+void Gsu::writeScreenPixel(int x, int y, std::uint8_t color) {
+    const int depth = scmr_ & 0x03;
+    if (depth == 0) {
+        const auto address = (static_cast<std::uint32_t>(scbr_) << 10) + static_cast<std::uint32_t>(y) * 256u +
+                             static_cast<std::uint32_t>(x);
+        ramWrite(address, color);
+    } else if (depth == 1) {
+        const auto address = (static_cast<std::uint32_t>(scbr_) << 10) + static_cast<std::uint32_t>(y) * 64u +
+                             static_cast<std::uint32_t>(x >> 2);
+        const int shift = (3 - (x & 3)) * 2;
+        const auto packed =
+            static_cast<std::uint8_t>((ramRead(address) & ~(0x03 << shift)) | ((color & 0x03) << shift));
+        ramWrite(address, packed);
+    } else {
+        const auto address = (static_cast<std::uint32_t>(scbr_) << 10) + static_cast<std::uint32_t>(y) * 128u +
+                             static_cast<std::uint32_t>(x >> 1);
+        const int shift = (1 - (x & 1)) * 4;
+        const auto packed =
+            static_cast<std::uint8_t>((ramRead(address) & ~(0x0F << shift)) | ((color & 0x0F) << shift));
+        ramWrite(address, packed);
+    }
+}
+
+void Gsu::flushPixelCache() {
+    if (!cacheDirty_) {
+        return;
+    }
+    for (int index = 0; index < 8; ++index) {
+        if (cacheValid_[index]) {
+            writeScreenPixel(cacheX_ + index, cacheY_, cachePixels_[index]);
+        }
+    }
+    cacheDirty_ = false;
+    std::fill(std::begin(cacheValid_), std::end(cacheValid_), false);
+}
+
+void Gsu::plotCached(int x, int y) {
+    const int line = x & ~7;
+    if (cacheDirty_ && (y != cacheY_ || line != cacheX_)) {
+        flushPixelCache();
+    }
+    if (!cacheDirty_) {
+        cacheX_ = line;
+        cacheY_ = y;
+        std::fill(std::begin(cacheValid_), std::end(cacheValid_), false);
+        cacheDirty_ = true;
+    }
+    cachePixels_[x & 7] = color_;
+    cacheValid_[x & 7] = true;
+    if ((x & 7) == 7) {
+        flushPixelCache();
+    }
+}
+
 void Gsu::run(int budget) {
     while (budget > 0 && (sfr_ & kGo) != 0) {
         --budget;
@@ -114,6 +176,7 @@ void Gsu::run(int budget) {
         const std::uint8_t from = useSource_ ? source_ : 0;
         const std::uint8_t to = useDest_ ? dest_ : 0;
         if (op == 0x00) {
+            flushPixelCache();
             sfr_ = static_cast<std::uint16_t>(sfr_ & ~kGo);
             finishPrefix();
             return;
@@ -199,28 +262,7 @@ void Gsu::run(int budget) {
             continue;
         }
         if (op == 0x4C) {
-            const int x = r_[1] & 0xFF;
-            const int y = r_[2] & 0xFF;
-            const int depth = scmr_ & 0x03;
-            if (depth == 0) {
-                const auto address = (static_cast<std::uint32_t>(scbr_) << 10) + static_cast<std::uint32_t>(y) * 256u +
-                                     static_cast<std::uint32_t>(x);
-                ramWrite(address, color_);
-            } else if (depth == 1) {
-                const auto address = (static_cast<std::uint32_t>(scbr_) << 10) +
-                                     static_cast<std::uint32_t>(y) * 64u + static_cast<std::uint32_t>(x >> 2);
-                const int shift = (3 - (x & 3)) * 2;
-                const auto packed = static_cast<std::uint8_t>((ramRead(address) & ~(0x03 << shift)) |
-                                                              ((color_ & 0x03) << shift));
-                ramWrite(address, packed);
-            } else {
-                const auto address = (static_cast<std::uint32_t>(scbr_) << 10) +
-                                     static_cast<std::uint32_t>(y) * 128u + static_cast<std::uint32_t>(x >> 1);
-                const int shift = (1 - (x & 1)) * 4;
-                const auto packed = static_cast<std::uint8_t>((ramRead(address) & ~(0x0F << shift)) |
-                                                              ((color_ & 0x0F) << shift));
-                ramWrite(address, packed);
-            }
+            plotCached(r_[1] & 0xFF, r_[2] & 0xFF);
             r_[1] = static_cast<std::uint16_t>(r_[1] + 1);
             finishPrefix();
             continue;

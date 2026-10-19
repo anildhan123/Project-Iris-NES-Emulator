@@ -33,6 +33,9 @@ private:
     [[nodiscard]] std::uint8_t ramRead(std::uint32_t address) const;
     void setAddFlags(std::uint16_t left, std::uint16_t right, std::uint32_t sum);
     void finishPrefix();
+    void flushPixelCache();
+    void plotCached(int x, int y);
+    void writeScreenPixel(int x, int y, std::uint8_t color);
 
     const std::vector<std::uint8_t>* rom_ = nullptr;
     std::vector<std::uint8_t> ram_;
@@ -49,6 +52,11 @@ private:
     bool alt1_ = false;
     bool useDest_ = false;
     bool useSource_ = false;
+    int cacheX_ = -1;
+    int cacheY_ = -1;
+    std::uint8_t cachePixels_[8] = {};
+    bool cacheValid_[8] = {};
+    bool cacheDirty_ = false;
 };
 
 }  // namespace iris::systems::snes

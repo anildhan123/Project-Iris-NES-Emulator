@@ -78,7 +78,8 @@ bool SnesSystem::loadIplFile(const std::filesystem::path& path, std::string& err
     }
     bus_.power();
     if (loaded_) {
-        bus_.map(cartridge_.rom, cartridge_.hiRom, cartridge_.exHiRom, cartridge_.sramBytes, cartridge_.chip);
+        bus_.map(cartridge_.rom, cartridge_.hiRom, cartridge_.exHiRom, cartridge_.sramBytes, cartridge_.chip,
+                 cartridge_.fastRom);
         applyRegion();
         cpu_.reset(bus_);
         bus_.resetChips();
@@ -99,8 +100,10 @@ bool SnesSystem::adopt(Cartridge cartridge, std::string& error) {
     contentId_ = sha256Hex(cartridge_.rom.data(), cartridge_.rom.size());
     standard_ = cartridge_.standard;
     bus_.power();
-    bus_.map(cartridge_.rom, cartridge_.hiRom, cartridge_.exHiRom, cartridge_.sramBytes, cartridge_.chip);
+    bus_.map(cartridge_.rom, cartridge_.hiRom, cartridge_.exHiRom, cartridge_.sramBytes, cartridge_.chip,
+             cartridge_.fastRom);
     applyRegion();
+    bus_.setMasterClock(standard_ == TvStandard::Pal ? 21281370 : 21477272);
     cpu_.reset(bus_);
     loaded_ = true;
     paused_ = false;
@@ -134,7 +137,8 @@ void SnesSystem::powerCycle() {
     std::vector<std::uint8_t> saved;
     bus_.copySram(saved);
     bus_.power();
-    bus_.map(cartridge_.rom, cartridge_.hiRom, cartridge_.exHiRom, cartridge_.sramBytes, cartridge_.chip);
+    bus_.map(cartridge_.rom, cartridge_.hiRom, cartridge_.exHiRom, cartridge_.sramBytes, cartridge_.chip,
+             cartridge_.fastRom);
     if (!saved.empty()) {
         (void)bus_.restoreSram(saved.data(), saved.size());
     }
@@ -150,6 +154,7 @@ void SnesSystem::applyRegion() {
     } else {
         standard_ = cartridge_.standard;
     }
+    bus_.setMasterClock(standard_ == TvStandard::Pal ? 21281370 : 21477272);
 }
 
 void SnesSystem::setRegionChoice(RegionChoice choice) {
@@ -248,12 +253,22 @@ void SnesSystem::runFrame() {
                     continue;
                 }
             }
+            bus_.setCycle(cycles);
+            const int before = bus_.cycle();
             const int used = cpu_.step(bus_);
             if (used == 0 && cpu_.stopped()) {
                 break;
             }
-            cycles += used > 0 ? used : 1;
+            // Memory accesses already charged mid-instruction; keep the bus clock.
+            if (bus_.cycle() > before) {
+                cycles = bus_.cycle();
+            } else {
+                cycles += used > 0 ? used : 1;
+                bus_.setCycle(cycles);
+            }
+            bus_.pollApuBoot();
             cycles += bus_.takeDmaStall();
+            bus_.setCycle(cycles);
             if (cpu_.consumeSpin() && cycles < lineEnd) {
                 int wake = lineEnd;
                 if (!signaled && nmiCycle > cycles && nmiCycle < wake) {
@@ -285,8 +300,9 @@ void SnesSystem::runFrame() {
                 }
                 bus_.setSa1Access(false);
             }
-            bus_.stepGsu(8);
         }
+        // Run the Super FX for this scanline so GO work stays tied to the picture.
+        bus_.stepGsu(bus_.gsuBudgetForLine());
         if (!signaled && cycles >= nmiCycle) {
             bus_.raiseNmi();
             if (bus_.nmiEnabled()) {
@@ -294,12 +310,15 @@ void SnesSystem::runFrame() {
             }
             signaled = true;
         }
-        if (line < Ppu::kHeight) {
+        if (line < bus_.ppu().height()) {
             if (!hdmaStarted) {
                 cycles += bus_.beginHdma();
                 hdmaStarted = true;
             }
             cycles += bus_.transferHdma();
+            // Latch BGMODE/TM/TS after this line's CPU work, then draw. Mid-line
+            // register races finer than that are still approximate.
+            bus_.ppu().beginLine(line);
             bus_.drawLine(line);
         }
         lineStart = lineEnd;
@@ -315,7 +334,7 @@ FrameView SnesSystem::frame() const {
     FrameView view;
     view.rgba = bus_.ppu().pixels();
     view.width = bus_.ppu().width();
-    view.height = Ppu::kHeight;
+    view.height = bus_.ppu().height();
     return view;
 }
 
@@ -333,21 +352,7 @@ void SnesSystem::setController(int port, std::uint8_t buttons) {
 }
 
 std::string SnesSystem::detailText() const {
-    std::string detail = cartridge_.chip == Chip::Sa1
-                             ? "SA-1, "
-                             : (cartridge_.exHiRom ? "ExHiROM, " : (cartridge_.hiRom ? "HiROM, " : "LoROM, "));
-    detail += standard_ == TvStandard::Pal ? "PAL" : "NTSC";
-    if (cartridge_.chip == Chip::Dsp1) {
-        detail += ", DSP-1";
-    } else if (cartridge_.chip == Chip::Dsp2) {
-        detail += ", DSP-2";
-    } else if (cartridge_.chip == Chip::Dsp3) {
-        detail += ", DSP-3";
-    } else if (cartridge_.chip == Chip::Dsp4) {
-        detail += ", DSP-4";
-    } else if (cartridge_.chip == Chip::SuperFx) {
-        detail += ", Super FX";
-    }
+    std::string detail = boardText(cartridge_);
     if (cpu_.stopped()) {
         char opcode[8] = {};
         std::snprintf(opcode, sizeof(opcode), "$%02X", cpu_.stopOpcode());
