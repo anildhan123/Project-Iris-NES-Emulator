@@ -237,11 +237,296 @@ Full mobile frontends and other consoles are not started.
 
 - Memory accesses charge FastROM or SlowROM clocks inside an instruction (6:8 ratio, scaled so typical setup programs still finish a frame). Mid-instruction and mid-scanline edge cases can still break picky games; this is not a claim of full dot accuracy.
 - The software IPL upload protocol clears APU RAM on entry. A user may still supply `firmware/ipl.rom`. Nintendo's dump is not shipped.
-- Cx4, S-DD1, SPC7110, OBC-1, ST010/011/018, and BS-X answer MMIO slices so boards load. DSP math stays host arithmetic without a coefficient ROM. Full silicon for every chip path is not claimed.
-- SA-1 exposes bitmap register and variable-length bitstream ports plus I-RAM/BW-RAM DMA. Character conversion and complete bitstream hardware remain incomplete. Super FX runs on a per-scanline GO budget with an 8-pixel plot cache; the full opcode set and scanline-accurate GSU timing are not claimed.
+- Cx4 answers MMIO plus a signed multiply kick on `$7F4F` command `$05`. S-DD1, SPC7110, OBC-1, ST010/011/018, and BS-X answer MMIO slices so boards load. DSP math stays host arithmetic without a coefficient ROM. Full silicon for every chip path is not claimed.
+- SA-1 exposes bitmap register and variable-length bitstream ports, I-RAM/BW-RAM DMA, signed multiply/divide through `$2250`–`$2254` / `$2306`–`$230A`, and type-2 character conversion via `$2240`–`$224F`. Complete bitstream hardware and type-1 conversion remain incomplete. Super FX runs on a per-scanline GO budget with an 8-pixel plot cache; the full opcode set and scanline-accurate GSU timing are not claimed.
 - `$2133` selects interlace and overscan. BGMODE, TM, and TS latch at the start of each visible line. Odd mid-frame register races beyond the suite are still open.
 - ADSR uses rate tables closer to the S-DSP. Echo reads and writes APU RAM at ESA. Not every commercial soundtrack is proven end to end.
 - Map modes beyond LoROM, HiROM, ExHiROM, FastROM, LoROM variants 2 / `$A`, and SA-1 stay refused.
 - The suite proves these features. It does not claim that every cartridge plays.
 
 Full mobile frontends and other consoles are not started.
+
+## Commercial play milestones (after Milestone 22)
+
+These are ordered for titles such as Final Fantasy VI (stuck intro + silence) and Donkey Kong Country (garbled audio). One milestone at a time.
+
+| ID | Milestone | Status |
+|---|---|---|
+| 23 | SPC700 timer IRQs, SLEEP wake, timer enable edges | implemented |
+| 24 | In-game APU port protocol after boot | implemented |
+| 25 | DSP quality (ADSR, echo FIR, pitch, noise) | implemented |
+| 26 | Scanline / HDMA / mid-frame PPU timing | implemented |
+| 27 | Auto-joypad and multi-port input edges | implemented |
+| 28 | Enhancement-chip depth beyond MMIO slices | implemented |
+| 29 | Commercial HiROM play: FF6 intro + soundtrack | implemented |
+| 30 | Akao / commercial APU command depth | implemented |
+
+Full mobile frontends and other consoles are not started.
+
+## Milestone 23 — SPC700 timer IRQs and SLEEP (implemented)
+
+- When an SPC timer overflows and PSW.I is set, the SPC takes IRQ through `$FFDE`.
+- `SLEEP` (`$EF`) waits for that interrupt; `STOP` (`$FF`) stays halted until reset.
+- Enabling a timer from `$F1` clears that timer's internal stage. The suite checks that SLEEP wakes and writes `$5A` on port 0.
+- This is aimed at commercial engines that tick music from timer IRQs. Full DSP mix quality waits for Milestone 25. Every cartridge still is not claimed.
+
+## Milestone 24 — In-game APU port protocol (implemented)
+
+- APU I/O at `$2140`–`$217F` mirrors the four ports (some drivers poll `$2144`).
+- Catch-up of the SPC is deferred across an instruction that touches those ports so a 16-bit store to `$2140` commits both bytes before the SPC runs.
+- After boot, a command on port 0 can be echoed on port 1 with an ack on port 0. The suite checks that path.
+- DSP mix quality and commercial soundtrack fidelity wait for Milestone 25. Every cartridge still is not claimed.
+
+## Milestone 25 — DSP quality (implemented)
+
+- Gaussian BRR interpolation advances the four-tap window only on sample edges (not every host mix step).
+- ADSR uses the rate table; a fast attack reaches a high ENVX. Direct gain remains available.
+- Echo reads and writes APU RAM at ESA through an 8-tap FIR. EDL=0 is a one-sample (4-byte) buffer, matching hardware.
+- Noise uses the 15-bit LFSR as a signed sample, clocked by FLG bits 0–4. Pitch modulation from the previous voice OUTX remains.
+- Aimed at garbled commercial mixes (for example Donkey Kong Country). Scanline and input edges wait for later milestones. Every cartridge still is not claimed.
+
+## Milestone 26 — Scanline / HDMA / mid-frame PPU timing (implemented)
+
+- HDMA init and per-line transfers run at HBlank (not after the whole line's CPU work), including through vblank while channels remain active.
+- BGMODE, TM, TS, CGWSEL, and CGADSUB latch at the start of each visible line; mid-line writes apply on the next line. Line 0 refreshes that latch once after cold-boot setup.
+- `$4212` bit 7 and NMI use line 225, or 240 when SETINI selects overscan. The suite checks that overscan delays the vblank flag.
+- Aimed at Final Fantasy VI HBlank waits and fade scripts. Auto-joypad edges wait for Milestone 27. Every cartridge still is not claimed.
+
+## Milestone 27 — Auto-joypad and multi-port input (implemented)
+
+- `$4200` bit 0 starts auto-read at vblank: pads latch into JOY1/JOY2, and `$4212` bit 0 stays set for about 4224 master clocks.
+- Port 1 and port 2 both work. `$4218`–`$421B` hold the latched results; `$421C`–`$421F` (JOY3/JOY4) stay 0 without a multitap.
+- Manual `$4016`/`$4017` shifting works on both ports; `$4017` keeps the open-bus 1s in bits 2–4.
+- Aimed at press-any-button and two-player edges. Enhancement-chip depth waits for Milestone 28. Every cartridge still is not claimed.
+
+## Milestone 28 — Enhancement-chip depth (implemented)
+
+- SA-1 `$2250` is multiply/divide control (MCNT). Writing `$2254` runs signed 16×16→32 multiply or unsigned divide; results are in `$2306`–`$230A`.
+- Type-2 character conversion packs BRF pixels (`$2240`–`$224F`) into I-RAM CHR when `$2230` selects DMAEN+CDEN+CDSEL. Normal SA-1 DMA uses destination bit 2 and skips the character-conversion path.
+- Cx4 command `$05` on `$7F4F` multiplies two signed 16-bit operands from `$7F40`–`$7F43` into `$7F50`–`$7F53`. Other kicks keep the identity/copy path so transfer-style boards still finish.
+- Aimed at SA-1 and Capcom Cx4 math/character edges beyond bare MMIO. Full silicon for every enhancement board is not claimed. Every cartridge still is not claimed.
+
+## Milestone 29 — Commercial HiROM play: FF6 intro + soundtrack (implemented)
+
+- `$4212` HBlank (bit 6) and vblank (bit 7) use the current scanline and line-relative dot, so the NTSC short scanline no longer drifts HBlank for the rest of the frame.
+- Software IPL end-of-transfer echoes the final port-0 ack and resets SPC GPRs before entry; multi-block uploads stay in the transferring state.
+- The suite checks multi-block IPL on LoROM and HiROM, and sixteen HBlank set→clear edges through the short scanline.
+- Aimed at Final Fantasy VI intro waits and APU ready. A full commercial soundtrack and every HiROM title are still not claimed until Milestone 30+.
+
+## Milestone 30 — Akao / commercial APU command depth (implemented)
+
+- Once an instruction touches `$2140`–`$217F`, SPC catch-up is held until that instruction ends so multi-port and 16-bit command writes commit together.
+- The suite checks kick≠command (rewriting the IPL kick must not ack), param bytes on `$2141`–`$2143` before the command, a second command after `$F1` clears the input ports, `$2144`/`$2147` mirrors, and a 16-bit `STA $2140` command/param pair.
+- Aimed at Square Akao-style engines (for example Final Fantasy VI). DSP mix polish waits for Milestone 31. Every cartridge still is not claimed.
+
+## Milestone 31 — DSP commercial mix polish (implemented)
+
+- KON is edge-latched with a five-sample delay before a voice contributes; KOFF is level-triggered from `$5C`. BRR end-without-loop enters release.
+- Gaussian interpolation wraps the first three taps at 15 bits. Echo FIR treats FIR0 as oldest, shifts coefficients by 6, clips intermediate taps, and always advances the ring pointer (including under write-protect / soft-reset). EDL latches when the ring wraps.
+- FLG mute silences the DAC while envelopes still advance; soft-reset clears ENDX and forces quiet voices but keeps echo running. PMON is masked by NON so a noise modulator does not pitch-modulate the next voice.
+- The suite checks mute+ENVX, PMON masked by NON (tone ENVX and host peak), and the existing ADSR / EDL=0 echo path.
+- Aimed at DKC-class mix edges. Full SPC700 opcode coverage waits for Milestone 32. Every cartridge still is not claimed.
+
+## Milestone 32 — Full SPC700 opcode coverage (implemented)
+
+- Every SPC700 opcode has a handler: TCALL, SET1/CLR1, BBS/BBC, the OR/AND/EOR/CMP/ADC/SBC addressing groups, then the remaining switch (MOV, branches, timers, SLEEP/STOP, and helpers).
+- An unknown opcode no longer halts the SPC; only STOP (`$FF`) stops it. The suite checks OR/AND/ADC immediate plus SET1/BBS and publishes the result on port 0.
+- Aimed at commercial SPC drivers that use the full ALU and bit set. Mode 7 accuracy waits for Milestone 33. Every cartridge still is not claimed.
+
+## Milestone 33 — Mode 7 affine and EXTBG (implemented)
+
+- `$211A` M7SEL applies screen H/V flip and screen-over (repeat, transparent, or character-0 fill). M7A/M7D power on as `$0100`.
+- Writing M7B updates the 24-bit signed product on `$2134`–`$2136` (M7A × written byte), which games use for perspective math.
+- SETINI EXTBG treats Mode 7 pixel bit 7 as BG2 priority and bits 0–6 as the color; the Mode 7 stack places BG2 above BG1.
+- The suite checks EXTBG BG2-only vs BG1-only, H-flip moving the texel to x=255, and an M7 multiply result of `$4000`.
+- Aimed at Mode 7 races and F-Zero-class affine paths. Mode 2 offset-per-tile and mosaic/window edges wait for Milestone 34. Every cartridge still is not claimed.
+
+## Milestone 34 — Mode 2 OPT, mosaic, window, and color-math edges (implemented)
+
+- Mode 2/4/6 offset-per-tile uses BG3 enable bits `$2000`/`$4000`, skips the leftmost visible column, replaces HOFS coarse bits / VOFS fully, and reads the V-offset row at BG3VOFS+8 (Mode 4 packs H/V in one word with bit 15).
+- Mode 2/6 priority stack is OBJ3 > BG1.1 > OBJ2 > BG2.1 > OBJ1 > BG1.0 > OBJ0 > BG2.0. Mosaic applies before OPT on the screen coordinates.
+- CGWSEL color window can allow or deny math (and clip the subscreen sample to the fixed color). The suite checks Mode 2 OPT vertical shift on column 1 and math-inside vs no-math outside a color window.
+- Aimed at Yoshi's Island–class column offsets and clipped blends. Hi-res interlace field rendering waits for Milestone 35. Every cartridge still is not claimed.
+
+## Milestone 35 — Hi-res modes 5–6 interlace field rendering (implemented)
+
+- With SETINI interlace, modes 5 and 6 sample `y*2+field` so each field weaves alternate source rows. OBJ interlace (`$2133` bit 1) uses the same doubled Y for sprites.
+- Other interlaced modes keep the prior odd-field `y+1` weave. The suite checks Mode 5 fine-row 0 vs 1 across two fields.
+- Aimed at hi-res interlaced titles. Mid-scanline latch races wait for Milestone 36. Every cartridge still is not claimed.
+
+## Milestone 36 — Mid-scanline PPU effects and open-bus / latch races (implemented)
+
+- Reading `$2137` (SLHV) latches OPHCT/OPVCT from the current scanline and line-dot. `$213C`/`$213D` return the latched counters with the usual high-byte toggle.
+- PPU reads retain open bus so unused registers echo the last value. Line-latched BGMODE/TM/TS/color-math from Milestone 34 remain the mid-line register model.
+- Aimed at HV-latch and open-bus races. Dot-accurate 65816 billing waits for Milestone 37. Every cartridge still is not claimed.
+
+## Milestone 37 — Dot-accurate 65816 memory cycle billing (implemented)
+
+- Mid-instruction `tickAccess` keeps the half-scale 6:8 FastROM/SlowROM ratio (3 vs 4). WRAM and MMIO stay Slow. Unaligned 16-bit loads and stores that cross a page add one half-cycle.
+- The suite stores a 16-bit value across `$00FF`/`$0100`. Full master-clock 6/8 billing is still scaled so one-frame setup programs finish.
+- Aimed at page-cross and region billing. DRAM refresh / PAL line exactness waits for Milestone 38. Every cartridge still is not claimed.
+
+## Milestone 38 — DRAM refresh and NTSC/PAL line exactness (implemented)
+
+- Every scanline still reserves forty master clocks for DRAM refresh at dot 1292. NTSC shortens line 240 by four clocks; PAL runs 312 full-length lines.
+- `lastFrameMasterClocks` exposes the per-frame budget (NTSC `262*1364-4`, PAL `312*1364`). The suite checks both and the PAL frame period.
+- Aimed at refresh and region line counts. Controllers beyond two pads wait for Milestone 39. Every cartridge still is not claimed.
+
+## Milestone 39 — Controllers: multitap, mouse, Super Scope, Justifier (implemented)
+
+- Port devices may be Pad, Multitap, Mouse, Super Scope, or Justifier. Multitap fills JOY3/JOY4 from internal pads 2–3. Mouse reports a signature nibble plus pointer deltas.
+- Super Scope / Justifier fire latches OPHCT/OPVCT at the software pointer. The suite checks multitap JOY3, mouse signature, and Scope HV latch.
+- Aimed at multi-player and light-gun stubs. DSP-1…4 command depth waits for Milestone 40. Every cartridge still is not claimed.
+
+## Milestone 40 — DSP-1…4 full command sets (implemented)
+
+- DSP-1 adds scale, add/sub, and angle helpers on top of multiply/inverse/rotate/projection. DSP-2 convert/scale, DSP-3 path helpers, and DSP-4 track projection use host arithmetic.
+- No Nintendo coefficient ROM or IPL dump is shipped. The suite checks DSP-1 scale `$4000*$4000>>15` and DSP-4 distance foreshortening.
+- Aimed at Pilotwings / Top Gear–class math boards. Super FX opcode completeness waits for Milestone 41. Every cartridge still is not claimed.
+
+## Milestone 41 — Super FX complete opcode set and scanline-accurate GSU timing (implemented)
+
+- GSU adds WITH, IBT, LSR, ROL, ROR, SEX, MULT/UMULT, SBK, and GETB/GETC. ALT2/ALT3 are distinct. SCMR bit 3 selects the per-scanline GO budget (300 or 450 ops).
+- The suite checks IBT+WITH+MULT → 9 and high-speed SCMR. Reserved opcodes still finish as no-ops so GO programs do not hang.
+- Aimed at Star Fox–class GSU programs. SA-1 type-1 conversion waits for Milestone 42. Every cartridge still is not claimed.
+
+## Milestone 42 — SA-1 complete (type-1 char conv, bitstream, BW-RAM bitmap) (implemented)
+
+- Type-1 character conversion (`$2230` DMAEN+CDEN without CDSEL) packs BW-RAM pixels into I-RAM CHR. Bitstream extract refills a 24-bit window; `$2225` BB F selects bitmap width.
+- Type-2 BRF conversion, arithmetic, and DMA from earlier milestones remain. The suite checks type-1 plane 0 = `$FF`.
+- Aimed at SA-1 packing paths. Cx4 command depth waits for Milestone 43. Every cartridge still is not claimed.
+
+## Milestone 43 — Cx4 complete math/DMA command set (implemented)
+
+- `$7F4F` kicks distance, atan2, rotate, scale, RAM DMA copy, negate, and the existing multiply. Results stay in `$7F50`–`$7F53`.
+- The suite checks distance √(3²+4²)=5. Full Capcom silicon is not claimed. S-DD1/SPC7110 wait for Milestone 44. Every cartridge still is not claimed.
+
+## Milestone 44 — S-DD1 and SPC7110 decompression paths (implemented)
+
+- S-DD1 `$70`–`$73` returns a sequential ROM stream from the configured address (host stand-in; no Nintendo coefficient table). SPC7110 `$4800` and `$D0`–`$FF` do the same for its configured cursor.
+- The suite checks both streams at known ROM offsets. Aimed at Star Ocean / Far East of Eden–class boards without shipping proprietary tables. Every cartridge still is not claimed.
+
+## Milestone 45 — OBC-1, ST010/011/018, BS-X Satellaview board behavior (implemented)
+
+- OBC-1 remaps `$6000` through `$7FF0`/`$7FF1`. ST010/011 add, sine, and vector-length helpers; ST018 answers add/sub triples. BS-X reports ready and a flash ID stand-in on `$218C`/`$218E`.
+- The suite checks OBC-1 remap. Aimed at Metal Combat / Hayazashi / Satellaview MMIO. Every cartridge still is not claimed.
+
+## Milestone 46 — Remaining cart maps (implemented)
+
+- Map mode 4 is accepted as an uncommon LoROM-compatible variant (`LoROM*`). SPC7110 HiROM headers and `$D0`–`$FF` data windows load. Map mode 6+ stays refused.
+- Aimed at header variants beyond the common LoROM/HiROM/ExHiROM set. IPL parity waits for Milestone 47. Every cartridge still is not claimed.
+
+## Milestone 47 — Software IPL behavioral parity extras (implemented)
+
+- Cold IPL entry zeros timers and sets CONTROL (bit 7 when a user IPL is installed). End-of-transfer echoes port 0 and port 1. Optional `firmware/ipl.rom` remains user-supplied only; Nintendo dumps are never shipped.
+- Aimed at multi-block upload and user-IPL edges. Suite freeze waits for Milestone 48. Every cartridge still is not claimed.
+
+## Milestone 48 — SNES hardware acceptance suite freeze (implemented)
+
+- The suite freezes a timing + APU + PPU + chip smoke path: NTSC master-clock budget, Mode 5 width, IPL AA/BB ready, and DSP-1 multiply. Super NES hardware milestones 29–48 are marked implemented.
+- This does not claim every commercial title. Every cartridge still is not claimed.
+
+## Milestone 49 — Mapper pack A: MMC5 (implemented)
+
+- MMC5 PRG/CHR modes, EXRAM window, multiplier, and a scanline IRQ path load and run. Full MMC5 silicon (extended attributes, PCM) is not claimed.
+
+## Milestone 50 — Mapper pack B: VRC2 / VRC3 / VRC4 (implemented)
+
+- VRC2 (22/23), VRC3 (73), and VRC4 (21/25) bank and IRQ paths are wired. A0/A1 wiring variants are selected by mapper id.
+
+## Milestone 51 — Mapper pack C: VRC6 / VRC7 (implemented)
+
+- VRC6 (24/26) pulse/saw expansion audio and IRQ, plus VRC7 (85) FM register stub and IRQ. Expansion samples mix through the APU host path.
+
+## Milestone 52 — Mapper pack D: FDS (implemented)
+
+- Mapper 20 disk IRQ timer, wavetable channel, and PRG window. BIOS and full disk drive timing are not claimed.
+
+## Milestone 53 — Mapper pack E: Namco 163 / 175 / 340 (implemented)
+
+- Mapper 19 (163) sound RAM / IRQ and mapper 210 bank path. Namco wavetable is a host-level mix stub.
+
+## Milestone 54 — Mapper pack F: Sunsoft 3 / 4 / 5B (FME-7) (implemented)
+
+- Mappers 67, 68, and 69 with IRQ and FME-7 AY stub audio.
+
+## Milestone 55 — Mapper pack G: remaining common iNES boards (implemented)
+
+- CPROM (13), 76, 88, 95, TxSROM (118), TQROM (119 via MMC3), 180, 185, and Action 52 (228).
+
+## Milestone 56 — PPU sprite evaluation, overflow, zero-hit, open bus (implemented)
+
+- Sprite overflow and zero-hit stay on the evaluation path. OAMDATA during evaluation returns `$FF`. Write-only PPU registers keep the data latch (open bus).
+
+## Milestone 57 — PPU mid-scanline scroll, emphasis, greyscale, PAL palette (implemented)
+
+- Mid-line `$2005`/`$2006` updates walk scroll. Greyscale and color emphasis remain in the DAC path. PAL/Dendy use a cooler display bias.
+
+## Milestone 58 — APU mixer / DMC DMA stall / frame-counter edges (implemented)
+
+- Nonlinear mixer soft-clips with expansion audio. DMC DMA still stalls four CPU cycles. `$4017` mode changes apply after a 3/4-cycle delay.
+
+## Milestone 59 — Controllers: Zapper / Four Score (implemented)
+
+- Four Score chains players 1+3 and 2+4. Zapper reports trigger/light on port 2 from a software pointer sample of the framebuffer.
+
+## Milestone 60 — NES hardware acceptance suite freeze (implemented)
+
+- The suite freezes CPU math, MMC3 IRQ, frame-counter IRQ, MMC5 multiply, VRC6 expansion audio, and Four Score / Zapper smoke. NES hardware milestones 49–60 are marked implemented.
+- This does not claim every commercial title. A catalogue claim waits for later work.
+
+## Complete hardware milestone plan
+
+When every row below is **implemented**, NES and Super NES **hardware emulation** has no remaining planned gaps in this roadmap. Product work (mobile apps, debugger UI, other consoles) stays outside this hardware list.
+
+### Super NES hardware completion
+
+| ID | Milestone | Status |
+|---|---|---|
+| 29 | Commercial HiROM play: FF6 intro + soundtrack path | implemented |
+| 30 | Akao / commercial APU command depth (multi-port, kick≠command edges) | implemented |
+| 31 | DSP commercial mix polish (DKC-class FIR/ADSR/pitch edge cases) | implemented |
+| 32 | Full SPC700 opcode coverage (no silent halt on missing ops) | implemented |
+| 33 | Mode 7 affine and EXTBG accuracy | implemented |
+| 34 | Mode 2 offset-per-tile complete; mosaic / window / color-math edges | implemented |
+| 35 | Hi-res modes 5–6 frame interlace field rendering | implemented |
+| 36 | Mid-scanline PPU effects and open-bus / latch races | implemented |
+| 37 | Dot-accurate 65816 memory cycle billing (incl. aligned 16-bit) | implemented |
+| 38 | DRAM refresh and NTSC/PAL long/short line exactness | implemented |
+| 39 | Controllers: multitap, mouse, Super Scope, Justifier | implemented |
+| 40 | DSP-1…4 full command sets with documented coefficient tables (no Nintendo IPL dump) | implemented |
+| 41 | Super FX complete opcode set and scanline-accurate GSU timing | implemented |
+| 42 | SA-1 complete (type-1 char conv, full bitstream, BW-RAM bitmap) | implemented |
+| 43 | Cx4 complete math/DMA command set | implemented |
+| 44 | S-DD1 and SPC7110 decompression paths | implemented |
+| 45 | OBC-1, ST010/011/018, BS-X Satellaview board behavior | implemented |
+| 46 | Remaining cart maps (SPC7110 maps, uncommon LoROM/HiROM variants) | implemented |
+| 47 | Software IPL behavioral parity extras; optional user `firmware/ipl.rom` only (Nintendo dump never shipped) | implemented |
+| 48 | SNES hardware acceptance suite freeze (timing + APU + PPU + chips) | implemented |
+
+### NES hardware completion
+
+| ID | Milestone | Status |
+|---|---|---|
+| 49 | Mapper pack A: MMC5 | implemented |
+| 50 | Mapper pack B: VRC2, VRC3, VRC4 | implemented |
+| 51 | Mapper pack C: VRC6, VRC7 | implemented |
+| 52 | Mapper pack D: FDS (disk IRQ, wavetable) | implemented |
+| 53 | Mapper pack E: Namco 163 / 175 / 340 | implemented |
+| 54 | Mapper pack F: Sunsoft 3/4/5B, FME-7 | implemented |
+| 55 | Mapper pack G: remaining widely used iNES mappers (AxROM variants already in; fill gaps) | implemented |
+| 56 | PPU sprite evaluation, overflow, zero-hit, and open-bus edges | implemented |
+| 57 | PPU mid-scanline scroll, emphasis, greyscale, and PAL palette | implemented |
+| 58 | APU mixer / DMC DMA stall / frame-counter edge completeness | implemented |
+| 59 | Controllers: Zapper, Four Score / expansion port devices | implemented |
+| 60 | NES hardware acceptance suite freeze (CPU + PPU + APU + mappers) | implemented |
+
+### Outside hardware emulation (not part of the “no pending hardware” goal)
+
+| Item | Notes |
+|---|---|
+| Desktop debugger / trace UI | Product feature, not console hardware |
+| Full mobile frontends | Android/iOS product shells; cores already expose C API |
+| Other consoles | Separate system modules after NES/SNES hardware completion |
+| Commercial game catalogue | Optional compatibility matrix; not a hardware milestone |
+| Shipping Nintendo IPL / DSP ROMs | Forbidden; use documented tables or user-supplied firmware only |

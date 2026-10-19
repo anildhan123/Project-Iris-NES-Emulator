@@ -33,6 +33,7 @@ void Expansion::power() {
     byteIndex_ = 0;
     command_ = 0;
     sdd1Address_ = 0;
+    spc7110Address_ = 0;
     bitstream_ = 0;
     bitCount_ = 0;
     waitingOutput_ = false;
@@ -41,6 +42,13 @@ void Expansion::power() {
 void Expansion::setChip(Chip chip) { chip_ = chip; }
 
 void Expansion::bind(const std::vector<std::uint8_t>* rom) { rom_ = rom; }
+
+std::uint8_t Expansion::romAt(std::uint32_t address) const {
+    if (rom_ == nullptr || rom_->empty()) {
+        return 0;
+    }
+    return (*rom_)[address % rom_->size()];
+}
 
 bool Expansion::read(std::uint8_t bank, std::uint16_t address, bool hiRom, std::uint8_t& value) {
     const std::uint8_t mapped = static_cast<std::uint8_t>(bank & 0x7F);
@@ -61,8 +69,9 @@ bool Expansion::read(std::uint8_t bank, std::uint16_t address, bool hiRom, std::
         return false;
     }
     if (chip_ == Chip::Sdd1) {
+        // Decompress window: host stand-in returns sequential ROM bytes (no Nintendo table).
         if (mapped >= 0x70 && mapped <= 0x73 && address < 0x8000) {
-            value = 0;
+            value = romAt(sdd1Address_++);
             return true;
         }
         if ((mapped <= 0x3F || mapped >= 0x80) && address >= 0x4800 && address <= 0x4807) {
@@ -72,7 +81,13 @@ bool Expansion::read(std::uint8_t bank, std::uint16_t address, bool hiRom, std::
         return false;
     }
     if (chip_ == Chip::Spc7110) {
-        if (address >= 0x4800 && address <= 0x483F) {
+        if (address == 0x4800) {
+            // Data port: sequential ROM stream configured by $4805–$4807.
+            value = romAt(spc7110Address_++);
+            regs_[0] = value;
+            return true;
+        }
+        if (address >= 0x4801 && address <= 0x483F) {
             value = regs_[address - 0x4800];
             return true;
         }
@@ -80,15 +95,24 @@ bool Expansion::read(std::uint8_t bank, std::uint16_t address, bool hiRom, std::
             value = ram_[address & 0x1FFF];
             return true;
         }
+        // SPC7110 data ROM window $D0–$FF (HiROM-style linear map).
+        if (bank >= 0xD0) {
+            const std::uint32_t offset = (static_cast<std::uint32_t>(bank - 0xD0) << 16) | address;
+            value = romAt(offset);
+            return true;
+        }
         return false;
     }
     if (chip_ == Chip::Obc1) {
-        if (mapped <= 0x3F && address >= 0x6000 && address < 0x8000) {
-            value = ram_[(address - 0x6000) & 0x1FFF];
-            return true;
-        }
         if (mapped <= 0x3F && address >= 0x7FF0 && address <= 0x7FF7) {
             value = regs_[address - 0x7FF0];
+            return true;
+        }
+        if (mapped <= 0x3F && address >= 0x6000 && address < 0x8000) {
+            // OBC-1 remaps $6000 through the pointer in $7FF0/$7FF1.
+            const std::uint16_t base = static_cast<std::uint16_t>((regs_[0] | (regs_[1] << 8)) & 0x1F80);
+            const std::uint16_t offset = static_cast<std::uint16_t>((address - 0x6000) & 0x7F);
+            value = ram_[(base + offset) & 0x1FFF];
             return true;
         }
         return false;
@@ -122,7 +146,14 @@ bool Expansion::read(std::uint8_t bank, std::uint16_t address, bool hiRom, std::
     }
     if (chip_ == Chip::Bsx) {
         if (mapped == 0x00 && address >= 0x2188 && address <= 0x219F) {
-            value = regs_[address - 0x2188];
+            // $218C bit 0 reports flash/satellite ready; others echo latched regs.
+            if (address == 0x218C) {
+                value = static_cast<std::uint8_t>(regs_[address - 0x2188] | 0x01);
+            } else if (address == 0x218E) {
+                value = 0x20;  // FLASH manufacturer ID stand-in (not a Nintendo dump).
+            } else {
+                value = regs_[address - 0x2188];
+            }
             return true;
         }
         if (mapped >= 0x80 && mapped <= 0xBF && address < 0x8000) {
@@ -143,13 +174,7 @@ bool Expansion::write(std::uint8_t bank, std::uint16_t address, bool hiRom, std:
         if (mapped <= 0x3F && address >= 0x7F40 && address < 0x7F60) {
             regs_[address - 0x7F40] = value;
             if (address == 0x7F4F) {
-                // Kick: identity / copy so Mega Man X2/X3 style transfers can finish.
-                output_[0] = static_cast<std::int16_t>(regs_[0] | (regs_[1] << 8));
-                output_[1] = static_cast<std::int16_t>(regs_[2] | (regs_[3] << 8));
-                outputCount_ = 2;
-                outputIndex_ = 0;
-                waitingOutput_ = true;
-                regs_[0x0E] = 0;
+                runCx4(value);
             }
             return true;
         }
@@ -162,7 +187,7 @@ bool Expansion::write(std::uint8_t bank, std::uint16_t address, bool hiRom, std:
     if (chip_ == Chip::Sdd1) {
         if ((mapped <= 0x3F || mapped >= 0x80) && address >= 0x4800 && address <= 0x4807) {
             regs_[address - 0x4800] = value;
-            if (address == 0x4801) {
+            if (address == 0x4801 || address == 0x4805) {
                 sdd1Address_ = (static_cast<std::uint32_t>(regs_[2]) << 16) | (static_cast<std::uint32_t>(regs_[3]) << 8) |
                                regs_[4];
             }
@@ -173,6 +198,10 @@ bool Expansion::write(std::uint8_t bank, std::uint16_t address, bool hiRom, std:
     if (chip_ == Chip::Spc7110) {
         if (address >= 0x4800 && address <= 0x483F) {
             regs_[address - 0x4800] = value;
+            if (address == 0x4804 || address == 0x4807) {
+                spc7110Address_ = (static_cast<std::uint32_t>(regs_[5]) << 16) | (static_cast<std::uint32_t>(regs_[6]) << 8) |
+                                  regs_[7];
+            }
             return true;
         }
         if (mapped >= 0x50 && mapped <= 0x5F) {
@@ -182,12 +211,14 @@ bool Expansion::write(std::uint8_t bank, std::uint16_t address, bool hiRom, std:
         return false;
     }
     if (chip_ == Chip::Obc1) {
-        if (mapped <= 0x3F && address >= 0x6000 && address < 0x8000) {
-            ram_[(address - 0x6000) & 0x1FFF] = value;
-            return true;
-        }
         if (mapped <= 0x3F && address >= 0x7FF0 && address <= 0x7FF7) {
             regs_[address - 0x7FF0] = value;
+            return true;
+        }
+        if (mapped <= 0x3F && address >= 0x6000 && address < 0x8000) {
+            const std::uint16_t base = static_cast<std::uint16_t>((regs_[0] | (regs_[1] << 8)) & 0x1F80);
+            const std::uint16_t offset = static_cast<std::uint16_t>((address - 0x6000) & 0x7F);
+            ram_[(base + offset) & 0x1FFF] = value;
             return true;
         }
         return false;
@@ -222,10 +253,76 @@ bool Expansion::write(std::uint8_t bank, std::uint16_t address, bool hiRom, std:
     return false;
 }
 
+void Expansion::runCx4(std::uint8_t command) {
+    const auto a = static_cast<std::int16_t>(regs_[0] | (regs_[1] << 8));
+    const auto b = static_cast<std::int16_t>(regs_[2] | (regs_[3] << 8));
+    const auto c = static_cast<std::int16_t>(regs_[4] | (regs_[5] << 8));
+    std::int32_t result0 = a;
+    std::int32_t result1 = b;
+    if (command == 0x05) {
+        const auto product = static_cast<std::int32_t>(a) * static_cast<std::int32_t>(b);
+        result0 = product & 0xFFFF;
+        result1 = (product >> 16) & 0xFFFF;
+    } else if (command == 0x00) {
+        result0 = a;
+        result1 = b;
+    } else if (command == 0x01) {
+        result0 = -a;
+        result1 = -b;
+    } else if (command == 0x02) {
+        const double length = std::sqrt(static_cast<double>(a) * a + static_cast<double>(b) * b);
+        result0 = clamp16(static_cast<int>(std::lround(length)));
+        result1 = 0;
+    } else if (command == 0x03) {
+        result0 = clamp16(static_cast<int>(std::lround(std::atan2(b, a) * 65536.0 / 6.283185307179586)));
+        result1 = 0;
+    } else if (command == 0x07) {
+        const double angle = static_cast<double>(static_cast<std::uint16_t>(c)) * 6.283185307179586 / 65536.0;
+        const double cosine = std::cos(angle);
+        const double sine = std::sin(angle);
+        result0 = clamp16(static_cast<int>(std::lround(a * cosine - b * sine)));
+        result1 = clamp16(static_cast<int>(std::lround(a * sine + b * cosine)));
+    } else if (command == 0x0D) {
+        // DMA-style copy inside Cx4 RAM: source=regs[0..1], dest=regs[2..3], count=regs[4].
+        const int source = (regs_[0] | (regs_[1] << 8)) & 0x1FFF;
+        const int dest = (regs_[2] | (regs_[3] << 8)) & 0x1FFF;
+        const int count = regs_[4] == 0 ? 256 : regs_[4];
+        for (int index = 0; index < count; ++index) {
+            ram_[(dest + index) & 0x1FFF] = ram_[(source + index) & 0x1FFF];
+        }
+        result0 = count;
+        result1 = 0;
+    } else if (command == 0x10) {
+        const int scale = c == 0 ? 1 : c;
+        result0 = clamp16(a * 256 / scale);
+        result1 = clamp16(b * 256 / scale);
+    } else {
+        result0 = a;
+        result1 = b;
+    }
+    regs_[0x10] = static_cast<std::uint8_t>(result0);
+    regs_[0x11] = static_cast<std::uint8_t>(result0 >> 8);
+    regs_[0x12] = static_cast<std::uint8_t>(result1);
+    regs_[0x13] = static_cast<std::uint8_t>(result1 >> 8);
+    if (command == 0x05) {
+        const auto product = static_cast<std::int32_t>(a) * static_cast<std::int32_t>(b);
+        regs_[0x10] = static_cast<std::uint8_t>(product);
+        regs_[0x11] = static_cast<std::uint8_t>(product >> 8);
+        regs_[0x12] = static_cast<std::uint8_t>(product >> 16);
+        regs_[0x13] = static_cast<std::uint8_t>(product >> 24);
+    }
+    output_[0] = static_cast<std::int16_t>(result0);
+    output_[1] = static_cast<std::int16_t>(result1);
+    outputCount_ = 2;
+    outputIndex_ = 0;
+    waitingOutput_ = true;
+    regs_[0x0E] = 0;
+}
+
 void Expansion::acceptWord(std::uint16_t word) {
     if (inputNeed_ == 0) {
         command_ = static_cast<std::uint8_t>(word);
-        inputNeed_ = chip_ == Chip::St018 ? 3 : 2;
+        inputNeed_ = chip_ == Chip::St018 ? 3 : (command_ == 0x08 ? 3 : 2);
         inputCount_ = 0;
         return;
     }
@@ -246,21 +343,37 @@ void Expansion::execute() {
         if (command_ == 0x01 && inputCount_ >= 2) {
             output_[0] = clamp16((static_cast<int>(input_[0]) * static_cast<int>(input_[1])) >> 15);
             outputCount_ = 1;
+        } else if (command_ == 0x02 && inputCount_ >= 2) {
+            output_[0] = clamp16(static_cast<int>(input_[0]) + static_cast<int>(input_[1]));
+            outputCount_ = 1;
         } else if (command_ == 0x04 && inputCount_ >= 1) {
             const double angle = static_cast<double>(static_cast<std::uint16_t>(input_[0])) * 6.283185307179586 / 65536.0;
             output_[0] = clamp16(static_cast<int>(std::lround(std::sin(angle) * 32767.0)));
             output_[1] = clamp16(static_cast<int>(std::lround(std::cos(angle) * 32767.0)));
             outputCount_ = 2;
+        } else if (command_ == 0x08 && inputCount_ >= 3) {
+            const double x = input_[0];
+            const double y = input_[1];
+            const double z = input_[2];
+            output_[0] = clamp16(static_cast<int>(std::lround(std::sqrt(x * x + y * y + z * z))));
+            outputCount_ = 1;
         } else {
             output_[0] = inputCount_ > 0 ? input_[0] : 0;
             output_[1] = 0;
             outputCount_ = 2;
         }
     } else if (chip_ == Chip::St018) {
-        output_[0] = inputCount_ > 0 ? input_[0] : 0;
-        output_[1] = inputCount_ > 1 ? input_[1] : 0;
-        output_[2] = inputCount_ > 2 ? input_[2] : 0;
-        outputCount_ = 3;
+        if (command_ == 0x01 && inputCount_ >= 2) {
+            output_[0] = clamp16(static_cast<int>(input_[0]) + static_cast<int>(input_[1]));
+            output_[1] = clamp16(static_cast<int>(input_[0]) - static_cast<int>(input_[1]));
+            output_[2] = 0;
+            outputCount_ = 3;
+        } else {
+            output_[0] = inputCount_ > 0 ? input_[0] : 0;
+            output_[1] = inputCount_ > 1 ? input_[1] : 0;
+            output_[2] = inputCount_ > 2 ? input_[2] : 0;
+            outputCount_ = 3;
+        }
     }
     waitingOutput_ = outputCount_ > 0;
     inputNeed_ = 0;
@@ -338,6 +451,7 @@ bool Expansion::loadState(iris::ByteReader& in) {
     bitstream_ = bitstream;
     bitCount_ = bitCount;
     waitingOutput_ = waitingOutput;
+    spc7110Address_ = 0;
     return true;
 }
 

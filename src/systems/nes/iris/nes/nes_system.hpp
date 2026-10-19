@@ -35,6 +35,8 @@ public:
     [[nodiscard]] FrameView frame() const override;
     [[nodiscard]] AudioView audio() const override;
     void setController(int port, std::uint8_t buttons) override;
+    void setInputDevice(int port, ControllerDevice device);
+    void setPointer(int x, int y);
     [[nodiscard]] SystemInfo info() const override;
     bool describeContent(
         const std::filesystem::path& path, ContentDescription& description, std::string& error) const override;
@@ -73,10 +75,14 @@ private:
     int ppuDenominator_ = 1;
     int ppuAccum_ = 0;
     int dmcStall_ = 0;
+    int pointerX_ = 0;
+    int pointerY_ = 0;
     std::uint64_t cpuCycles_ = 0;
     bool loaded_ = false;
     bool paused_ = false;
     bool nmiLevel_ = false;
+
+    void refreshZapperLight();
 };
 
 [[nodiscard]] std::unique_ptr<IEmulatedSystem> createNesSystem();

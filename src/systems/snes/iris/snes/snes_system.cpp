@@ -10,7 +10,7 @@ namespace iris::systems::snes {
 namespace {
 
 constexpr int kDotsPerLine = 1364;
-constexpr int kVblankLine = 225;
+constexpr int kHblankDot = 1096;
 constexpr std::int64_t kNtscFrameNs = 1364LL * 262 * 1000000000LL / 21477272LL;
 constexpr std::int64_t kPalFrameNs = 1364LL * 312 * 1000000000LL / 21281370LL;
 
@@ -176,7 +176,7 @@ void SnesSystem::runFrame() {
     for (int line = 0; line < lines; ++line) {
         frameCycles += line == shortLine ? kDotsPerLine - 4 : kDotsPerLine;
     }
-    const int nmiCycle = kDotsPerLine * kVblankLine;
+    lastFrameMasterClocks_ = frameCycles;
     const int clock = standard_ == TvStandard::Pal ? 21281370 : 21477272;
     bus_.beginFrame();
     int cycles = 0;
@@ -191,20 +191,45 @@ void SnesSystem::runFrame() {
         constexpr int kRefreshStart = 1292;
         constexpr int kRefreshClocks = 40;
         bool hIrqDone = false;
+        bool hdmaDone = false;
+        // Latch line-sensitive PPU regs before CPU/HDMA work on this line.
+        if (line < bus_.ppu().height()) {
+            bus_.ppu().beginLine(line);
+        }
+        const auto syncBus = [&]() { bus_.setCycle(cycles, cycles - lineStart, line); };
+        // Absolute start of the vblank line (NTSC short line is 240, after line 225).
+        const int vblankStart = kDotsPerLine * bus_.vblankLine();
         while (cycles < lineEnd && cycles < frameCycles && !cpu_.stopped()) {
             const int dot = cycles - lineStart;
+            // HDMA runs at HBlank so the rest of HBlank (and the next line latch)
+            // sees the new registers. Continues through vblank while channels last.
+            if (!hdmaDone && dot >= kHblankDot) {
+                if (!hdmaStarted) {
+                    cycles += bus_.beginHdma();
+                    hdmaStarted = true;
+                }
+                cycles += bus_.transferHdma();
+                if (cycles > lineEnd) {
+                    cycles = lineEnd;
+                }
+                syncBus();
+                hdmaDone = true;
+                const int caught = cycles < frameCycles ? cycles : frameCycles;
+                bus_.catchUpApu(caught, clock);
+                continue;
+            }
             if (dot >= kRefreshStart && dot < kRefreshStart + kRefreshClocks) {
                 cycles = lineStart + kRefreshStart + kRefreshClocks;
                 if (cycles > lineEnd) {
                     cycles = lineEnd;
                 }
-                bus_.setCycle(cycles);
+                syncBus();
                 const int caught = cycles < frameCycles ? cycles : frameCycles;
                 bus_.catchUpApu(caught, clock);
                 continue;
             }
-            bus_.setCycle(cycles);
-            if (!signaled && cycles >= nmiCycle) {
+            syncBus();
+            if (!signaled && line >= bus_.vblankLine()) {
                 bus_.raiseNmi();
                 if (bus_.nmiEnabled()) {
                     cpu_.signalNmi();
@@ -233,8 +258,12 @@ void SnesSystem::runFrame() {
             }
             if (cpu_.parked()) {
                 int wake = lineEnd;
-                if (!signaled && nmiCycle > cycles && nmiCycle < wake) {
-                    wake = nmiCycle;
+                if (!signaled && vblankStart > cycles && vblankStart < wake) {
+                    wake = vblankStart;
+                }
+                const int hdmaAt = lineStart + kHblankDot;
+                if (!hdmaDone && hdmaAt > cycles && hdmaAt < wake) {
+                    wake = hdmaAt;
                 }
                 const int irqAt = lineStart + bus_.irqDot() * 4;
                 const bool irqDue = (vOn && !hOn && !vIrqDone && line >= bus_.irqLine()) ||
@@ -248,12 +277,13 @@ void SnesSystem::runFrame() {
                 }
                 if (wake > cycles) {
                     cycles = wake;
+                    syncBus();
                     const int caught = cycles < frameCycles ? cycles : frameCycles;
                     bus_.catchUpApu(caught, clock);
                     continue;
                 }
             }
-            bus_.setCycle(cycles);
+            syncBus();
             const int before = bus_.cycle();
             const int used = cpu_.step(bus_);
             if (used == 0 && cpu_.stopped()) {
@@ -264,15 +294,21 @@ void SnesSystem::runFrame() {
                 cycles = bus_.cycle();
             } else {
                 cycles += used > 0 ? used : 1;
-                bus_.setCycle(cycles);
+                syncBus();
             }
+            // After the full instruction so 16-bit / multi-port $2140 stores are visible.
             bus_.pollApuBoot();
+            bus_.endApuIoInstruction();
             cycles += bus_.takeDmaStall();
-            bus_.setCycle(cycles);
+            syncBus();
             if (cpu_.consumeSpin() && cycles < lineEnd) {
                 int wake = lineEnd;
-                if (!signaled && nmiCycle > cycles && nmiCycle < wake) {
-                    wake = nmiCycle;
+                if (!signaled && vblankStart > cycles && vblankStart < wake) {
+                    wake = vblankStart;
+                }
+                const int hdmaAt = lineStart + kHblankDot;
+                if (!hdmaDone && hdmaAt > cycles && hdmaAt < wake) {
+                    wake = hdmaAt;
                 }
                 const int irqAt = lineStart + bus_.irqDot() * 4;
                 const bool irqDue = (vOn && !hOn && !vIrqDone && line >= bus_.irqLine() && cycles >= lineStart) ||
@@ -301,9 +337,18 @@ void SnesSystem::runFrame() {
                 bus_.setSa1Access(false);
             }
         }
+        // If the CPU never reached HBlank (parked/stopped), still run HDMA once.
+        if (!hdmaDone) {
+            if (!hdmaStarted) {
+                cycles += bus_.beginHdma();
+                hdmaStarted = true;
+            }
+            cycles += bus_.transferHdma();
+            syncBus();
+        }
         // Run the Super FX for this scanline so GO work stays tied to the picture.
         bus_.stepGsu(bus_.gsuBudgetForLine());
-        if (!signaled && cycles >= nmiCycle) {
+        if (!signaled && line >= bus_.vblankLine()) {
             bus_.raiseNmi();
             if (bus_.nmiEnabled()) {
                 cpu_.signalNmi();
@@ -311,14 +356,13 @@ void SnesSystem::runFrame() {
             signaled = true;
         }
         if (line < bus_.ppu().height()) {
-            if (!hdmaStarted) {
-                cycles += bus_.beginHdma();
-                hdmaStarted = true;
+            // Line 0 often holds cold boot PPU setup before the first HBlank. Refresh
+            // that latch once so the first picture sees it; later lines keep the
+            // start-of-line snapshot (mid-line writes apply next line). Do not call
+            // beginLine again here — that would toggle the interlace field twice.
+            if (line == 0) {
+                bus_.ppu().relatchLine();
             }
-            cycles += bus_.transferHdma();
-            // Latch BGMODE/TM/TS after this line's CPU work, then draw. Mid-line
-            // register races finer than that are still approximate.
-            bus_.ppu().beginLine(line);
             bus_.drawLine(line);
         }
         lineStart = lineEnd;
@@ -346,9 +390,15 @@ AudioView SnesSystem::audio() const {
 }
 
 void SnesSystem::setController(int port, std::uint8_t buttons) {
-    if (port == 0) {
-        bus_.setController(buttons);
-    }
+    bus_.setController(port, buttons);
+}
+
+void SnesSystem::setInputDevice(int port, Bus::InputDevice device) {
+    bus_.setInputDevice(port, device);
+}
+
+void SnesSystem::setPointer(int x, int y) {
+    bus_.setPointer(x, y);
 }
 
 std::string SnesSystem::detailText() const {

@@ -80,9 +80,9 @@ TEST_CASE("an unsupported mapper is refused without dropping a loaded game") {
     std::string error;
     REQUIRE(nes.loadBytes(playable.data(), playable.size(), "nrom", error));
 
-    auto bytes = nromHeader(1, 1, 0x50);
-    REQUIRE_FALSE(nes.loadBytes(bytes.data(), bytes.size(), "mmc5", error));
-    REQUIRE(error.find("Mapper 5") != std::string::npos);
+    auto bytes = nromHeader(1, 1, 0x30, 0x60);  // mapper 99
+    REQUIRE_FALSE(nes.loadBytes(bytes.data(), bytes.size(), "unsupported", error));
+    REQUIRE(error.find("Mapper 99") != std::string::npos);
     REQUIRE(nes.loaded());
     REQUIRE(nes.info().detail == "NROM, NTSC");
 }

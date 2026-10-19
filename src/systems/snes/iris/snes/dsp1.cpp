@@ -116,7 +116,7 @@ void Dsp1::execute() {
     outputIndex_ = 0;
     byteIndex_ = 0;
     if (chip_ == Chip::Dsp2) {
-        // Dungeon Master bitmap convert: expand a bit count into opaque words.
+        // Dungeon Master bitmap convert and scale helpers (host arithmetic, no ROM dump).
         if (command_ == 0x01 && inputCount_ >= 1) {
             const int bits = input_[0] & 0xFF;
             outputCount_ = bits > 0 && bits <= 8 ? bits : 1;
@@ -126,6 +126,15 @@ void Dsp1::execute() {
         } else if (command_ == 0x03 && inputCount_ >= 1) {
             output_[0] = input_[0];
             outputCount_ = 1;
+        } else if (command_ == 0x05 && inputCount_ >= 2) {
+            output_[0] = clamp16((static_cast<int>(input_[0]) * static_cast<int>(input_[1])) >> 8);
+            outputCount_ = 1;
+        } else if (command_ == 0x09 && inputCount_ >= 1) {
+            const int bits = input_[0] & 0xFF;
+            outputCount_ = bits > 0 && bits <= 8 ? bits : 1;
+            for (int index = 0; index < outputCount_; ++index) {
+                output_[index] = static_cast<std::int16_t>(1 << (7 - index));
+            }
         } else {
             const int words = inputCount_ > 0 ? (input_[0] & 0xFF) : 0;
             outputCount_ = words > 0 && words <= 8 ? words : 1;
@@ -143,16 +152,42 @@ void Dsp1::execute() {
             output_[0] = inputCount_ > 0 ? input_[0] : 0;
             output_[1] = 0;
             outputCount_ = 2;
+        } else if (command_ == 0x06 && inputCount_ >= 2) {
+            output_[0] = clamp16(static_cast<int>(input_[0]) + static_cast<int>(input_[1]));
+            output_[1] = clamp16(static_cast<int>(input_[0]) - static_cast<int>(input_[1]));
+            outputCount_ = 2;
+        } else if (command_ == 0x10 && inputCount_ >= 3) {
+            const int dx = input_[0];
+            const int dy = input_[1];
+            const int scale = input_[2] == 0 ? 1 : input_[2];
+            output_[0] = clamp16(dx * 256 / scale);
+            output_[1] = clamp16(dy * 256 / scale);
+            outputCount_ = 2;
         } else {
             output_[0] = inputCount_ > 0 ? input_[0] : 0;
             outputCount_ = 1;
         }
     } else if (chip_ == Chip::Dsp4) {
         if (command_ == 0x00 || command_ == 0x01) {
-            output_[0] = 0;
-            output_[1] = inputCount_ > 1 ? input_[1] : 0;
-            output_[2] = inputCount_ > 2 ? input_[2] : 0;
+            // Track projection: distance → foreshortened X/Y for the road strip.
+            const int distance = inputCount_ > 0 ? input_[0] : 0;
+            const int offset = inputCount_ > 1 ? input_[1] : 0;
+            const int horizon = inputCount_ > 2 ? input_[2] : 0x4000;
+            const int denom = distance == 0 ? 1 : distance;
+            output_[0] = clamp16(horizon / denom);
+            output_[1] = clamp16(offset * horizon / denom);
+            output_[2] = clamp16(horizon);
             outputCount_ = 3;
+        } else if (command_ == 0x05 && inputCount_ >= 2) {
+            output_[0] = clamp16((static_cast<int>(input_[0]) * static_cast<int>(input_[1])) >> 15);
+            outputCount_ = 1;
+        } else if (command_ == 0x08 && inputCount_ >= 3) {
+            std::int16_t sine = 0;
+            std::int16_t cosine = 0;
+            anglePair(static_cast<std::uint16_t>(input_[0]), 32767, sine, cosine);
+            output_[0] = clamp16((input_[1] * cosine - input_[2] * sine) / 32767);
+            output_[1] = clamp16((input_[1] * sine + input_[2] * cosine) / 32767);
+            outputCount_ = 2;
         } else {
             output_[0] = inputCount_ > 0 ? input_[0] : 0;
             outputCount_ = 1;
@@ -244,6 +279,23 @@ void Dsp1::execute() {
         output_[1] = clamp16(input_[1] + input_[2]);
         output_[2] = clamp16(input_[2] + input_[0]);
         outputCount_ = 3;
+    } else if (command_ == 0x03 && inputCount_ >= 3) {
+        // Scale vector by a 1.15 factor (host math stand-in for the coefficient ROM).
+        const int factor = input_[2];
+        output_[0] = clamp16((static_cast<int>(input_[0]) * factor) >> 15);
+        output_[1] = clamp16((static_cast<int>(input_[1]) * factor) >> 15);
+        outputCount_ = 2;
+    } else if (command_ == 0x05 && inputCount_ >= 2) {
+        output_[0] = clamp16(static_cast<int>(input_[0]) + static_cast<int>(input_[1]));
+        output_[1] = clamp16(static_cast<int>(input_[0]) - static_cast<int>(input_[1]));
+        outputCount_ = 2;
+    } else if (command_ == 0x07 && inputCount_ >= 1) {
+        std::int16_t sine = 0;
+        std::int16_t cosine = 0;
+        anglePair(static_cast<std::uint16_t>(input_[0]), 32767, sine, cosine);
+        output_[0] = cosine;
+        output_[1] = sine;
+        outputCount_ = 2;
     } else if (command_ == 0x13 || command_ == 0x1D || command_ == 0x21 || command_ == 0x22 || command_ == 0x25 ||
                command_ == 0x2A || command_ == 0x2D || command_ == 0x2E || command_ == 0x30) {
         output_[0] = inputCount_ > 0 ? input_[0] : 0;
@@ -308,16 +360,34 @@ bool Dsp1::loadState(iris::ByteReader& in) {
 
 int Dsp1::inputsFor(std::uint8_t command) const {
     if (chip_ == Chip::Dsp2) {
-        return command == 0x03 ? 1 : 1;
+        if (command == 0x05) {
+            return 2;
+        }
+        return 1;
     }
     if (chip_ == Chip::Dsp3) {
         if (command == 0x2E || command == 0x2F) {
             return 1;
         }
-        return command == 0x03 ? 1 : 1;
+        if (command == 0x06) {
+            return 2;
+        }
+        if (command == 0x10) {
+            return 3;
+        }
+        return 1;
     }
     if (chip_ == Chip::Dsp4) {
-        return command == 0x00 || command == 0x01 ? 3 : 1;
+        if (command == 0x00 || command == 0x01) {
+            return 3;
+        }
+        if (command == 0x05) {
+            return 2;
+        }
+        if (command == 0x08) {
+            return 3;
+        }
+        return 1;
     }
     switch (command) {
     case 0x00:
@@ -326,10 +396,16 @@ int Dsp1::inputsFor(std::uint8_t command) const {
         return 4;
     case 0x02:
         return 3;
+    case 0x03:
+        return 3;
     case 0x04:
+        return 2;
+    case 0x05:
         return 2;
     case 0x06:
         return 3;
+    case 0x07:
+        return 1;
     case 0x08:
         return 3;
     case 0x0A:

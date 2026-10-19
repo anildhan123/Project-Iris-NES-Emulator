@@ -22,10 +22,17 @@ public:
     void power();
     void map(std::vector<std::uint8_t> rom, bool hiRom, bool exHiRom, std::size_t sramBytes, Chip chip,
              bool fastRom = false);
-    void setController(std::uint8_t buttons);
-    void setCycle(int cycle);
+    enum class InputDevice : std::uint8_t { Pad = 0, Multitap = 1, Mouse = 2, SuperScope = 3, Justifier = 4 };
+
+    void setController(int port, std::uint8_t buttons);
+    void setInputDevice(int port, InputDevice device);
+    void setPointer(int x, int y);
+    // cycle is master clocks from frame start; lineDot is clocks into the current
+    // scanline; scanline is the current line index (for $4212 without % 1364 drift).
+    void setCycle(int cycle, int lineDot = 0, int scanline = 0);
     // Charge master clocks for one memory access so mid-instruction timing reaches the APU and IRQs.
-    void tickAccess(std::uint8_t bank, std::uint16_t address);
+    // pageCross adds the half-scale penalty used for unaligned 16-bit FastROM/SlowROM reads.
+    void tickAccess(std::uint8_t bank, std::uint16_t address, bool pageCross = false);
     void setMasterClock(int masterClock) { masterClock_ = masterClock; }
     [[nodiscard]] int cycle() const { return cycle_; }
     void raiseNmi();
@@ -43,6 +50,8 @@ public:
     void catchUpApu(int masterCycle, int masterClock);
     void finishAudio(int masterCycles, int masterClock);
     void pollApuBoot() { apu_.pollBoot(); }
+    // Clear the mid-instruction APU I/O hold so catch-up may run again.
+    void endApuIoInstruction() { apuIoHold_ = false; }
     [[nodiscard]] const float* audioSamples() const { return apu_.samples(); }
     [[nodiscard]] int audioCount() const { return apu_.sampleCount(); }
     [[nodiscard]] int audioChannels() const { return apu_.channels(); }
@@ -52,6 +61,8 @@ public:
     [[nodiscard]] bool hirqEnabled() const { return (nmitimen_ & 0x10) != 0; }
     [[nodiscard]] int irqLine() const { return vtime_; }
     [[nodiscard]] int irqDot() const { return htime_; }
+    // VBlank starts at line 225, or 240 when SETINI selects overscan.
+    [[nodiscard]] int vblankLine() const { return ppu_.overscan() ? 240 : 225; }
     [[nodiscard]] int takeDmaStall();
     [[nodiscard]] int beginHdma();
     [[nodiscard]] int transferHdma();
@@ -102,14 +113,35 @@ private:
     Ppu ppu_;
     DmaChannel dma_[8]{};
     std::uint32_t wmadd_ = 0;
-    void latchJoypad();
-    [[nodiscard]] std::uint8_t readJoypad(bool portTwo);
+    struct Pad {
+        std::uint8_t low = 0;
+        std::uint8_t high = 0;
+        std::uint16_t shift = 0;
+        int bitsLeft = 0;
+    };
 
-    std::uint8_t joyLow_ = 0;
-    std::uint8_t joyHigh_ = 0;
-    std::uint16_t joyShift_ = 0;
-    int joyBitsLeft_ = 0;
+    void encodePad(Pad& pad, std::uint8_t buttons) const;
+    void latchJoypad(int port);
+    void commitAutoJoy();
+    void pollAutoJoy();
+    [[nodiscard]] std::uint8_t readJoypad(bool portTwo);
+    [[nodiscard]] bool autoJoyBusy() const;
+
+    Pad pad_[4]{};
+    InputDevice device_[2] = {InputDevice::Pad, InputDevice::Pad};
+    int pointerX_ = 0;
+    int pointerY_ = 0;
+    // Latched auto-read results for JOY1–JOY4. Multitap fills JOY3/JOY4 from pads 2–3.
+    std::uint8_t joy1Low_ = 0;
+    std::uint8_t joy1High_ = 0;
+    std::uint8_t joy2Low_ = 0;
+    std::uint8_t joy2High_ = 0;
+    std::uint8_t joy3Low_ = 0;
+    std::uint8_t joy3High_ = 0;
+    std::uint8_t joy4Low_ = 0;
+    std::uint8_t joy4High_ = 0;
     bool joyStrobe_ = false;
+    bool autoJoyPending_ = false;
     // Auto-read is busy for a few scanlines after vblank starts. Games wait for this bit to clear
     // before trusting $4218. Leaving it clear makes that wait fall through and some games skip the read.
     int joyBusyUntil_ = 0;
@@ -139,6 +171,11 @@ private:
     std::uint16_t htime_ = 0;
     int dmaStall_ = 0;
     int cycle_ = 0;
+    int lineDot_ = 0;
+    int scanline_ = 0;
+    // Once an instruction touches $2140–$217F, defer SPC catch-up until it ends
+    // so multi-port and 16-bit command writes commit together (Akao-style traffic).
+    bool apuIoHold_ = false;
     bool nmiFlag_ = false;
     bool irqFlag_ = false;
     bool hiRom_ = false;
@@ -148,6 +185,22 @@ private:
     std::uint32_t sa1BitData_ = 0;
     int sa1BitCount_ = 0;
     std::uint8_t sa1BitmapReg_ = 0;
+    std::uint8_t sa1ArithMode_ = 0;
+    std::uint16_t sa1Ma_ = 0;
+    std::uint16_t sa1Mb_ = 0;
+    std::uint32_t sa1ArithProduct_ = 0;
+    std::uint16_t sa1ArithRemainder_ = 0;
+    std::uint8_t sa1Cdma_ = 0;
+    std::uint8_t sa1Brf_[16] = {};
+    int sa1CharRow_ = 0;
+    std::uint8_t sa1BbF_ = 0;
+    std::uint32_t sa1BitStream_ = 0;
+    int sa1BitLeft_ = 0;
+
+    void runSa1Arithmetic();
+    void runSa1CharConv1();
+    void runSa1CharConv2();
+    void extractSa1Bits(int count);
 };
 
 }  // namespace iris::systems::snes

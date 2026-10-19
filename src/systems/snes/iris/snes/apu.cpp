@@ -3,6 +3,7 @@
 #include "iris/byte_io.hpp"
 
 #include <algorithm>
+#include <cstdint>
 
 namespace iris::systems::snes {
 namespace {
@@ -22,6 +23,21 @@ int clamp16(int value) {
         return -32768;
     }
     return value;
+}
+
+int clip15(int value) {
+    if (value > 0x3FFF) {
+        return 0x3FFF;
+    }
+    if (value < -0x4000) {
+        return -0x4000;
+    }
+    return value;
+}
+
+// Intermediate Gaussian sums wrap in 15 bits (S-DSP).
+int wrap15(int value) {
+    return static_cast<std::int16_t>(value << 1) >> 1;
 }
 
 // S-DSP Gaussian interpolation coefficients (public hardware documentation).
@@ -84,7 +100,8 @@ void Apu::power() {
         voice = Voice{};
     }
     std::fill(std::begin(dsp_), std::end(dsp_), static_cast<std::uint8_t>(0));
-    dsp_[0x6C] = 0x80;
+    // Soft reset + mute + echo write protect until a driver clears FLG.
+    dsp_[0x6C] = 0xE0;
     std::fill(std::begin(cpuIn_), std::end(cpuIn_), static_cast<std::uint8_t>(0));
     control_ = hasIpl_ ? 0x80 : 0;
     dspAddress_ = 0;
@@ -106,10 +123,14 @@ void Apu::power() {
     std::fill(std::begin(timerDivider_), std::end(timerDivider_), 0);
     std::fill(std::begin(timerStage_), std::end(timerStage_), 0);
     echoPos_ = 0;
+    echoDelay_ = 1;
     noise_ = 0x4000;
+    noiseCounter_ = 0;
     cycleAccum_ = 0;
     outputAccum_ = 0;
     halted_ = false;
+    sleeping_ = false;
+    irqPending_ = false;
     if (hasIpl_) {
         booting_ = false;
         transferring_ = false;
@@ -146,7 +167,14 @@ void Apu::enterBoot() {
     booting_ = true;
     transferring_ = false;
     halted_ = false;
+    sleeping_ = false;
+    irqPending_ = false;
     seen_ = cpuIn_[0];
+    // Timers and CONTROL match a cold IPL entry (user IPL keeps ROM mapped via bit 7).
+    std::fill(std::begin(timerCount_), std::end(timerCount_), static_cast<std::uint8_t>(0));
+    std::fill(std::begin(timerDivider_), std::end(timerDivider_), 0);
+    std::fill(std::begin(timerStage_), std::end(timerStage_), 0);
+    control_ = hasIpl_ ? 0x80 : 0;
     cpuOut_[0] = 0xAA;
     cpuOut_[1] = 0xBB;
     cpuOut_[2] = 0;
@@ -282,19 +310,56 @@ void Apu::bootPoll() {
             return;
         }
         booting_ = false;
+        transferring_ = false;
         halted_ = false;
+        sleeping_ = false;
+        irqPending_ = false;
+        // Leave cpuIn_ as the kick bytes; the SPC program clears or handshake.
+        // Echo the final port-0/1 values so a HiROM engine that polls $2140/$2141
+        // sees the end-of-transfer ack before the first SPC instruction runs.
+        seen_ = cpuIn_[0];
+        cpuOut_[0] = cpuIn_[0];
+        cpuOut_[1] = cpuIn_[1];
         pc_ = entry;
         sp_ = 0xEF;
         psw_ = 0;
+        a_ = 0;
+        x_ = 0;
+        y_ = 0;
         return;
     }
+    // Non-sequential $2140 with $2141 != 0 starts another transfer block.
     dest_ = static_cast<std::uint16_t>(cpuIn_[2] | (static_cast<std::uint16_t>(cpuIn_[3]) << 8));
     cursor_ = 0xFF;
+    transferring_ = true;
 }
 
 void Apu::run(int cycles) {
     int left = cycles;
-    while (left > 0 && !booting_ && !halted_) {
+    while (left > 0) {
+        if (booting_) {
+            tickTimers(left);
+            return;
+        }
+        if (halted_) {
+            // STOP: clocks keep running for DSP catch-up, but the SPC does not.
+            tickTimers(left);
+            return;
+        }
+        if (irqPending_ && (psw_ & 0x04) != 0) {
+            sleeping_ = false;
+            serviceIrq();
+            left -= 8;
+            if (left < 0) {
+                left = 0;
+            }
+            continue;
+        }
+        if (sleeping_) {
+            tickTimers(1);
+            --left;
+            continue;
+        }
         int used = instruction();
         if (used < 1) {
             used = 2;
@@ -302,9 +367,16 @@ void Apu::run(int cycles) {
         tickTimers(used);
         left -= used;
     }
-    if (left > 0) {
-        tickTimers(left);
-    }
+}
+
+void Apu::serviceIrq() {
+    irqPending_ = false;
+    push(static_cast<std::uint8_t>(pc_ >> 8));
+    push(static_cast<std::uint8_t>(pc_));
+    push(psw_);
+    // Timer IRQ clears I and does not set the break flag (unlike BRK).
+    psw_ = static_cast<std::uint8_t>(psw_ & static_cast<std::uint8_t>(~0x04));
+    pc_ = readWord(0xFFDE);
 }
 
 void Apu::tickTimers(int cycles) {
@@ -323,6 +395,8 @@ void Apu::tickTimers(int cycles) {
             if (++timerStage_[index] >= target) {
                 timerStage_[index] = 0;
                 timerCount_[index] = static_cast<std::uint8_t>((timerCount_[index] + 1) & 0x0F);
+                // Any timer overflow can raise IRQ when PSW.I is set.
+                irqPending_ = true;
             }
         }
     }
@@ -388,7 +462,8 @@ std::uint8_t Apu::readReg(std::uint16_t address) {
 
 void Apu::writeReg(std::uint16_t address, std::uint8_t value) {
     switch (address) {
-    case 0x00F1:
+    case 0x00F1: {
+        const auto previous = control_;
         control_ = value;
         if ((value & 0x10) != 0) {
             cpuIn_[0] = 0;
@@ -399,12 +474,16 @@ void Apu::writeReg(std::uint16_t address, std::uint8_t value) {
             cpuIn_[3] = 0;
         }
         for (int index = 0; index < 3; ++index) {
-            if ((value & (1 << index)) == 0) {
+            const bool wasOn = (previous & (1 << index)) != 0;
+            const bool nowOn = (value & (1 << index)) != 0;
+            // Disable clears the divider. Enable from off also starts a fresh stage.
+            if (!nowOn || !wasOn) {
                 timerDivider_[index] = 0;
                 timerStage_[index] = 0;
             }
         }
         break;
+    }
     case 0x00F2:
         // Bit 7 is not a DSP register, but it is readable. A driver can add
         // $10 until the address reads back as $8F, which never happens if the
@@ -414,9 +493,13 @@ void Apu::writeReg(std::uint16_t address, std::uint8_t value) {
     case 0x00F3: {
         const auto index = static_cast<std::uint8_t>(dspAddress_ & 0x7F);
         if (index == 0x4C) {
+            // KON is edge-triggered; bits clear after the voice is armed.
             keyOn_ = static_cast<std::uint8_t>(keyOn_ | value);
+            dsp_[0x4C] = value;
         } else if (index == 0x5C) {
-            keyOff_ = static_cast<std::uint8_t>(keyOff_ | value);
+            // KOFF is level-triggered and stays readable in $5C.
+            keyOff_ = value;
+            dsp_[0x5C] = value;
         } else if (index != 0x7C && (index & 0x0F) != 0x08 && (index & 0x0F) != 0x09) {
             dsp_[index] = value;
         }
@@ -555,14 +638,22 @@ void Apu::keyOn(int voice) {
     current.envelope = 0;
     current.output = 0;
     current.rateCounter = 0;
+    current.brrPos = 0;
+    current.konDelay = 5;
     current.envState = EnvState::Attack;
     current.playing = true;
     current.release = false;
     decodeBlock(current);
+    // Gaussian playback starts centered on the second decoded sample.
+    current.history[0] = 0;
+    current.history[1] = 0;
+    current.history[2] = current.decoded[0];
+    current.history[3] = current.decoded[1];
+    current.brrPos = 2;
     endx_ = static_cast<std::uint8_t>(endx_ & ~(1 << voice));
 }
 
-bool Apu::envelopeClock(Voice& voice, int rate) {
+bool Apu::rateFires(int& counter, int rate) {
     if (rate <= 0 || rate > 31) {
         return false;
     }
@@ -570,12 +661,45 @@ bool Apu::envelopeClock(Voice& voice, int rate) {
     if (period <= 0) {
         return false;
     }
-    ++voice.rateCounter;
-    if (voice.rateCounter < period) {
+    ++counter;
+    if (counter < period) {
         return false;
     }
-    voice.rateCounter = 0;
+    counter = 0;
     return true;
+}
+
+bool Apu::envelopeClock(Voice& voice, int rate) {
+    return rateFires(voice.rateCounter, rate);
+}
+
+int Apu::nextBrrSample(Voice& voice, int index) {
+    if (!voice.playing) {
+        return 0;
+    }
+    if (voice.brrPos >= 16) {
+        if (voice.blockEnds) {
+            endx_ = static_cast<std::uint8_t>(endx_ | (1 << index));
+            if (voice.blockLoops) {
+                voice.pointer = voice.loop;
+            } else {
+                // End without loop: enter release at zero (keeps ENDX semantics).
+                voice.release = true;
+                voice.envState = EnvState::Release;
+                voice.envelope = 0;
+                voice.playing = false;
+                return 0;
+            }
+        }
+        if (voice.playing) {
+            decodeBlock(voice);
+            voice.brrPos = 0;
+        }
+    }
+    if (!voice.playing) {
+        return 0;
+    }
+    return voice.decoded[voice.brrPos++];
 }
 
 void Apu::tickEnvelope(Voice& voice, int index) {
@@ -647,16 +771,15 @@ void Apu::tickEnvelope(Voice& voice, int index) {
     }
 }
 
-int Apu::interpolate(const Voice& voice, int cursor) const {
+int Apu::interpolate(const Voice& voice) const {
     const int index = (voice.phase >> 4) & 0xFF;
-    const int older = voice.history[0];
-    const int old = voice.history[1];
-    const int newer = voice.decoded[cursor];
-    const int newest = cursor + 1 < 16 ? voice.decoded[cursor + 1] : newer;
-    int sample = (kGauss[0x0FF - index] * older) >> 11;
-    sample += (kGauss[0x1FF - index] * old) >> 11;
-    sample += (kGauss[0x100 + index] * newer) >> 11;
-    sample += (kGauss[index] * newest) >> 11;
+    int sample = (kGauss[0x0FF - index] * voice.history[0]) >> 11;
+    sample = wrap15(sample);
+    sample += (kGauss[0x1FF - index] * voice.history[1]) >> 11;
+    sample = wrap15(sample);
+    sample += (kGauss[0x100 + index] * voice.history[2]) >> 11;
+    sample = wrap15(sample);
+    sample += (kGauss[index] * voice.history[3]) >> 11;
     return clamp16(sample);
 }
 
@@ -671,26 +794,37 @@ void Apu::renderSample(float& outLeft, float& outRight) {
             }
         }
         keyOn_ = 0;
+        dsp_[0x4C] = 0;
     }
-    if (keyOff_ != 0) {
-        for (int voice = 0; voice < 8; ++voice) {
-            if ((keyOff_ & (1 << voice)) != 0) {
-                voice_[voice].release = true;
-            }
+    // KOFF is level-triggered from $5C.
+    for (int voice = 0; voice < 8; ++voice) {
+        if ((dsp_[0x5C] & (1 << voice)) != 0) {
+            voice_[voice].release = true;
         }
-        keyOff_ = 0;
     }
     if ((flags & 0x80) != 0) {
+        // Soft reset clears ENDX and forces envelopes quiet, but echo still runs.
         endx_ = 0;
-        return;
+        for (Voice& voice : voice_) {
+            voice.envelope = 0;
+            voice.release = true;
+            voice.envState = EnvState::Release;
+            voice.output = 0;
+            voice.konDelay = 0;
+        }
     }
-    const int noiseBit = (noise_ ^ (noise_ >> 1)) & 1;
-    noise_ = (noise_ >> 1) | (noiseBit << 14);
+    // FLG bits 0–4 select the noise LFSR clock (same rate table as envelopes).
+    if (rateFires(noiseCounter_, flags & 0x1F)) {
+        const int noiseBit = (noise_ ^ (noise_ >> 1)) & 1;
+        noise_ = (noise_ >> 1) | (noiseBit << 14);
+    }
     int left = 0;
     int right = 0;
     int echoInLeft = 0;
     int echoInRight = 0;
     const std::uint8_t echoEnable = dsp_[0x4D];
+    const std::uint8_t noiseEnable = dsp_[0x3D];
+    const std::uint8_t pitchMod = static_cast<std::uint8_t>(dsp_[0x2D] & ~noiseEnable);
     for (int index = 0; index < 8; ++index) {
         Voice& voice = voice_[index];
         const int base = index << 4;
@@ -699,46 +833,26 @@ void Apu::renderSample(float& outLeft, float& outRight) {
             dsp_[base | 0x09] = 0;
             continue;
         }
-        if (voice.release) {
+        if (voice.konDelay > 0) {
+            --voice.konDelay;
+            voice.output = 0;
+            dsp_[base | 0x08] = 0;
+            dsp_[base | 0x09] = 0;
+            continue;
+        }
+        if (voice.release || (flags & 0x80) != 0) {
             voice.envState = EnvState::Release;
         }
         tickEnvelope(voice, index);
-        int cursor = voice.phase >> 12;
-        while (cursor >= 16 && voice.playing) {
-            cursor -= 16;
-            voice.phase -= 16 << 12;
-            voice.history[0] = voice.history[2];
-            voice.history[1] = voice.history[3];
-            if (voice.blockEnds) {
-                endx_ = static_cast<std::uint8_t>(endx_ | (1 << index));
-                if (voice.blockLoops) {
-                    voice.pointer = voice.loop;
-                } else {
-                    voice.playing = false;
-                    break;
-                }
-            }
-            if (voice.playing) {
-                decodeBlock(voice);
-                voice.history[2] = voice.decoded[14];
-                voice.history[3] = voice.decoded[15];
-            }
-        }
         int sample = 0;
-        if (voice.playing && (dsp_[0x3D] & (1 << index)) != 0) {
-            sample = (noise_ & 1) != 0 ? 12000 : -12000;
-        } else if (voice.playing) {
-            // Keep a four-tap window for the Gaussian filter.
-            if (cursor == 0) {
-                voice.history[0] = voice.history[2];
-                voice.history[1] = voice.history[3];
-            }
-            sample = interpolate(voice, cursor);
-            voice.history[0] = voice.history[1];
-            voice.history[1] = voice.decoded[cursor];
+        if ((noiseEnable & (1 << index)) != 0) {
+            // Noise skips the Gaussian interpolator; the 15-bit LFSR is a signed sample.
+            sample = static_cast<std::int16_t>(noise_ << 1);
+        } else {
+            sample = interpolate(voice);
         }
         int pitch = dsp_[base | 0x02] | ((dsp_[base | 0x03] & 0x3F) << 8);
-        if (index > 0 && (dsp_[0x2D] & (1 << index)) != 0) {
+        if (index > 0 && (pitchMod & (1 << index)) != 0) {
             pitch += (pitch * (voice_[index - 1].output >> 8)) >> 7;
         }
         if (pitch < 0) {
@@ -747,7 +861,15 @@ void Apu::renderSample(float& outLeft, float& outRight) {
         if (pitch > 0x3FFF) {
             pitch = 0x3FFF;
         }
+        // Advance phase after sampling. Step the four-tap window only on sample edges.
         voice.phase += pitch;
+        while (voice.phase >= 0x1000 && voice.playing) {
+            voice.phase -= 0x1000;
+            voice.history[0] = voice.history[1];
+            voice.history[1] = voice.history[2];
+            voice.history[2] = voice.history[3];
+            voice.history[3] = nextBrrSample(voice, index);
+        }
         const int shaped = (sample * voice.envelope) >> 11;
         voice.output = shaped;
         dsp_[base | 0x08] = static_cast<std::uint8_t>((voice.envelope >> 4) & 0x7F);
@@ -756,63 +878,77 @@ void Apu::renderSample(float& outLeft, float& outRight) {
         const auto volumeRight = static_cast<std::int8_t>(dsp_[base | 0x01]);
         const int voicedLeft = (shaped * volumeLeft) >> 7;
         const int voicedRight = (shaped * volumeRight) >> 7;
-        left += voicedLeft;
-        right += voicedRight;
+        left = clamp16(left + voicedLeft);
+        right = clamp16(right + voicedRight);
         if ((echoEnable & (1 << index)) != 0) {
-            echoInLeft += voicedLeft;
-            echoInRight += voicedRight;
+            echoInLeft = clamp16(echoInLeft + voicedLeft);
+            echoInRight = clamp16(echoInRight + voicedRight);
         }
     }
     const auto mainLeft = static_cast<std::int8_t>(dsp_[0x0C]);
     const auto mainRight = static_cast<std::int8_t>(dsp_[0x1C]);
     left = (left * mainLeft) >> 7;
     right = (right * mainRight) >> 7;
-    // Echo lives in APU RAM at ESA. EDL selects EDL*0x800 bytes (EDL*512 stereo samples).
-    const int delay = (dsp_[0x7D] & 0x0F) * 512;
-    if (delay > 0) {
-        if (static_cast<int>(echoLeft_.size()) != delay) {
-            echoLeft_.assign(static_cast<std::size_t>(delay), 0);
-            echoRight_.assign(static_cast<std::size_t>(delay), 0);
-            echoPos_ = 0;
+    // Echo lives in APU RAM at ESA. EDL latches when the ring wraps.
+    if (echoDelay_ < 1) {
+        echoDelay_ = 1;
+    }
+    if (static_cast<int>(echoLeft_.size()) != echoDelay_) {
+        echoLeft_.assign(static_cast<std::size_t>(echoDelay_), 0);
+        echoRight_.assign(static_cast<std::size_t>(echoDelay_), 0);
+        echoPos_ = 0;
+    }
+    const int delay = echoDelay_;
+    const int echoBase = dsp_[0x6D] << 8;
+    int filteredLeft = 0;
+    int filteredRight = 0;
+    for (int tap = 0; tap < 8; ++tap) {
+        // FIR0 is the oldest sample, FIR7 the newest.
+        int position = echoPos_ - 8 + tap;
+        while (position < 0) {
+            position += delay;
         }
-        const int echoBase = dsp_[0x6D] << 8;
-        int filteredLeft = 0;
-        int filteredRight = 0;
-        for (int tap = 0; tap < 8; ++tap) {
-            int position = echoPos_ - 1 - tap;
-            while (position < 0) {
-                position += delay;
-            }
-            const int ramIndex = (echoBase + position * 4) & 0xFFFF;
-            const int sampleLeft =
-                signed16(ram_[static_cast<std::size_t>(ramIndex)], ram_[static_cast<std::size_t>((ramIndex + 1) & 0xFFFF)]);
-            const int sampleRight = signed16(ram_[static_cast<std::size_t>((ramIndex + 2) & 0xFFFF)],
-                                             ram_[static_cast<std::size_t>((ramIndex + 3) & 0xFFFF)]);
-            echoLeft_[static_cast<std::size_t>(position)] = sampleLeft;
-            echoRight_[static_cast<std::size_t>(position)] = sampleRight;
-            const auto coefficient = static_cast<std::int8_t>(dsp_[0x0F + tap * 0x10]);
-            filteredLeft += (sampleLeft * coefficient) >> 7;
-            filteredRight += (sampleRight * coefficient) >> 7;
-        }
-        const auto echoLeft = static_cast<std::int8_t>(dsp_[0x2C]);
-        const auto echoRight = static_cast<std::int8_t>(dsp_[0x3C]);
-        left += (filteredLeft * echoLeft) >> 7;
-        right += (filteredRight * echoRight) >> 7;
-        if ((flags & 0x20) == 0) {
-            const auto feedback = static_cast<std::int8_t>(dsp_[0x0D]);
-            const int storedLeft = clamp16(echoInLeft + ((filteredLeft * feedback) >> 7));
-            const int storedRight = clamp16(echoInRight + ((filteredRight * feedback) >> 7));
-            echoLeft_[static_cast<std::size_t>(echoPos_)] = storedLeft;
-            echoRight_[static_cast<std::size_t>(echoPos_)] = storedRight;
-            const int ramIndex = (echoBase + echoPos_ * 4) & 0xFFFF;
-            ram_[static_cast<std::size_t>(ramIndex)] = static_cast<std::uint8_t>(storedLeft);
-            ram_[static_cast<std::size_t>((ramIndex + 1) & 0xFFFF)] = static_cast<std::uint8_t>(storedLeft >> 8);
-            ram_[static_cast<std::size_t>((ramIndex + 2) & 0xFFFF)] = static_cast<std::uint8_t>(storedRight);
-            ram_[static_cast<std::size_t>((ramIndex + 3) & 0xFFFF)] = static_cast<std::uint8_t>(storedRight >> 8);
-            echoPos_ = (echoPos_ + 1) % delay;
+        const int ramIndex = (echoBase + position * 4) & 0xFFFF;
+        const int sampleLeft =
+            signed16(ram_[static_cast<std::size_t>(ramIndex)], ram_[static_cast<std::size_t>((ramIndex + 1) & 0xFFFF)]);
+        const int sampleRight = signed16(ram_[static_cast<std::size_t>((ramIndex + 2) & 0xFFFF)],
+                                         ram_[static_cast<std::size_t>((ramIndex + 3) & 0xFFFF)]);
+        echoLeft_[static_cast<std::size_t>(position)] = sampleLeft;
+        echoRight_[static_cast<std::size_t>(position)] = sampleRight;
+        const auto coefficient = static_cast<std::int8_t>(dsp_[0x0F + tap * 0x10]);
+        filteredLeft += (sampleLeft * coefficient) >> 6;
+        filteredRight += (sampleRight * coefficient) >> 6;
+        if (tap < 7) {
+            filteredLeft = clip15(filteredLeft);
+            filteredRight = clip15(filteredRight);
+        } else {
+            filteredLeft = clamp16(filteredLeft) & ~1;
+            filteredRight = clamp16(filteredRight) & ~1;
         }
     }
-    if ((flags & 0x40) != 0) {
+    const auto echoVolLeft = static_cast<std::int8_t>(dsp_[0x2C]);
+    const auto echoVolRight = static_cast<std::int8_t>(dsp_[0x3C]);
+    left += (filteredLeft * echoVolLeft) >> 7;
+    right += (filteredRight * echoVolRight) >> 7;
+    if ((flags & 0x20) == 0) {
+        const auto feedback = static_cast<std::int8_t>(dsp_[0x0D]);
+        const int storedLeft = clamp16(echoInLeft + ((filteredLeft * feedback) >> 7)) & ~1;
+        const int storedRight = clamp16(echoInRight + ((filteredRight * feedback) >> 7)) & ~1;
+        echoLeft_[static_cast<std::size_t>(echoPos_)] = storedLeft;
+        echoRight_[static_cast<std::size_t>(echoPos_)] = storedRight;
+        const int ramIndex = (echoBase + echoPos_ * 4) & 0xFFFF;
+        ram_[static_cast<std::size_t>(ramIndex)] = static_cast<std::uint8_t>(storedLeft);
+        ram_[static_cast<std::size_t>((ramIndex + 1) & 0xFFFF)] = static_cast<std::uint8_t>(storedLeft >> 8);
+        ram_[static_cast<std::size_t>((ramIndex + 2) & 0xFFFF)] = static_cast<std::uint8_t>(storedRight);
+        ram_[static_cast<std::size_t>((ramIndex + 3) & 0xFFFF)] = static_cast<std::uint8_t>(storedRight >> 8);
+    }
+    // Even with echo write protect, the ring pointer keeps advancing.
+    echoPos_ = (echoPos_ + 1) % delay;
+    if (echoPos_ == 0) {
+        const int edl = dsp_[0x7D] & 0x0F;
+        echoDelay_ = edl == 0 ? 1 : edl * 512;
+    }
+    if ((flags & 0x40) != 0 || (flags & 0x80) != 0) {
         return;
     }
     outLeft = static_cast<float>(clamp16(left)) / 32768.0f;
@@ -1508,10 +1644,16 @@ int Apu::instruction() {
         compare(y_, read8(fetchWord()));
         return 4;
     case 0xEF:
+        // SLEEP waits for a timer IRQ (or other IRQ). STOP is permanent until reset.
+        sleeping_ = true;
+        return 3;
     case 0xFF:
         halted_ = true;
+        sleeping_ = false;
         return 3;
     default:
+        // Every SPC700 opcode is handled above (TCALL / SET1 / CLR1 / BBS / BBC /
+        // OR–SBC addressing groups, then this switch). Do not halt on a stray.
         return 2;
     }
 }
@@ -1577,6 +1719,8 @@ void Apu::saveState(iris::ByteWriter& out) const {
     for (const int sample : echoRight_) {
         out.u32(static_cast<std::uint32_t>(sample));
     }
+    out.boolean(sleeping_);
+    out.boolean(irqPending_);
 }
 
 bool Apu::loadState(iris::ByteReader& in) {
@@ -1655,6 +1799,8 @@ bool Apu::loadState(iris::ByteReader& in) {
     for (int& sample : echoRight) {
         sample = static_cast<int>(in.u32());
     }
+    const auto sleeping = in.boolean();
+    const auto irqPending = in.boolean();
     if (!in.ok()) {
         return false;
     }
@@ -1686,6 +1832,7 @@ bool Apu::loadState(iris::ByteReader& in) {
     std::copy(std::begin(timerDivider), std::end(timerDivider), std::begin(timerDivider_));
     std::copy(std::begin(timerStage), std::end(timerStage), std::begin(timerStage_));
     echoPos_ = echoPos;
+    echoDelay_ = echoLeft.empty() ? 1 : static_cast<int>(echoLeft.size());
     noise_ = noise;
     cycleAccum_ = cycleAccum;
     outputAccum_ = outputAccum;
@@ -1696,6 +1843,8 @@ bool Apu::loadState(iris::ByteReader& in) {
     std::copy(std::begin(ipl), std::end(ipl), std::begin(ipl_));
     echoLeft_ = std::move(echoLeft);
     echoRight_ = std::move(echoRight);
+    sleeping_ = sleeping;
+    irqPending_ = irqPending;
     return true;
 }
 

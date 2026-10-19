@@ -1,6 +1,7 @@
 #pragma once
 
 #include "iris/nes/mapper.hpp"
+#include "iris/nes/timing.hpp"
 
 #include <array>
 #include <cstdint>
@@ -20,12 +21,14 @@ public:
 
     void connect(Mapper* mapper, Mirroring mirroring);
     void setTiming(int scanlines, bool oddFrameSkip);
+    void setRegion(Region region) { region_ = region; }
     void power();
     void reset();
     void clock();
     void writeRegister(std::uint16_t address, std::uint8_t value);
     [[nodiscard]] std::uint8_t readRegister(std::uint16_t address);
     void writeOam(std::uint8_t value);
+    [[nodiscard]] bool sampleLight(int x, int y) const;
 
     void captureState(iris::ByteWriter& writer) const;
     [[nodiscard]] bool applyState(iris::ByteReader& reader);
@@ -87,6 +90,7 @@ private:
     int dot_ = 0;
     int scanlines_ = 262;
     bool oddFrameSkip_ = true;
+    Region region_ = Region::Ntsc;
     bool a12High_ = false;
     int a12LowDots_ = 0;
     std::uint64_t frame_ = 0;

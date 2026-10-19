@@ -21,7 +21,7 @@ public:
     void setRegion(Region region);
     void write(std::uint16_t address, std::uint8_t value);
     [[nodiscard]] std::uint8_t readStatus();
-    void clock(std::vector<float>& samples);
+    void clock(std::vector<float>& samples, float expansionSample = 0.0f);
     [[nodiscard]] bool irq() const { return frameIrq_ || dmcIrq_; }
     [[nodiscard]] bool pollDmc(std::uint16_t& address);
     void supplyDmc(std::uint8_t value);
@@ -119,10 +119,13 @@ private:
     const int* frame5_ = nullptr;
     int frameCycle_ = 0;
     int samplePhase_ = 0;
+    int frameResetDelay_ = 0;
+    std::uint8_t pendingFrame_ = 0;
     bool evenCycle_ = true;
     bool fiveStep_ = false;
     bool irqInhibit_ = false;
     bool frameIrq_ = false;
+    void applyFrameControl(std::uint8_t value);
 
     bool dmcIrqEnable_ = false;
     bool dmcLoop_ = false;

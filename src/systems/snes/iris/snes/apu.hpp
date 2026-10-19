@@ -57,6 +57,8 @@ private:
         int envelope = 0;
         int output = 0;
         int rateCounter = 0;
+        int brrPos = 0;
+        int konDelay = 0;
         int history[4] = {};
         EnvState envState = EnvState::Attack;
         bool playing = false;
@@ -71,12 +73,15 @@ private:
     void run(int cycles);
     [[nodiscard]] int instruction();
     void tickTimers(int cycles);
+    void serviceIrq();
     void renderSample(float& left, float& right);
     void keyOn(int voice);
     void tickEnvelope(Voice& voice, int index);
     [[nodiscard]] bool envelopeClock(Voice& voice, int rate);
+    [[nodiscard]] bool rateFires(int& counter, int rate);
     void decodeBlock(Voice& voice);
-    [[nodiscard]] int interpolate(const Voice& voice, int cursor) const;
+    [[nodiscard]] int nextBrrSample(Voice& voice, int index);
+    [[nodiscard]] int interpolate(const Voice& voice) const;
     [[nodiscard]] std::uint8_t read8(std::uint16_t address);
     void write8(std::uint16_t address, std::uint8_t value);
     [[nodiscard]] std::uint8_t readReg(std::uint16_t address);
@@ -126,13 +131,17 @@ private:
     int timerDivider_[3] = {};
     int timerStage_[3] = {};
     int echoPos_ = 0;
+    int echoDelay_ = 1;
     int noise_ = 0x4000;
+    int noiseCounter_ = 0;
     std::int64_t cycleAccum_ = 0;
     std::int64_t outputAccum_ = 0;
     bool hasIpl_ = false;
     bool booting_ = true;
     bool transferring_ = false;
     bool halted_ = false;
+    bool sleeping_ = false;
+    bool irqPending_ = false;
 };
 
 }  // namespace iris::systems::snes

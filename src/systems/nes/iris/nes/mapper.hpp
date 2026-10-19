@@ -29,6 +29,8 @@ public:
     // Rising edge of PPU A12 after A12 has been low. MMC3 clocks its scanline counter here.
     virtual void onA12Rise() {}
     [[nodiscard]] virtual bool irq() const { return false; }
+    // Expansion audio sample in roughly the same units as the APU mix (−1…1).
+    [[nodiscard]] virtual float expansionSample() const { return 0.0f; }
     virtual void reset() {}
     virtual void captureState(iris::ByteWriter&) const {}
     [[nodiscard]] virtual bool applyState(iris::ByteReader& reader) { return reader.ok() && reader.exhausted(); }

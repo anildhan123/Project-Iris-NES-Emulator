@@ -30,8 +30,10 @@ void Gsu::power() {
     source_ = 0;
     dest_ = 0;
     alt1_ = false;
+    alt2_ = false;
     useDest_ = false;
     useSource_ = false;
+    useWith_ = false;
     cacheX_ = -1;
     cacheY_ = -1;
     cacheDirty_ = false;
@@ -43,8 +45,15 @@ void Gsu::halt() {
     flushPixelCache();
     sfr_ = static_cast<std::uint16_t>(sfr_ & ~kGo);
     alt1_ = false;
+    alt2_ = false;
     useDest_ = false;
     useSource_ = false;
+    useWith_ = false;
+}
+
+int Gsu::budgetForLine() const {
+    // SCMR bit 3 selects the higher GSU clock. Budget is ops per scanline while GO is set.
+    return (scmr_ & 0x08) != 0 ? 450 : 300;
 }
 
 void Gsu::bind(const std::vector<std::uint8_t>* rom) {
@@ -109,8 +118,10 @@ void Gsu::setAddFlags(std::uint16_t left, std::uint16_t right, std::uint32_t sum
 
 void Gsu::finishPrefix() {
     alt1_ = false;
+    alt2_ = false;
     useDest_ = false;
     useSource_ = false;
+    useWith_ = false;
     source_ = 0;
     dest_ = 0;
 }
@@ -182,6 +193,27 @@ void Gsu::run(int budget) {
             return;
         }
         if (op == 0x01 || op == 0x02) {
+            // NOP / CACHE — cache flush is a no-op beyond the pixel pipeline.
+            finishPrefix();
+            continue;
+        }
+        if (op == 0x03) {
+            // LSR
+            const std::uint16_t value = r_[from];
+            sfr_ = static_cast<std::uint16_t>((sfr_ & ~(kZero | kCarry | kSign)) | ((value & 1) != 0 ? kCarry : 0) |
+                                              ((value >> 1) == 0 ? kZero : 0));
+            r_[to] = static_cast<std::uint16_t>(value >> 1);
+            finishPrefix();
+            continue;
+        }
+        if (op == 0x04) {
+            // ROL through carry
+            const std::uint16_t value = r_[from];
+            const std::uint16_t carryIn = (sfr_ & kCarry) != 0 ? 1 : 0;
+            const auto rotated = static_cast<std::uint16_t>((value << 1) | carryIn);
+            sfr_ = static_cast<std::uint16_t>((sfr_ & ~(kZero | kCarry | kSign)) | ((value & 0x8000) != 0 ? kCarry : 0) |
+                                              (rotated == 0 ? kZero : 0) | ((rotated & 0x8000) != 0 ? kSign : 0));
+            r_[to] = rotated;
             finishPrefix();
             continue;
         }
@@ -222,7 +254,15 @@ void Gsu::run(int budget) {
         if (op >= 0x10 && op <= 0x1F) {
             dest_ = static_cast<std::uint8_t>(op & 0x0F);
             useDest_ = true;
-            alt1_ = false;
+            continue;
+        }
+        if (op >= 0x20 && op <= 0x2F) {
+            // WITH Rn: next op uses Rn as both source and dest.
+            source_ = static_cast<std::uint8_t>(op & 0x0F);
+            dest_ = source_;
+            useSource_ = true;
+            useDest_ = true;
+            useWith_ = true;
             continue;
         }
         if (op == 0x3C) {
@@ -238,8 +278,13 @@ void Gsu::run(int budget) {
             alt1_ = true;
             continue;
         }
-        if (op == 0x3E || op == 0x3F) {
+        if (op == 0x3E) {
+            alt2_ = true;
+            continue;
+        }
+        if (op == 0x3F) {
             alt1_ = true;
+            alt2_ = true;
             continue;
         }
         if ((op & 0xF0) == 0x30 && (op & 0x0F) <= 11) {
@@ -288,7 +333,56 @@ void Gsu::run(int budget) {
             continue;
         }
         if (op == 0xEF) {
-            r_[to] = static_cast<std::uint16_t>(r_[from] & 0xFF);
+            // GETB: low byte from ROM at ROMBR:R14; GETC (ALT1) loads color.
+            const std::uint8_t byte = memory(rombr_, r_[14]);
+            if (alt1_) {
+                color_ = byte;
+            } else {
+                r_[to] = static_cast<std::uint16_t>((r_[to] & 0xFF00) | byte);
+            }
+            finishPrefix();
+            continue;
+        }
+        if (op >= 0xA0 && op <= 0xAF) {
+            // IBT Rn,#imm
+            r_[op & 0x0F] = fetch();
+            finishPrefix();
+            continue;
+        }
+        if ((op & 0xF0) == 0x80) {
+            // MULT / UMULT (ALT1)
+            const std::uint16_t left = r_[to];
+            const std::uint16_t right = r_[op & 0x0F];
+            const std::uint32_t product =
+                alt1_ ? static_cast<std::uint32_t>(left) * right
+                      : static_cast<std::uint32_t>(static_cast<std::int16_t>(left)) *
+                            static_cast<std::uint32_t>(static_cast<std::int16_t>(right));
+            r_[to] = static_cast<std::uint16_t>(product);
+            sfr_ = static_cast<std::uint16_t>((sfr_ & ~kZero) | ((product & 0xFFFF) == 0 ? kZero : 0));
+            finishPrefix();
+            continue;
+        }
+        if (op == 0x95) {
+            // SEX
+            r_[to] = static_cast<std::uint16_t>(static_cast<std::int16_t>(static_cast<std::int8_t>(r_[from] & 0xFF)));
+            finishPrefix();
+            continue;
+        }
+        if (op == 0x96) {
+            // ROR
+            const std::uint16_t value = r_[from];
+            const std::uint16_t carryIn = (sfr_ & kCarry) != 0 ? 0x8000 : 0;
+            const auto rotated = static_cast<std::uint16_t>((value >> 1) | carryIn);
+            sfr_ = static_cast<std::uint16_t>((sfr_ & ~(kZero | kCarry | kSign)) | ((value & 1) != 0 ? kCarry : 0) |
+                                              (rotated == 0 ? kZero : 0) | ((rotated & 0x8000) != 0 ? kSign : 0));
+            r_[to] = rotated;
+            finishPrefix();
+            continue;
+        }
+        if (op == 0x90) {
+            // SBK: store back to last RAM address using R0 as data (RAM buffer assist).
+            const auto address = static_cast<std::uint32_t>(ramb_ & 0x01) << 16 | r_[0];
+            ramWrite(address, static_cast<std::uint8_t>(r_[from]));
             finishPrefix();
             continue;
         }
@@ -375,7 +469,6 @@ void Gsu::run(int budget) {
         if ((op & 0xF0) == 0xB0) {
             source_ = static_cast<std::uint8_t>(op & 0x0F);
             useSource_ = true;
-            alt1_ = false;
             continue;
         }
         if (op >= 0xD0 && op <= 0xDE) {

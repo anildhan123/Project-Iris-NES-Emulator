@@ -87,6 +87,7 @@ void NesSystem::applyRegion() {
     ppuNumerator_ = timing.ppuNumerator;
     ppuDenominator_ = timing.ppuDenominator;
     ppu_.setTiming(timing.scanlines, timing.oddFrameSkip);
+    ppu_.setRegion(region_);
     apu_.setRegion(region_);
 }
 
@@ -151,11 +152,13 @@ void NesSystem::clockCpuCycle() {
         }
         nmiLevel_ = level;
     }
-    apu_.clock(audio_);
+    const float expansion = mapper_ != nullptr ? mapper_->expansionSample() : 0.0f;
+    apu_.clock(audio_, expansion);
     cpu_.setIrqLine(irqLine());
     std::uint16_t sampleAddress = 0;
     if (apu_.pollDmc(sampleAddress)) {
         apu_.supplyDmc(bus_.read(sampleAddress));
+        // DMC sample DMA stalls the CPU for four cycles on this host path.
         dmcStall_ += 4;
     }
 }
@@ -201,11 +204,41 @@ AudioView NesSystem::audio() const {
     return AudioView{audio_.data(), static_cast<int>(audio_.size()), Apu::kSampleRate, 1};
 }
 
+void NesSystem::setInputDevice(int port, ControllerDevice device) {
+    if (port == 0) {
+        port1_.setDevice(device);
+    } else if (port == 1) {
+        port2_.setDevice(device);
+    }
+}
+
+void NesSystem::setPointer(int x, int y) {
+    pointerX_ = x;
+    pointerY_ = y;
+    refreshZapperLight();
+}
+
+void NesSystem::refreshZapperLight() {
+    if (port2_.device() != ControllerDevice::Zapper) {
+        return;
+    }
+    const bool light = loaded_ && ppu_.sampleLight(pointerX_, pointerY_);
+    port2_.setZapper(false, light);
+}
+
 void NesSystem::setController(int port, std::uint8_t buttons) {
     if (port == 0) {
         port1_.setButtons(buttons);
     } else if (port == 1) {
-        port2_.setButtons(buttons);
+        if (port2_.device() == ControllerDevice::Zapper) {
+            port2_.setZapper((buttons & 0x01) != 0, ppu_.sampleLight(pointerX_, pointerY_));
+        } else {
+            port2_.setButtons(buttons);
+        }
+    } else if (port == 2) {
+        port1_.setExtraButtons(buttons);
+    } else if (port == 3) {
+        port2_.setExtraButtons(buttons);
     }
 }
 

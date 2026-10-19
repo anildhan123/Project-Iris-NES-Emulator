@@ -67,6 +67,9 @@ Chip chipFor(int mapNibble, int type) {
     if ((mapNibble == 0 || mapNibble == 1) && type == 0xF6) {
         return Chip::St010;
     }
+    if ((mapNibble == 0 || mapNibble == 1) && type == 0xF7) {
+        return Chip::St011;
+    }
     if ((mapNibble == 0 || mapNibble == 1) && type == 0xF8) {
         return Chip::St018;
     }
@@ -77,9 +80,11 @@ Chip chipFor(int mapNibble, int type) {
 }
 
 bool mapSupported(int mapNibble) {
-    // LoROM (0), HiROM (1), LoROM variants (2 / 0xA), SA-1 (3). Map 5 is ExHiROM only
-    // when the HiROM/ExHiROM header scores; a lone map-5 byte in the LoROM slot is refused.
-    return mapNibble == 0 || mapNibble == 1 || mapNibble == 2 || mapNibble == 3 || mapNibble == 0xA;
+    // LoROM (0), HiROM (1), LoROM variants (2 / 4 / 0xA), SA-1 (3). Map 5 is ExHiROM
+    // only when the HiROM/ExHiROM header scores; a lone map-5 byte in the LoROM slot
+    // is refused. Map 4 is an uncommon LoROM-compatible variant.
+    return mapNibble == 0 || mapNibble == 1 || mapNibble == 2 || mapNibble == 3 || mapNibble == 4 ||
+           mapNibble == 0xA;
 }
 
 constexpr const char* kUnsupported =
@@ -127,7 +132,7 @@ Result<Cartridge> parseCartridge(const std::uint8_t* data, std::size_t size) {
             if (chipFor(3, loType) != Chip::Sa1) {
                 return Result<Cartridge>::failure(ErrorCode::ValidationFailure, kUnsupported);
             }
-        } else if (loMap == 2 || loMap == 0xA) {
+        } else if (loMap == 2 || loMap == 4 || loMap == 0xA) {
             loRomSpecial = true;
         } else if (!mapSupported(loMap)) {
             return Result<Cartridge>::failure(ErrorCode::ValidationFailure, kUnsupported);
@@ -144,7 +149,8 @@ Result<Cartridge> parseCartridge(const std::uint8_t* data, std::size_t size) {
     cartridge.rom.assign(rom, rom + romSize);
     cartridge.hiRom = hiRom;
     cartridge.exHiRom = exHiRom;
-    cartridge.loRomSpecial = loRomSpecial || ((rom[header + 0x15] & 0x0F) == 2) || ((rom[header + 0x15] & 0x0F) == 0xA);
+    cartridge.loRomSpecial = loRomSpecial || ((rom[header + 0x15] & 0x0F) == 2) || ((rom[header + 0x15] & 0x0F) == 4) ||
+                             ((rom[header + 0x15] & 0x0F) == 0xA);
     cartridge.mapMode = rom[header + 0x15];
     cartridge.fastRom = (rom[header + 0x15] & 0x10) != 0;
     cartridge.chip = chipFor(rom[header + 0x15] & 0x0F, rom[header + 0x16]);
@@ -158,8 +164,14 @@ Result<Cartridge> parseCartridge(const std::uint8_t* data, std::size_t size) {
     if (cartridge.chip == Chip::None && rom[header + 0x16] == 0x65) {
         cartridge.chip = Chip::Obc1;
     }
+    if (cartridge.chip == Chip::None && (rom[header + 0x16] == 0xF5 || rom[header + 0x16] == 0xF9)) {
+        cartridge.chip = Chip::Spc7110;
+    }
     if (cartridge.chip == Chip::None && rom[header + 0x16] == 0xF6) {
         cartridge.chip = Chip::St010;
+    }
+    if (cartridge.chip == Chip::None && rom[header + 0x16] == 0xF7) {
+        cartridge.chip = Chip::St011;
     }
     if (cartridge.chip == Chip::None && rom[header + 0x16] == 0xF8) {
         cartridge.chip = Chip::St018;

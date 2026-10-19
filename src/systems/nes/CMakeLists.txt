@@ -24,6 +24,8 @@ add_library(iris_nes STATIC
     iris/nes/mapper.hpp
     iris/nes/mapper_factory.cpp
     iris/nes/mapper_factory.hpp
+    iris/nes/mapper_pack.cpp
+    iris/nes/mapper_pack.hpp
     iris/nes/mmc1.cpp
     iris/nes/mmc1.hpp
     iris/nes/mmc3.cpp

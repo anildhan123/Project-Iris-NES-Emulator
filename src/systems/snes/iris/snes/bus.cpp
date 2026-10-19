@@ -14,11 +14,23 @@ void Bus::power() {
         channel = DmaChannel{};
     }
     wmadd_ = 0;
-    joyLow_ = 0;
-    joyHigh_ = 0;
-    joyShift_ = 0;
-    joyBitsLeft_ = 0;
+    for (Pad& pad : pad_) {
+        pad = Pad{};
+    }
+    device_[0] = InputDevice::Pad;
+    device_[1] = InputDevice::Pad;
+    pointerX_ = 0;
+    pointerY_ = 0;
+    joy1Low_ = 0;
+    joy1High_ = 0;
+    joy2Low_ = 0;
+    joy2High_ = 0;
+    joy3Low_ = 0;
+    joy3High_ = 0;
+    joy4Low_ = 0;
+    joy4High_ = 0;
     joyStrobe_ = false;
+    autoJoyPending_ = false;
     joyBusyUntil_ = 0;
     nmitimen_ = 0;
     hdmaen_ = 0;
@@ -41,6 +53,17 @@ void Bus::power() {
     sa1BitData_ = 0;
     sa1BitCount_ = 0;
     sa1BitmapReg_ = 0;
+    sa1ArithMode_ = 0;
+    sa1Ma_ = 0;
+    sa1Mb_ = 0;
+    sa1ArithProduct_ = 0;
+    sa1ArithRemainder_ = 0;
+    sa1Cdma_ = 0;
+    std::fill(std::begin(sa1Brf_), std::end(sa1Brf_), static_cast<std::uint8_t>(0));
+    sa1CharRow_ = 0;
+    sa1BbF_ = 0;
+    sa1BitStream_ = 0;
+    sa1BitLeft_ = 0;
     expansion_.power();
 }
 
@@ -68,6 +91,17 @@ void Bus::map(std::vector<std::uint8_t> rom, bool hiRom, bool exHiRom, std::size
     sa1BitData_ = 0;
     sa1BitCount_ = 0;
     sa1BitmapReg_ = 0;
+    sa1ArithMode_ = 0;
+    sa1Ma_ = 0;
+    sa1Mb_ = 0;
+    sa1ArithProduct_ = 0;
+    sa1ArithRemainder_ = 0;
+    sa1Cdma_ = 0;
+    std::fill(std::begin(sa1Brf_), std::end(sa1Brf_), static_cast<std::uint8_t>(0));
+    sa1CharRow_ = 0;
+    sa1BbF_ = 0;
+    sa1BitStream_ = 0;
+    sa1BitLeft_ = 0;
     if (chip_ == Chip::Sa1) {
         iram_.assign(2048, 0);
         bwram_.assign(256 * 1024, 0);
@@ -92,16 +126,43 @@ void Bus::resetChips() {
     sa1BitData_ = 0;
     sa1BitCount_ = 0;
     sa1BitmapReg_ = 0;
+    sa1ArithMode_ = 0;
+    sa1Ma_ = 0;
+    sa1Mb_ = 0;
+    sa1ArithProduct_ = 0;
+    sa1ArithRemainder_ = 0;
+    sa1Cdma_ = 0;
+    std::fill(std::begin(sa1Brf_), std::end(sa1Brf_), static_cast<std::uint8_t>(0));
+    sa1CharRow_ = 0;
+    sa1BbF_ = 0;
+    sa1BitStream_ = 0;
+    sa1BitLeft_ = 0;
 }
 
-void Bus::tickAccess(std::uint8_t bank, std::uint16_t address) {
-    // FastROM banks $80–$FF are cheaper than SlowROM and I/O. Costs keep the
-    // hardware 6:8 ratio while staying close enough to the prior instruction
-    // tally that one-frame setup programs still finish (not full dot accuracy).
-    const bool fast = fastRom_ && bank >= 0x80 && address >= 0x8000;
-    const int cost = fast ? 3 : 4;
+void Bus::tickAccess(std::uint8_t bank, std::uint16_t address, bool pageCross) {
+    // Half-scale of the hardware 6/8 master-clock costs so one-frame setup
+    // programs still finish. FastROM ($80–$FF, $8000+) is 3; SlowROM, WRAM,
+    // and MMIO stay 4. Unaligned 16-bit page crosses add one more half-cycle.
+    const std::uint8_t mapped = static_cast<std::uint8_t>(bank & 0x7F);
+    int cost = 4;
+    if (fastRom_ && bank >= 0x80 && address >= 0x8000) {
+        cost = 3;
+    }
+    if (mapped < 0x40 && address < 0x8000) {
+        cost = 4;
+    }
+    if (pageCross) {
+        ++cost;
+    }
     cycle_ += cost;
-    if (masterClock_ > 0) {
+    lineDot_ += cost;
+    // Defer APU catch-up for the rest of the instruction once any $2140–$217F
+    // access happens, so 16-bit and multi-port command writes commit together.
+    const bool apuIo = mapped < 0x40 && address >= 0x2140 && address <= 0x217F;
+    if (apuIo) {
+        apuIoHold_ = true;
+    }
+    if (masterClock_ > 0 && !apuIoHold_) {
         apu_.catchUp(cycle_, masterClock_);
     }
 }
@@ -113,8 +174,7 @@ void Bus::stepGsu(int budget) {
 }
 
 int Bus::gsuBudgetForLine() const {
-    // Roughly one GSU op per four master clocks on a visible line when GO is set.
-    return 340;
+    return gsu_.budgetForLine();
 }
 
 bool Bus::takeSa1Start() {
@@ -143,6 +203,23 @@ std::uint8_t Bus::readSa1Reg(std::uint16_t address) const {
     if (address == 0x2303) {
         return static_cast<std::uint8_t>(sa1BitCount_);
     }
+    if (address == 0x2306) {
+        return static_cast<std::uint8_t>(sa1ArithProduct_);
+    }
+    if (address == 0x2307) {
+        return static_cast<std::uint8_t>(sa1ArithProduct_ >> 8);
+    }
+    if (address == 0x2308) {
+        return static_cast<std::uint8_t>((sa1ArithMode_ & 0x01) != 0 ? sa1ArithRemainder_
+                                                                      : (sa1ArithProduct_ >> 16));
+    }
+    if (address == 0x2309) {
+        return static_cast<std::uint8_t>((sa1ArithMode_ & 0x01) != 0 ? (sa1ArithRemainder_ >> 8)
+                                                                      : (sa1ArithProduct_ >> 24));
+    }
+    if (address == 0x230A) {
+        return 0;
+    }
     if (address == 0x230E) {
         return sa1BitmapReg_;
     }
@@ -165,11 +242,24 @@ void Bus::writeSa1Reg(std::uint16_t address, std::uint8_t value) {
         crv_ = static_cast<std::uint16_t>((crv_ & 0x00FF) | (static_cast<std::uint16_t>(value) << 8));
         return;
     }
+    if (address == 0x2225) {
+        // BB F: BW-RAM bitmap format (2/4 bpp select in low bits).
+        sa1BbF_ = value;
+        return;
+    }
     if (address == 0x2230) {
         sa1DmaControl_ = value;
-        // Bit 7 starts a DMA between I-RAM and BW-RAM for character conversion.
-        if ((value & 0x80) != 0 && sa1DmaCount_ != 0 && !iram_.empty() && !bwram_.empty()) {
-            const bool toIram = (value & 0x01) != 0;
+        // Bit 7 enables DMA. Bit 5 selects character conversion (handled via $2240–$224F
+        // for type 2, or BW-RAM→I-RAM rearrange for type 1). Normal DMA is a flat copy.
+        if ((value & 0xA0) == 0xA0 && (value & 0x10) == 0) {
+            // Type-1: DMAEN+CDEN without CDSEL — rearrange BW-RAM into I-RAM CHR.
+            runSa1CharConv1();
+            sa1DmaControl_ = static_cast<std::uint8_t>(value & 0x7F);
+            return;
+        }
+        if ((value & 0x80) != 0 && (value & 0x20) == 0 && sa1DmaCount_ != 0 && !iram_.empty() &&
+            !bwram_.empty()) {
+            const bool toIram = (value & 0x04) == 0;
             int left = sa1DmaCount_ == 0 ? 65536 : sa1DmaCount_;
             std::uint32_t source = sa1DmaSource_;
             std::uint32_t dest = sa1DmaDest_;
@@ -188,6 +278,16 @@ void Bus::writeSa1Reg(std::uint16_t address, std::uint8_t value) {
                 --left;
             }
             sa1DmaControl_ = static_cast<std::uint8_t>(value & 0x7F);
+        }
+        if ((value & 0xA0) == 0xA0) {
+            sa1CharRow_ = 0;
+        }
+        return;
+    }
+    if (address == 0x2231) {
+        sa1Cdma_ = value;
+        if ((value & 0x80) != 0) {
+            sa1CharRow_ = 0;
         }
         return;
     }
@@ -223,31 +323,152 @@ void Bus::writeSa1Reg(std::uint16_t address, std::uint8_t value) {
         sa1DmaCount_ = static_cast<std::uint16_t>((sa1DmaCount_ & 0x00FF) | (static_cast<std::uint16_t>(value) << 8));
         return;
     }
-    if (address == 0x2258) {
-        sa1BitData_ = (sa1BitData_ & 0xFFFFFF00u) | value;
-        return;
-    }
-    if (address == 0x2259) {
-        sa1BitData_ = (sa1BitData_ & 0xFFFF00FFu) | (static_cast<std::uint32_t>(value) << 8);
-        return;
-    }
-    if (address == 0x225A) {
-        sa1BitData_ = (sa1BitData_ & 0xFF00FFFFu) | (static_cast<std::uint32_t>(value) << 16);
-        return;
-    }
-    if (address == 0x225B) {
-        sa1BitCount_ = value & 0x1F;
-        if (sa1BitCount_ > 0 && sa1BitCount_ < 32) {
-            const std::uint32_t mask = (1u << sa1BitCount_) - 1u;
-            const std::uint32_t extracted = sa1BitData_ & mask;
-            sa1BitData_ >>= sa1BitCount_;
-            sa1BitmapReg_ = static_cast<std::uint8_t>(extracted);
+    if (address >= 0x2240 && address <= 0x224F) {
+        sa1Brf_[address - 0x2240] = value;
+        // Type-2 character conversion: DMAEN + CDEN + CDSEL ($2230 bits 7,5,4).
+        if (address == 0x224F && (sa1DmaControl_ & 0xB0) == 0xB0) {
+            runSa1CharConv2();
         }
         return;
     }
     if (address == 0x2250) {
-        sa1BitmapReg_ = value;
+        sa1ArithMode_ = static_cast<std::uint8_t>(value & 0x03);
+        return;
     }
+    if (address == 0x2251) {
+        sa1Ma_ = static_cast<std::uint16_t>((sa1Ma_ & 0xFF00) | value);
+        return;
+    }
+    if (address == 0x2252) {
+        sa1Ma_ = static_cast<std::uint16_t>((sa1Ma_ & 0x00FF) | (static_cast<std::uint16_t>(value) << 8));
+        return;
+    }
+    if (address == 0x2253) {
+        sa1Mb_ = static_cast<std::uint16_t>((sa1Mb_ & 0xFF00) | value);
+        return;
+    }
+    if (address == 0x2254) {
+        sa1Mb_ = static_cast<std::uint16_t>((sa1Mb_ & 0x00FF) | (static_cast<std::uint16_t>(value) << 8));
+        runSa1Arithmetic();
+        return;
+    }
+    if (address == 0x2258) {
+        sa1BitData_ = (sa1BitData_ & 0xFFFFFF00u) | value;
+        sa1BitStream_ = sa1BitData_;
+        sa1BitLeft_ = 24;
+        return;
+    }
+    if (address == 0x2259) {
+        sa1BitData_ = (sa1BitData_ & 0xFFFF00FFu) | (static_cast<std::uint32_t>(value) << 8);
+        sa1BitStream_ = sa1BitData_;
+        sa1BitLeft_ = 24;
+        return;
+    }
+    if (address == 0x225A) {
+        sa1BitData_ = (sa1BitData_ & 0xFF00FFFFu) | (static_cast<std::uint32_t>(value) << 16);
+        sa1BitStream_ = sa1BitData_;
+        sa1BitLeft_ = 24;
+        return;
+    }
+    if (address == 0x225B) {
+        sa1BitCount_ = value & 0x1F;
+        extractSa1Bits(sa1BitCount_);
+        return;
+    }
+}
+
+void Bus::extractSa1Bits(int count) {
+    if (count <= 0 || count >= 32) {
+        sa1BitmapReg_ = 0;
+        return;
+    }
+    if (sa1BitLeft_ < count) {
+        // Refill from the latched 24-bit word when the shifting window runs dry.
+        sa1BitStream_ = sa1BitData_;
+        sa1BitLeft_ = 24;
+    }
+    const std::uint32_t mask = (1u << count) - 1u;
+    const std::uint32_t extracted = sa1BitStream_ & mask;
+    sa1BitStream_ >>= count;
+    sa1BitLeft_ -= count;
+    sa1BitData_ = sa1BitStream_;
+    sa1BitmapReg_ = static_cast<std::uint8_t>(extracted);
+    // BW-RAM bitmap format can widen the reported pixel for 4bpp mode.
+    if ((sa1BbF_ & 0x80) != 0 && (sa1BbF_ & 0x03) == 1) {
+        sa1BitmapReg_ = static_cast<std::uint8_t>(extracted & 0x0F);
+    }
+}
+
+void Bus::runSa1Arithmetic() {
+    if ((sa1ArithMode_ & 0x01) == 0) {
+        const auto product = static_cast<std::int32_t>(static_cast<std::int16_t>(sa1Ma_)) *
+                             static_cast<std::int32_t>(static_cast<std::int16_t>(sa1Mb_));
+        sa1ArithProduct_ = static_cast<std::uint32_t>(product);
+        sa1ArithRemainder_ = 0;
+        return;
+    }
+    if (sa1Mb_ == 0) {
+        sa1ArithProduct_ = 0;
+        sa1ArithRemainder_ = sa1Ma_;
+        return;
+    }
+    sa1ArithProduct_ = static_cast<std::uint16_t>(sa1Ma_ / sa1Mb_);
+    sa1ArithRemainder_ = static_cast<std::uint16_t>(sa1Ma_ % sa1Mb_);
+}
+
+void Bus::runSa1CharConv1() {
+    // Type-1: eight BW-RAM source rows → one I-RAM CHR tile (2/4/8 bpp from CDMA).
+    if (iram_.empty() || bwram_.empty()) {
+        return;
+    }
+    const int colorMode = sa1Cdma_ & 0x03;
+    const int bpp = colorMode == 0 ? 8 : (colorMode == 1 ? 4 : 2);
+    const auto dest = static_cast<std::uint16_t>(sa1DmaDest_ & 0x07FF);
+    const std::uint32_t sourceBase = sa1DmaSource_ & 0x3FFFF;
+    for (int row = 0; row < 8; ++row) {
+        std::uint8_t pixels[8] = {};
+        for (int pixel = 0; pixel < 8; ++pixel) {
+            const std::size_t index = (sourceBase + static_cast<std::uint32_t>(row * 8 + pixel)) % bwram_.size();
+            pixels[pixel] = static_cast<std::uint8_t>(bwram_[index] & ((1 << bpp) - 1));
+        }
+        for (int plane = 0; plane < bpp && plane < 8; ++plane) {
+            std::uint8_t packed = 0;
+            for (int pixel = 0; pixel < 8; ++pixel) {
+                if ((pixels[pixel] & (1 << plane)) != 0) {
+                    packed = static_cast<std::uint8_t>(packed | (1 << (7 - pixel)));
+                }
+            }
+            const int offset = bpp == 2 ? row * 2 + plane
+                                        : (bpp == 4 ? ((plane & 1) + row * 2 + (plane & 2) * 8) : row * 8 + plane);
+            iram_[(dest + offset) & 0x07FF] = packed;
+        }
+    }
+    sa1CharRow_ = 0;
+}
+
+void Bus::runSa1CharConv2() {
+    if (iram_.empty()) {
+        return;
+    }
+    const int colorMode = sa1Cdma_ & 0x03;
+    const int bpp = colorMode == 0 ? 8 : (colorMode == 1 ? 4 : 2);
+    const int planes = bpp;
+    const auto dest = static_cast<std::uint16_t>(sa1DmaDest_ & 0x07FF);
+    const int row = sa1CharRow_ & 7;
+    for (int plane = 0; plane < planes && plane < 8; ++plane) {
+        std::uint8_t packed = 0;
+        for (int pixel = 0; pixel < 8; ++pixel) {
+            const int value = sa1Brf_[pixel] & ((1 << bpp) - 1);
+            if ((value & (1 << plane)) != 0) {
+                packed = static_cast<std::uint8_t>(packed | (1 << (7 - pixel)));
+            }
+        }
+        // SNES CHR: for 2bpp, row bytes are at +row*2 / +row*2+1; 4bpp uses two pairs.
+        const int offset = bpp == 2 ? row * 2 + plane
+                                    : (bpp == 4 ? ((plane & 1) + row * 2 + (plane & 2) * 8) : row * 8 + plane);
+        iram_[(dest + offset) & 0x07FF] = packed;
+    }
+    sa1CharRow_ = (sa1CharRow_ + 1) & 7;
 }
 
 bool Bus::readSa1(std::uint8_t bank, std::uint16_t address, std::uint8_t& value) {
@@ -348,7 +569,11 @@ bool Bus::writeSa1(std::uint8_t bank, std::uint16_t address, std::uint8_t value)
 
 void Bus::beginFrame() {
     apu_.beginFrame();
+    autoJoyPending_ = false;
     joyBusyUntil_ = 0;
+    lineDot_ = 0;
+    scanline_ = 0;
+    apuIoHold_ = false;
 }
 
 void Bus::catchUpApu(int masterCycle, int masterClock) {
@@ -359,16 +584,60 @@ void Bus::finishAudio(int masterCycles, int masterClock) {
     apu_.finishAudio(masterCycles, masterClock);
 }
 
-void Bus::setCycle(int cycle) {
+void Bus::setCycle(int cycle, int lineDot, int scanline) {
     cycle_ = cycle;
+    lineDot_ = lineDot;
+    scanline_ = scanline;
+    pollAutoJoy();
 }
 
 void Bus::raiseNmi() {
     nmiFlag_ = true;
     ppu_.reloadOam();
-    // $4200 bit 0 enables the automatic read. It occupies about three scanlines from vblank.
+    // $4200 bit 0 enables the automatic read. Snapshot pads into JOY1/JOY2 at the
+    // start (NMI handlers often read before the busy flag clears), then keep the
+    // busy bit for ~4224 master clocks while the serial clocks would run.
     if ((nmitimen_ & 0x01) != 0) {
-        joyBusyUntil_ = cycle_ + 1364 * 3;
+        commitAutoJoy();
+        joyBusyUntil_ = cycle_ + 4224;
+        autoJoyPending_ = true;
+    }
+}
+
+bool Bus::autoJoyBusy() const {
+    return autoJoyPending_ && cycle_ < joyBusyUntil_;
+}
+
+void Bus::pollAutoJoy() {
+    if (autoJoyPending_ && cycle_ >= joyBusyUntil_) {
+        autoJoyPending_ = false;
+    }
+}
+
+void Bus::commitAutoJoy() {
+    joy1Low_ = pad_[0].low;
+    joy1High_ = pad_[0].high;
+    joy2Low_ = pad_[1].low;
+    joy2High_ = pad_[1].high;
+    // Multitap on a host port exposes the extra pad on that port's second data line (JOY3/JOY4).
+    if (device_[0] == InputDevice::Multitap) {
+        joy3Low_ = pad_[2].low;
+        joy3High_ = pad_[2].high;
+    } else {
+        joy3Low_ = 0;
+        joy3High_ = 0;
+    }
+    if (device_[1] == InputDevice::Multitap) {
+        joy4Low_ = pad_[3].low;
+        joy4High_ = pad_[3].high;
+    } else {
+        joy4Low_ = 0;
+        joy4High_ = 0;
+    }
+    // Auto-read leaves both ports clocked through 16 bits (further $4016/$4017 reads stay high).
+    for (Pad& pad : pad_) {
+        pad.shift = 0;
+        pad.bitsLeft = 0;
     }
 }
 
@@ -408,62 +677,102 @@ bool Bus::sramIndex(std::uint8_t bank, std::uint16_t address, std::size_t& index
     return true;
 }
 
-void Bus::latchJoypad() {
-    joyShift_ = static_cast<std::uint16_t>((static_cast<std::uint16_t>(joyHigh_) << 8) | joyLow_);
-    joyBitsLeft_ = 16;
+void Bus::encodePad(Pad& pad, std::uint8_t buttons) const {
+    // $4218/$421A is A, X, L, R and a zero signature. $4219/$421B is B, Y, Select, Start, D-pad.
+    pad.low = 0;
+    pad.high = 0;
+    if ((buttons & kButtonA) != 0) {
+        pad.low = static_cast<std::uint8_t>(pad.low | 0x80);
+        // The shell has one A key. Super NES games use Y for run and roll, and
+        // often ignore A, so the same key holds Y as well.
+        pad.high = static_cast<std::uint8_t>(pad.high | 0x40);
+    }
+    if ((buttons & kButtonB) != 0) {
+        pad.high = static_cast<std::uint8_t>(pad.high | 0x80);
+    }
+    if ((buttons & kButtonSelect) != 0) {
+        pad.high = static_cast<std::uint8_t>(pad.high | 0x20);
+    }
+    if ((buttons & kButtonStart) != 0) {
+        pad.high = static_cast<std::uint8_t>(pad.high | 0x10);
+    }
+    if ((buttons & kButtonUp) != 0) {
+        pad.high = static_cast<std::uint8_t>(pad.high | 0x08);
+    }
+    if ((buttons & kButtonDown) != 0) {
+        pad.high = static_cast<std::uint8_t>(pad.high | 0x04);
+    }
+    if ((buttons & kButtonLeft) != 0) {
+        pad.high = static_cast<std::uint8_t>(pad.high | 0x02);
+    }
+    if ((buttons & kButtonRight) != 0) {
+        pad.high = static_cast<std::uint8_t>(pad.high | 0x01);
+    }
+}
+
+void Bus::latchJoypad(int port) {
+    if (port < 0 || port > 3) {
+        return;
+    }
+    Pad& pad = pad_[port];
+    pad.shift = static_cast<std::uint16_t>((static_cast<std::uint16_t>(pad.high) << 8) | pad.low);
+    pad.bitsLeft = 16;
 }
 
 std::uint8_t Bus::readJoypad(bool portTwo) {
-    if (portTwo) {
-        return 0;
-    }
+    const int port = portTwo ? 1 : 0;
+    Pad& pad = pad_[port];
     // Bits leave most-significant first: B, then Y, Select, Start, and the D-pad, then A, X, L, R.
     // Reads after those sixteen bits stay high, which is how a game sees a connected controller.
     std::uint8_t bit = 1;
     if (joyStrobe_) {
-        bit = (joyHigh_ & 0x80) != 0 ? 1 : 0;
-    } else if (joyBitsLeft_ > 0) {
-        bit = static_cast<std::uint8_t>((joyShift_ >> 15) & 0x01);
-        joyShift_ = static_cast<std::uint16_t>(joyShift_ << 1);
-        --joyBitsLeft_;
+        bit = (pad.high & 0x80) != 0 ? 1 : 0;
+    } else if (pad.bitsLeft > 0) {
+        bit = static_cast<std::uint8_t>((pad.shift >> 15) & 0x01);
+        pad.shift = static_cast<std::uint16_t>(pad.shift << 1);
+        --pad.bitsLeft;
     }
-    return bit;
+    // $4017 reports open-bus 1s in bits 2–4 alongside the serial bit.
+    return portTwo ? static_cast<std::uint8_t>(0x1C | bit) : bit;
 }
 
-void Bus::setController(std::uint8_t buttons) {
-    // $4218 is A, X, L, R and a zero signature. $4219 is B, Y, Select, Start, then the D-pad.
-    // A 16-bit read of $4218 is how games sample both bytes. The shell bits stay in NES order.
-    joyLow_ = 0;
-    joyHigh_ = 0;
-    if ((buttons & kButtonA) != 0) {
-        joyLow_ = static_cast<std::uint8_t>(joyLow_ | 0x80);
-        // The shell has one A key. Super NES games use Y for run and roll, and
-        // often ignore A, so the same key holds Y as well.
-        joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x40);
+void Bus::setInputDevice(int port, InputDevice device) {
+    if (port < 0 || port > 1) {
+        return;
     }
-    if ((buttons & kButtonB) != 0) {
-        joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x80);
+    device_[port] = device;
+}
+
+void Bus::setPointer(int x, int y) {
+    pointerX_ = x;
+    pointerY_ = y;
+}
+
+void Bus::setController(int port, std::uint8_t buttons) {
+    if (port < 0 || port > 3) {
+        return;
     }
-    if ((buttons & kButtonSelect) != 0) {
-        joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x20);
+    const int host = port <= 1 ? port : (port == 2 ? 0 : 1);
+    if (device_[host] == InputDevice::Mouse && port == host) {
+        // Signature nibble in the high byte; low byte carries buttons and a coarse delta.
+        pad_[port].low = static_cast<std::uint8_t>((buttons & 0x03) | ((pointerX_ & 0x0F) << 4));
+        pad_[port].high = static_cast<std::uint8_t>(0x01 | ((pointerY_ & 0x0F) << 4));
+    } else if ((device_[host] == InputDevice::SuperScope || device_[host] == InputDevice::Justifier) &&
+               port == host) {
+        encodePad(pad_[port], buttons);
+        // Fire latches HV at the software pointer so light-gun games can read OPHCT/OPVCT.
+        if ((buttons & kButtonA) != 0 || (buttons & kButtonB) != 0) {
+            ppu_.latchCounters(pointerY_, pointerX_ * 4);
+        }
+    } else {
+        encodePad(pad_[port], buttons);
     }
-    if ((buttons & kButtonStart) != 0) {
-        joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x10);
+    // When auto-read is off, $4218–$421F track pads immediately (debug and polled games).
+    if ((nmitimen_ & 0x01) == 0) {
+        commitAutoJoy();
     }
-    if ((buttons & kButtonUp) != 0) {
-        joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x08);
-    }
-    if ((buttons & kButtonDown) != 0) {
-        joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x04);
-    }
-    if ((buttons & kButtonLeft) != 0) {
-        joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x02);
-    }
-    if ((buttons & kButtonRight) != 0) {
-        joyHigh_ = static_cast<std::uint8_t>(joyHigh_ | 0x01);
-    }
-    if (joyStrobe_) {
-        latchJoypad();
+    if (joyStrobe_ && port <= 1) {
+        latchJoypad(port);
     }
 }
 
@@ -557,12 +866,15 @@ std::uint8_t Bus::read(std::uint8_t bank, std::uint16_t address) {
             return wram_[address];
         }
         if (address >= 0x2100 && address <= 0x213F) {
+            if (address == 0x2137) {
+                ppu_.latchCounters(scanline_, lineDot_);
+            }
             return ppu_.read(address);
         }
         if (address >= 0x2180 && address <= 0x2183) {
             return readWramPort(address);
         }
-        if (address >= 0x2140 && address <= 0x2143) {
+        if (address >= 0x2140 && address <= 0x217F) {
             return apu_.readPort(address & 0x03);
         }
         if (address == 0x4210) {
@@ -576,14 +888,15 @@ std::uint8_t Bus::read(std::uint8_t bank, std::uint16_t address) {
             return value;
         }
         if (address == 0x4212) {
-            const int linePos = cycle_ % 1364;
-            std::uint8_t value = cycle_ >= 1364 * 225 ? 0x80 : 0;
+            pollAutoJoy();
+            // Use the current scanline, not cycle/1364 — NTSC shortens one line and
+            // a modulo drifts HBlank for the rest of the frame (FF6 fade waits).
+            std::uint8_t value = scanline_ >= vblankLine() ? 0x80 : 0;
             // Bit 6 is horizontal blank, the last portion of every scanline.
-            // Final Fantasy VI waits for this bit before it will leave a screen.
-            if (linePos >= 1096) {
+            if (lineDot_ >= 1096) {
                 value = static_cast<std::uint8_t>(value | 0x40);
             }
-            if (cycle_ < joyBusyUntil_) {
+            if (autoJoyBusy()) {
                 value = static_cast<std::uint8_t>(value | 0x01);
             }
             return value;
@@ -604,10 +917,36 @@ std::uint8_t Bus::read(std::uint8_t bank, std::uint16_t address) {
             return readJoypad(address == 0x4017);
         }
         if (address == 0x4218) {
-            return joyLow_;
+            pollAutoJoy();
+            return joy1Low_;
         }
         if (address == 0x4219) {
-            return joyHigh_;
+            pollAutoJoy();
+            return joy1High_;
+        }
+        if (address == 0x421A) {
+            pollAutoJoy();
+            return joy2Low_;
+        }
+        if (address == 0x421B) {
+            pollAutoJoy();
+            return joy2High_;
+        }
+        if (address == 0x421C) {
+            pollAutoJoy();
+            return joy3Low_;
+        }
+        if (address == 0x421D) {
+            pollAutoJoy();
+            return joy3High_;
+        }
+        if (address == 0x421E) {
+            pollAutoJoy();
+            return joy4Low_;
+        }
+        if (address == 0x421F) {
+            pollAutoJoy();
+            return joy4High_;
         }
         if (address >= 0x8000) {
             return romByte(mapped, address);
@@ -679,14 +1018,15 @@ void Bus::write(std::uint8_t bank, std::uint16_t address, std::uint8_t value) {
             writeWramPort(address, value);
             return;
         }
-        if (address >= 0x2140 && address <= 0x2143) {
+        if (address >= 0x2140 && address <= 0x217F) {
             apu_.writePort(address & 0x03, value);
             return;
         }
         if (address == 0x4016) {
             const bool strobe = (value & 0x01) != 0;
             if (strobe) {
-                latchJoypad();
+                latchJoypad(0);
+                latchJoypad(1);
             }
             joyStrobe_ = strobe;
             return;
@@ -985,8 +1325,8 @@ void Bus::saveState(iris::ByteWriter& out) const {
         out.boolean(channel.hdmaTransfer);
     }
     out.u32(wmadd_);
-    out.u8(joyLow_);
-    out.u8(joyHigh_);
+    out.u8(joy1Low_);
+    out.u8(joy1High_);
     out.u8(nmitimen_);
     out.u8(hdmaen_);
     out.u8(ccnt_);
@@ -1088,11 +1428,16 @@ bool Bus::loadState(iris::ByteReader& in) {
         dma_[index] = dma[index];
     }
     wmadd_ = wmadd;
-    joyLow_ = joyLow;
-    joyHigh_ = joyHigh;
-    joyShift_ = 0;
-    joyBitsLeft_ = 0;
+    joy1Low_ = joyLow;
+    joy1High_ = joyHigh;
+    joy2Low_ = 0;
+    joy2High_ = 0;
+    pad_[0] = Pad{};
+    pad_[0].low = joyLow;
+    pad_[0].high = joyHigh;
+    pad_[1] = Pad{};
     joyStrobe_ = false;
+    autoJoyPending_ = false;
     joyBusyUntil_ = 0;
     nmitimen_ = nmitimen;
     hdmaen_ = hdmaen;

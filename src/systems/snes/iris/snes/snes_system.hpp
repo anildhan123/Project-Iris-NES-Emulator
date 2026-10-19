@@ -35,6 +35,9 @@ public:
     [[nodiscard]] FrameView frame() const override;
     [[nodiscard]] AudioView audio() const override;
     void setController(int port, std::uint8_t buttons) override;
+    void setInputDevice(int port, Bus::InputDevice device);
+    void setPointer(int x, int y);
+    [[nodiscard]] int lastFrameMasterClocks() const { return lastFrameMasterClocks_; }
     [[nodiscard]] SystemInfo info() const override;
     bool describeContent(
         const std::filesystem::path& path, ContentDescription& description, std::string& error) const override;
@@ -61,6 +64,7 @@ private:
     std::string contentId_;
     TvStandard standard_ = TvStandard::Ntsc;
     iris::RegionChoice regionChoice_ = iris::RegionChoice::Automatic;
+    int lastFrameMasterClocks_ = 0;
     bool loaded_ = false;
     bool paused_ = false;
 };

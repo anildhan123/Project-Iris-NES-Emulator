@@ -43,14 +43,20 @@ int Ppu::height() const {
 }
 
 void Ppu::beginLine(int y) {
-    // Snapshot registers for this line. Writes during the line apply from the next
-    // beginLine call (typical mid-frame BGMODE/TM/TS races).
+    // Snapshot registers at the start of the line. CPU or HDMA writes during the
+    // line (and HBlank HDMA) apply from the next beginLine call.
     if (y == 0 && interlaced()) {
         field_ ^= 1;
     }
+    relatchLine();
+}
+
+void Ppu::relatchLine() {
     latchedBgmode_ = bgmode_;
     latchedTm_ = tm_;
     latchedTs_ = ts_;
+    latchedCgwsel_ = cgwsel_;
+    latchedCgadsub_ = cgadsub_;
 }
 
 void Ppu::power() {
@@ -87,14 +93,16 @@ void Ppu::reset() {
     cgHigh_ = false;
     cgLatch_ = 0;
     m7Latch_ = 0;
-    m7a_ = 0;
+    m7a_ = 0x0100;
     m7b_ = 0;
     m7c_ = 0;
-    m7d_ = 0;
+    m7d_ = 0x0100;
     m7x_ = 0;
     m7y_ = 0;
     m7hofs_ = 0;
     m7vofs_ = 0;
+    m7sel_ = 0;
+    m7Product_ = 0;
     w12sel_ = 0;
     w34sel_ = 0;
     wobjsel_ = 0;
@@ -115,35 +123,61 @@ void Ppu::reset() {
     latchedBgmode_ = 0;
     latchedTm_ = 0;
     latchedTs_ = 0;
+    latchedCgwsel_ = 0;
+    latchedCgadsub_ = 0;
     field_ = 0;
+    ophct_ = 0;
+    opvct_ = 0;
+    ophHigh_ = false;
+    opvHigh_ = false;
+    ppuOpenBus_ = 0;
+}
+
+void Ppu::latchCounters(int scanline, int lineDot) {
+    // H is in PPU dots (four master clocks). V is the current scanline index.
+    ophct_ = static_cast<std::uint16_t>((lineDot / 4) & 0x1FF);
+    opvct_ = static_cast<std::uint16_t>(scanline & 0x1FF);
+    ophHigh_ = false;
+    opvHigh_ = false;
 }
 
 std::uint8_t Ppu::read(std::uint16_t address) {
-    if (address == 0x213F) {
+    std::uint8_t value = ppuOpenBus_;
+    if (address == 0x2134) {
+        value = static_cast<std::uint8_t>(m7Product_);
+    } else if (address == 0x2135) {
+        value = static_cast<std::uint8_t>(m7Product_ >> 8);
+    } else if (address == 0x2136) {
+        value = static_cast<std::uint8_t>(m7Product_ >> 16);
+    } else if (address == 0x2137) {
+        // SLHV is latched by the bus before this read; the data bus keeps open bus.
+        value = ppuOpenBus_;
+    } else if (address == 0x213C) {
+        value = ophHigh_ ? static_cast<std::uint8_t>((ophct_ >> 8) & 0x01) : static_cast<std::uint8_t>(ophct_);
+        ophHigh_ = !ophHigh_;
+    } else if (address == 0x213D) {
+        value = opvHigh_ ? static_cast<std::uint8_t>((opvct_ >> 8) & 0x01) : static_cast<std::uint8_t>(opvct_);
+        opvHigh_ = !opvHigh_;
+    } else if (address == 0x213F) {
         // Bit 0: 5C77. Bit 7: interlace field when SETINI selects interlaced output.
-        return static_cast<std::uint8_t>(0x01 | ((field_ & 1) != 0 ? 0x80 : 0));
-    }
-    if (address == 0x2139 || address == 0x213A) {
+        value = static_cast<std::uint8_t>(0x01 | ((field_ & 1) != 0 ? 0x80 : 0));
+    } else if (address == 0x2139 || address == 0x213A) {
         const std::size_t byte = static_cast<std::size_t>(vramAddress_ & 0x7FFF) * 2 + (address == 0x213A ? 1 : 0);
-        if (byte >= vram_.size()) {
-            return 0;
+        if (byte < vram_.size()) {
+            value = vram_[byte];
         }
-        const std::uint8_t value = vram_[byte];
         if ((address == 0x213A) == ((vmain_ & 0x80) != 0)) {
             vramAddress_ = static_cast<std::uint16_t>((vramAddress_ + 1) & 0x7FFF);
         }
-        return value;
-    }
-    if (address == 0x2138) {
+    } else if (address == 0x2138) {
         const int index = oamByte_;
-        const std::uint8_t value =
-            index >= 0 && static_cast<std::size_t>(index) < oam_.size() ? oam_[static_cast<std::size_t>(index)] : 0;
+        value = index >= 0 && static_cast<std::size_t>(index) < oam_.size() ? oam_[static_cast<std::size_t>(index)] : 0;
         if (oamByte_ < 544) {
             ++oamByte_;
         }
-        return value;
     }
-    return 0;
+    ppuOpenBus_ = value;
+    return value;
 }
 
 void Ppu::write(std::uint16_t address, std::uint8_t value) {
@@ -197,11 +231,16 @@ void Ppu::write(std::uint16_t address, std::uint8_t value) {
     case 0x2114:
         writeScroll(3, true, value);
         break;
+    case 0x211A:
+        m7sel_ = value;
+        break;
     case 0x211B:
         writeMode7(m7a_, value);
         break;
     case 0x211C:
         writeMode7(m7b_, value);
+        // 16×8 signed product of M7A and the byte written to M7B.
+        m7Product_ = static_cast<std::int32_t>(m7a_) * static_cast<std::int8_t>(value);
         break;
     case 0x211D:
         writeMode7(m7c_, value);
@@ -378,18 +417,41 @@ void Ppu::writeMode7(std::int16_t& reg, std::uint8_t value) {
 }
 
 int Ppu::mode7Pixel(int x, int y) const {
-    const int orgX = x + m7hofs_ - m7x_;
-    const int orgY = y + m7vofs_ - m7y_;
-    const int vx = ((static_cast<int>(m7a_) * orgX + static_cast<int>(m7b_) * orgY) >> 8) + m7x_;
-    const int vy = ((static_cast<int>(m7c_) * orgX + static_cast<int>(m7d_) * orgY) >> 8) + m7y_;
-    if (vx < 0 || vy < 0 || vx >= 1024 || vy >= 1024 || vram_.size() < 2) {
+    if (vram_.size() < 2) {
         return -1;
     }
-    const std::size_t mapWordIndex = static_cast<std::size_t>((vy >> 3) * 128 + (vx >> 3));
-    if (mapWordIndex * 2 >= vram_.size()) {
-        return -1;
+    int sx = x;
+    int sy = y;
+    if ((m7sel_ & 0x01) != 0) {
+        sx = 255 - x;
     }
-    const int tile = vram_[mapWordIndex * 2];
+    if ((m7sel_ & 0x02) != 0) {
+        sy = 255 - y;
+    }
+    const int orgX = sx + m7hofs_ - m7x_;
+    const int orgY = sy + m7vofs_ - m7y_;
+    int vx = ((static_cast<int>(m7a_) * orgX + static_cast<int>(m7b_) * orgY) >> 8) + m7x_;
+    int vy = ((static_cast<int>(m7c_) * orgX + static_cast<int>(m7d_) * orgY) >> 8) + m7y_;
+    bool outside = vx < 0 || vy < 0 || vx >= 1024 || vy >= 1024;
+    if (outside) {
+        if ((m7sel_ & 0x80) == 0) {
+            // Tilemap repeat (default).
+            vx &= 1023;
+            vy &= 1023;
+            outside = false;
+        } else if ((m7sel_ & 0x40) == 0) {
+            return -1;
+        }
+        // Else fill with character 0; keep low bits for the pixel within the tile.
+    }
+    int tile = 0;
+    if (!outside) {
+        const std::size_t mapWordIndex = static_cast<std::size_t>((vy >> 3) * 128 + (vx >> 3));
+        if (mapWordIndex * 2 >= vram_.size()) {
+            return -1;
+        }
+        tile = vram_[mapWordIndex * 2];
+    }
     const std::size_t pixelWord = static_cast<std::size_t>(tile * 64 + (vy & 7) * 8 + (vx & 7));
     if (pixelWord * 2 + 1 >= vram_.size()) {
         return -1;
@@ -452,9 +514,22 @@ bool Ppu::layerMasked(int x, std::uint8_t select, bool enabled, std::uint8_t com
     }
 }
 
+bool Ppu::colorWindowMath(int x, bool main) const {
+    // CGWSEL bits 4–5 (main) / 6–7 (sub): 00 always, 01 inside, 10 outside, 11 never.
+    const int mode = main ? ((latchedCgwsel_ >> 4) & 0x03) : ((latchedCgwsel_ >> 6) & 0x03);
+    if (mode == 0) {
+        return true;
+    }
+    if (mode == 3) {
+        return false;
+    }
+    const bool inside = layerMasked(x, wobjsel_ >> 4, true, static_cast<std::uint8_t>(wobjlog_ >> 2));
+    return mode == 1 ? inside : !inside;
+}
+
 std::uint16_t Ppu::applyMath(std::uint16_t color, int addRed, int addGreen, int addBlue) const {
-    const bool subtract = (cgadsub_ & 0x80) != 0;
-    const bool half = (cgadsub_ & 0x40) != 0;
+    const bool subtract = (latchedCgadsub_ & 0x80) != 0;
+    const bool half = (latchedCgadsub_ & 0x40) != 0;
     const auto mix = [&](int channel, int addend) {
         int value = subtract ? channel - addend : channel + addend;
         if (half) {
@@ -474,6 +549,45 @@ std::uint16_t Ppu::applyMath(std::uint16_t color, int addRed, int addGreen, int 
     return static_cast<std::uint16_t>(red | (green << 5) | (blue << 10));
 }
 
+void Ppu::applyOffsetPerTile(int layer, int mode, int x, int y, int& sampleX, int& sampleY) const {
+    if ((mode != 2 && mode != 4 && mode != 6) || layer > 1 || (mode == 6 && layer != 0)) {
+        return;
+    }
+    const int hofs = hofs_[layer] & 0x3FF;
+    // Leftmost visible 8×8 column is never OPT-offset.
+    if (((x + (hofs & 7)) >> 3) == 0) {
+        return;
+    }
+    const int bg3h = hofs_[2] & 0x3FF;
+    const int bg3v = vofs_[2] & 0x3FF;
+    // Anomie: optX = (HOFS&7) | (((X-8)&~7) + (BG3HOFS&~7)), HOFS = X + BGnHOFS.
+    const int optX = ((x + hofs) & 7) | (((x - 8) & ~7) + (bg3h & ~7));
+    const int validBit = layer == 0 ? 0x2000 : 0x4000;
+    int h = sampleX;
+    int v = sampleY;
+    if (mode == 4) {
+        const int word = mapWord(bg3sc_, optX >> 3, bg3v >> 3);
+        if ((word & validBit) != 0) {
+            if ((word & 0x8000) != 0) {
+                v = y + (word & 0x3FF);
+            } else {
+                h = (h & 7) | ((x & ~7) + ((word & 0x3FF) & ~7));
+            }
+        }
+    } else {
+        const int hWord = mapWord(bg3sc_, optX >> 3, bg3v >> 3);
+        const int vWord = mapWord(bg3sc_, optX >> 3, (bg3v + 8) >> 3);
+        if ((hWord & validBit) != 0) {
+            h = (h & 7) | ((x & ~7) + ((hWord & 0x3FF) & ~7));
+        }
+        if ((vWord & validBit) != 0) {
+            v = y + (vWord & 0x3FF);
+        }
+    }
+    sampleX = h;
+    sampleY = v;
+}
+
 int Ppu::stackRank(int mode, int source, int priority) const {
     struct Slot {
         int source;
@@ -488,11 +602,17 @@ int Ppu::stackRank(int mode, int source, int priority) const {
     static constexpr Slot kMode1High[] = {
         {2, 1}, {4, 3}, {0, 1}, {1, 1}, {4, 2}, {0, 0}, {1, 0}, {4, 1}, {2, 0}, {4, 0},
     };
+    // Modes 3/5 (and similar two-BG stacks).
     static constexpr Slot kModes[] = {
         {4, 3}, {0, 1}, {1, 1}, {4, 2}, {0, 0}, {1, 0}, {4, 1}, {4, 0},
     };
+    // Mode 2 / 6: OBJ3 > BG1.1 > OBJ2 > BG2.1 > OBJ1 > BG1.0 > OBJ0 > BG2.0.
+    static constexpr Slot kMode2[] = {
+        {4, 3}, {0, 1}, {4, 2}, {1, 1}, {4, 1}, {0, 0}, {4, 0}, {1, 0},
+    };
+    // Mode 7: OBJ3 > OBJ2 > BG2 (EXTBG high) > BG1 > OBJ1 > OBJ0.
     static constexpr Slot kMode7[] = {
-        {4, 3}, {4, 2}, {0, 0}, {4, 1}, {4, 0},
+        {4, 3}, {4, 2}, {1, 1}, {0, 0}, {4, 1}, {4, 0},
     };
     const Slot* table = kModes;
     int count = 8;
@@ -505,9 +625,12 @@ int Ppu::stackRank(int mode, int source, int priority) const {
     } else if (mode == 1) {
         table = kMode1Low;
         count = 10;
+    } else if (mode == 2 || mode == 6) {
+        table = kMode2;
+        count = 8;
     } else if (mode == 7) {
         table = kMode7;
-        count = 5;
+        count = 6;
     }
     for (int index = 0; index < count; ++index) {
         if (table[index].source == source && table[index].priority == priority) {
@@ -568,22 +691,7 @@ Ppu::Texel Ppu::sampleLayer(int layer, int x, int y, std::uint8_t windowMask) co
     }
     int sampleX = x + (hofs_[layer] & 0x3FF);
     int sampleY = y + (vofs_[layer] & 0x3FF);
-    if ((mode == 2 || mode == 4 || mode == 6) && layer <= 1 && !(mode == 6 && layer != 0)) {
-        const int column = x >> 3;
-        const int row = static_cast<int>(vofs_[2]) >> 3;
-        const int table = static_cast<int>(hofs_[2]) >> 3;
-        const auto applyOffset = [&](int word, int pixel, int& sample) {
-            if ((word & 0x2000) == 0) {
-                return;
-            }
-            if (mode != 6 && ((word & 0x8000) != 0) != (layer == 1)) {
-                return;
-            }
-            sample = pixel + (word & 0x03FF);
-        };
-        applyOffset(mapWord(bg3sc_, table + column * 2, row), x, sampleX);
-        applyOffset(mapWord(bg3sc_, table + column * 2 + 1, row), y, sampleY);
-    }
+    applyOffsetPerTile(layer, mode, x, y, sampleX, sampleY);
     std::uint8_t screen = bg1sc_;
     int nameNibble = bg12nba_ & 0x0F;
     if (layer == 1) {
@@ -678,7 +786,6 @@ void Ppu::paintLayer(int layer, int y, Texel* row, int lineWidth) const {
     const int bytesPerTile = bpp == 2 ? 16 : (bpp == 8 ? 64 : 32);
     const int charBase = nameNibble << 13;
     const int planeSpan = bpp == 8 ? 49 : (bpp == 4 ? 17 : 1);
-    const bool useOffset = (mode == 2 || mode == 4 || mode == 6) && layer <= 1 && !(mode == 6 && layer != 0);
     const bool mosaic = (mosaic_ & (0x10 << layer)) != 0;
     const int mosaicSize = (mosaic_ & 0x0F) + 1;
     // Modes 5 and 6 draw 512 dots. Each character pixel is one half-dot wide, so
@@ -696,29 +803,17 @@ void Ppu::paintLayer(int layer, int y, Texel* row, int lineWidth) const {
     for (int x = 0; x < lineWidth; ++x) {
         int sampleX = x + (hofs_[layer] & 0x3FF);
         int sampleY = y + (vofs_[layer] & 0x3FF);
+        int screenX = x;
+        int screenY = y;
         if (mosaic) {
             const int unit = lineWidth > kWidth ? 2 : 1;
             const int mosaicX = (x / unit) - ((x / unit) % mosaicSize);
-            sampleX = mosaicX * unit + (x % unit) + (hofs_[layer] & 0x3FF);
-            sampleY = (y - (y % mosaicSize)) + (vofs_[layer] & 0x3FF);
+            screenX = mosaicX * unit + (x % unit);
+            screenY = y - (y % mosaicSize);
+            sampleX = screenX + (hofs_[layer] & 0x3FF);
+            sampleY = screenY + (vofs_[layer] & 0x3FF);
         }
-        const int scrolledX = sampleX - (hofs_[layer] & 0x3FF);
-        if (useOffset) {
-            const int column = scrolledX >> 3;
-            const int rowIndex = static_cast<int>(vofs_[2]) >> 3;
-            const int table = static_cast<int>(hofs_[2]) >> 3;
-            const auto applyOffset = [&](int word, int pixel, int& sample) {
-                if ((word & 0x2000) == 0) {
-                    return;
-                }
-                if (mode != 6 && ((word & 0x8000) != 0) != (layer == 1)) {
-                    return;
-                }
-                sample = pixel + (word & 0x03FF);
-            };
-            applyOffset(mapWord(bg3sc_, table + column * 2, rowIndex), scrolledX, sampleX);
-            applyOffset(mapWord(bg3sc_, table + column * 2 + 1, rowIndex), y, sampleY);
-        }
+        applyOffsetPerTile(layer, mode, screenX, screenY, sampleX, sampleY);
         const int tileX = sampleX >> 3;
         const int tileY = sampleY >> 3;
         const int fineY = sampleY & 7;
@@ -793,11 +888,21 @@ void Ppu::renderLine(int y) {
     }
     const int mode = latchedBgmode_ & 0x07;
     const bool mode7 = mode == 7;
-    const bool useSub = (cgwsel_ & 0x02) != 0 && (cgadsub_ & 0x3F) != 0;
+    const bool useSub = (latchedCgwsel_ & 0x02) != 0 && (latchedCgadsub_ & 0x3F) != 0;
     const std::uint8_t enabled =
         static_cast<std::uint8_t>(latchedTm_ | (useSub ? latchedTs_ : 0));
-    // Odd interlaced fields sample one line lower so the picture weaves.
-    const int sampleY = interlaced() && (field_ & 1) != 0 ? y + 1 : y;
+    // Modes 5–6 with SETINI interlace double the source grid per field. Other
+    // modes still weave by sampling one line lower on the odd field.
+    int sampleY = y;
+    if (interlaced()) {
+        if (mode == 5 || mode == 6) {
+            sampleY = y * 2 + (field_ & 1);
+        } else if ((field_ & 1) != 0) {
+            sampleY = y + 1;
+        }
+    }
+    const int spriteY =
+        interlaced() && objInterlaced() ? y * 2 + (field_ & 1) : sampleY;
     Texel layers[4][kMaxWidth];
     bool layerReady[4] = {};
     if (!mode7) {
@@ -809,15 +914,16 @@ void Ppu::renderLine(int y) {
             layerReady[layer] = true;
         }
     }
+    const bool extbg = mode7 && (setini_ & 0x40) != 0;
     int mode7Index[kMaxWidth] = {};
-    if (mode7 && (enabled & 0x01) != 0) {
+    if (mode7 && ((enabled & 0x01) != 0 || (extbg && (enabled & 0x02) != 0))) {
         for (int x = 0; x < lineWidth; ++x) {
             mode7Index[x] = mode7Pixel(x, sampleY);
         }
     }
     Texel sprites[kMaxWidth] = {};
     if ((enabled & 0x10) != 0) {
-        collectSprites(sampleY, sprites, lineWidth);
+        collectSprites(spriteY, sprites, lineWidth);
     }
     int rank[5][4];
     for (int source = 0; source < 5; ++source) {
@@ -854,10 +960,29 @@ void Ppu::renderLine(int y) {
         const int windowX = x / windowXScale;
         const auto sampleScreen = [&](std::uint8_t enable, std::uint8_t windowMask) {
             Hit best;
-            if (mode7 && (enable & 0x01) != 0 &&
-                !layerMasked(windowX, w12sel_, (windowMask & 0x01) != 0, wlog_ & 0x03)) {
-                consider(best, mode7Index[x], 0, 0, 0x01);
-            } else if (!mode7) {
+            if (mode7) {
+                const int pixel = mode7Index[x];
+                if (pixel > 0) {
+                    if (extbg) {
+                        const int color = pixel & 0x7F;
+                        const bool high = (pixel & 0x80) != 0;
+                        if (color > 0) {
+                            if (high && (enable & 0x02) != 0 &&
+                                !layerMasked(windowX, static_cast<std::uint8_t>(w12sel_ >> 4),
+                                             (windowMask & 0x02) != 0,
+                                             static_cast<std::uint8_t>(wlog_ >> 2))) {
+                                consider(best, color, 1, 1, 0x02);
+                            } else if (!high && (enable & 0x01) != 0 &&
+                                       !layerMasked(windowX, w12sel_, (windowMask & 0x01) != 0, wlog_ & 0x03)) {
+                                consider(best, color, 0, 0, 0x01);
+                            }
+                        }
+                    } else if ((enable & 0x01) != 0 &&
+                               !layerMasked(windowX, w12sel_, (windowMask & 0x01) != 0, wlog_ & 0x03)) {
+                        consider(best, pixel, 0, 0, 0x01);
+                    }
+                }
+            } else {
                 for (int layer = 3; layer >= 0; --layer) {
                     if ((enable & (1 << layer)) == 0 || !layerReady[layer]) {
                         continue;
@@ -885,16 +1010,17 @@ void Ppu::renderLine(int y) {
             }
             return best;
         };
-        const Hit main = sampleScreen(tm_, tmw_);
-        const Hit sub = useSub ? sampleScreen(ts_, tsw_) : Hit{};
+        const Hit main = sampleScreen(latchedTm_, tmw_);
+        const Hit sub = useSub ? sampleScreen(latchedTs_, tsw_) : Hit{};
         std::uint16_t color = backdrop;
         int mathBit = 0;
         if (main.opaque && static_cast<std::size_t>(main.index) < cgramSize) {
             color = cgram[static_cast<std::size_t>(main.index)];
             mathBit = main.mathBit;
         }
-        const bool mathBackdrop = !main.opaque && (cgadsub_ & 0x20) != 0;
-        if (mathBackdrop || (mathBit != 0 && (cgadsub_ & mathBit) != 0)) {
+        const bool mathBackdrop = !main.opaque && (latchedCgadsub_ & 0x20) != 0;
+        const bool wantsMath = mathBackdrop || (mathBit != 0 && (latchedCgadsub_ & mathBit) != 0);
+        if (wantsMath && colorWindowMath(windowX, true)) {
             int addRed = fixedR_;
             int addGreen = fixedG_;
             int addBlue = fixedB_;
@@ -902,11 +1028,17 @@ void Ppu::renderLine(int y) {
                 addRed = 0;
                 addGreen = 0;
                 addBlue = 0;
-                if (sub.opaque && static_cast<std::size_t>(sub.index) < cgramSize) {
+                // Subscreen color window can force the fixed color when the sub sample is clipped.
+                if (sub.opaque && static_cast<std::size_t>(sub.index) < cgramSize &&
+                    colorWindowMath(windowX, false)) {
                     const std::uint16_t behind = cgram[static_cast<std::size_t>(sub.index)];
                     addRed = behind & 0x1F;
                     addGreen = (behind >> 5) & 0x1F;
                     addBlue = (behind >> 10) & 0x1F;
+                } else {
+                    addRed = fixedR_;
+                    addGreen = fixedG_;
+                    addBlue = fixedB_;
                 }
             }
             color = applyMath(color, addRed, addGreen, addBlue);
@@ -1014,6 +1146,8 @@ void Ppu::saveState(iris::ByteWriter& out) const {
     out.u32(static_cast<std::uint32_t>(m7y_));
     out.u32(static_cast<std::uint32_t>(m7hofs_));
     out.u32(static_cast<std::uint32_t>(m7vofs_));
+    out.u8(m7sel_);
+    out.u32(static_cast<std::uint32_t>(m7Product_));
     out.u8(w12sel_);
     out.u8(w34sel_);
     out.u8(wobjsel_);
@@ -1079,6 +1213,8 @@ bool Ppu::loadState(iris::ByteReader& in) {
     const auto m7y = static_cast<int>(in.u32());
     const auto m7hofs = static_cast<int>(in.u32());
     const auto m7vofs = static_cast<int>(in.u32());
+    const auto m7sel = in.u8();
+    const auto m7Product = static_cast<std::int32_t>(in.u32());
     const auto w12sel = in.u8();
     const auto w34sel = in.u8();
     const auto wobjsel = in.u8();
@@ -1146,6 +1282,8 @@ bool Ppu::loadState(iris::ByteReader& in) {
     m7y_ = m7y;
     m7hofs_ = m7hofs;
     m7vofs_ = m7vofs;
+    m7sel_ = m7sel;
+    m7Product_ = m7Product;
     w12sel_ = w12sel;
     w34sel_ = w34sel;
     wobjsel_ = wobjsel;
@@ -1166,6 +1304,8 @@ bool Ppu::loadState(iris::ByteReader& in) {
     latchedBgmode_ = latchedBgmode;
     latchedTm_ = latchedTm;
     latchedTs_ = latchedTs;
+    latchedCgwsel_ = cgwsel;
+    latchedCgadsub_ = cgadsub;
     field_ = field;
     vram_ = std::move(vram);
     oam_ = std::move(oam);

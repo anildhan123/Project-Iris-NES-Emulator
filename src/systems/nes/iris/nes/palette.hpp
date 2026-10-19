@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 
 namespace iris::systems::nes {
@@ -19,13 +20,19 @@ struct Rgb {
     std::uint8_t blue = 0;
 };
 
-[[nodiscard]] inline Rgb paletteColor(std::uint8_t index) {
+[[nodiscard]] inline Rgb paletteColor(std::uint8_t index, bool pal = false) {
     const std::uint16_t packed = kPaletteDac[index & 0x3F];
     const auto channel = [](std::uint16_t value, int shift) {
         const int level = (value >> shift) & 0xF;
         return static_cast<std::uint8_t>((level * 255) / 7);
     };
-    return Rgb{channel(packed, 8), channel(packed, 4), channel(packed, 0)};
+    Rgb color{channel(packed, 8), channel(packed, 4), channel(packed, 0)};
+    if (pal) {
+        // Slight cooler bias for the 2C07 display path; not a decoded PAL composite.
+        color.red = static_cast<std::uint8_t>(color.red * 15 / 16);
+        color.blue = static_cast<std::uint8_t>(std::min(255, color.blue * 17 / 16));
+    }
+    return color;
 }
 
 }  // namespace iris::systems::nes

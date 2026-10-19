@@ -43,9 +43,12 @@ private:
     int byteIndex_ = 0;
     std::uint8_t command_ = 0;
     std::uint32_t sdd1Address_ = 0;
+    std::uint32_t spc7110Address_ = 0;
     std::uint16_t bitstream_ = 0;
     int bitCount_ = 0;
     bool waitingOutput_ = false;
+    [[nodiscard]] std::uint8_t romAt(std::uint32_t address) const;
+    void runCx4(std::uint8_t command);
 };
 
 }  // namespace iris::systems::snes

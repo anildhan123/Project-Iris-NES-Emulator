@@ -20,6 +20,8 @@ public:
     void bind(const std::vector<std::uint8_t>* rom);
     void run(int budget);
     [[nodiscard]] bool running() const { return (sfr_ & 0x20) != 0; }
+    // Ops charged per scanline from SCMR clock select (scanline-accurate GO budget).
+    [[nodiscard]] int budgetForLine() const;
     [[nodiscard]] bool cpuRead(std::uint8_t bank, std::uint16_t address, std::uint8_t& value) const;
     [[nodiscard]] bool cpuWrite(std::uint8_t bank, std::uint16_t address, std::uint8_t value);
     void saveState(iris::ByteWriter& out) const;
@@ -50,8 +52,10 @@ private:
     std::uint8_t source_ = 0;
     std::uint8_t dest_ = 0;
     bool alt1_ = false;
+    bool alt2_ = false;
     bool useDest_ = false;
     bool useSource_ = false;
+    bool useWith_ = false;
     int cacheX_ = -1;
     int cacheY_ = -1;
     std::uint8_t cachePixels_[8] = {};

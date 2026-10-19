@@ -62,9 +62,11 @@ void Cpu::write(Bus& bus, std::uint16_t address, std::uint8_t value) {
 }
 
 std::uint16_t Cpu::read16(Bus& bus, std::uint16_t address) {
-    const std::uint8_t low = read(bus, address);
-    const std::uint8_t high = read(bus, static_cast<std::uint16_t>(address + 1));
-    return static_cast<std::uint16_t>(low | (high << 8));
+    bus.tickAccess(0, address);
+    const std::uint8_t low = bus.read(0, address);
+    const auto next = static_cast<std::uint16_t>(address + 1);
+    bus.tickAccess(0, next, (address & 0xFF) == 0xFF);
+    return static_cast<std::uint16_t>(low | (bus.read(0, next) << 8));
 }
 
 void Cpu::setZN(std::uint8_t value) {
@@ -487,7 +489,7 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
                 return static_cast<std::uint16_t>(low);
             }
             const auto next = static_cast<std::uint16_t>(address + 1);
-            bus.tickAccess(bank, next);
+            bus.tickAccess(bank, next, (address & 0xFF) == 0xFF);
             return static_cast<std::uint16_t>(low | (bus.read(bank, next) << 8));
         };
         const auto storeMem = [&](std::uint16_t value) {
@@ -505,7 +507,7 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
             bus.write(bank, address, static_cast<std::uint8_t>(value));
             if (!narrow) {
                 const auto next = static_cast<std::uint16_t>(address + 1);
-                bus.tickAccess(bank, next);
+                bus.tickAccess(bank, next, (address & 0xFF) == 0xFF);
                 bus.write(bank, next, static_cast<std::uint8_t>(value >> 8));
             }
         };

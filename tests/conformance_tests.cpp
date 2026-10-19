@@ -1,9 +1,11 @@
 #include "iris/nes/cartridge.hpp"
 #include "iris/nes/cnrom.hpp"
+#include "iris/nes/controller.hpp"
 #include "iris/nes/mapper_factory.hpp"
 #include "iris/nes/mmc1.hpp"
 #include "iris/nes/nes_system.hpp"
 #include "iris/nes/timing.hpp"
+#include "iris/emulated_system.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -200,6 +202,82 @@ TEST_CASE("DMC playback fetches a sample and moves the mixer") {
     nes.runFrame();
     nes.runFrame();
     REQUIRE(peak(nes.audio()) > 0.01f);
+}
+
+TEST_CASE("MMC5 and VRC6 boards load and answer their register windows") {
+    auto mmc5 = makeRom(5, 0, 2, 1, 0, false);
+    putPrg(mmc5, 0, {0xA9, 0x03, 0x8D, 0x00, 0x51, 0xA9, 0x12, 0x8D, 0x05, 0x52, 0xA9, 0x34, 0x8D, 0x06, 0x52, 0xAD,
+                     0x05, 0x52, 0x85, 0x10, 0xAD, 0x06, 0x52, 0x85, 0x11, 0x4C, 0x00, 0x80});
+    putVector(mmc5, 32768, 0x8000, 0x8000);
+
+    iris::systems::nes::NesSystem nes;
+    std::string error;
+    REQUIRE(nes.loadBytes(mmc5.data(), mmc5.size(), "mmc5", error));
+    REQUIRE(nes.info().detail.find("MMC5") != std::string::npos);
+    nes.runFrame();
+    REQUIRE(nes.debugRead(0x10) == 0xA8);  // 0x12 * 0x34
+    REQUIRE(nes.debugRead(0x11) == 0x03);
+
+    auto vrc6 = makeRom(24, 0, 2, 1, 0, false);
+    putPrg(vrc6, 0,
+           {0xA9, 0x8F, 0x8D, 0x00, 0x90, 0xA9, 0x10, 0x8D, 0x01, 0x90, 0xA9, 0x00, 0x8D, 0x02, 0x90, 0x4C, 0x00, 0x80});
+    putVector(vrc6, 32768, 0x8000, 0x8000);
+    iris::systems::nes::NesSystem audio;
+    REQUIRE(audio.loadBytes(vrc6.data(), vrc6.size(), "vrc6", error));
+    audio.runFrame();
+    REQUIRE(peak(audio.audio()) > 0.01f);
+}
+
+TEST_CASE("Four Score and Zapper report through the controller ports") {
+    iris::systems::nes::Controller pad;
+    pad.setDevice(iris::systems::nes::ControllerDevice::FourScore);
+    pad.setButtons(iris::kButtonA);
+    pad.setExtraButtons(iris::kButtonA);
+    pad.writeStrobe(1);
+    pad.writeStrobe(0);
+    REQUIRE((pad.read() & 0x01) == 1);
+    for (int index = 0; index < 7; ++index) {
+        REQUIRE((pad.read() & 0x01) == 0);
+    }
+    REQUIRE((pad.read() & 0x01) == 1);
+
+    iris::systems::nes::Controller zapper;
+    zapper.setDevice(iris::systems::nes::ControllerDevice::Zapper);
+    zapper.setZapper(true, true);
+    REQUIRE((zapper.read() & 0x10) != 0);
+    REQUIRE((zapper.read() & 0x08) == 0);
+}
+
+TEST_CASE("NES hardware acceptance suite freezes CPU PPU APU and mapper smoke") {
+    // Milestone 60: compact path covering CPU math, MMC3 IRQ, frame IRQ, and MMC5 multiply.
+    auto cpu = makeRom(0, 0, 1, 1, 0, false);
+    putPrg(cpu, 0, {0xA9, 0x01, 0x69, 0x01, 0x85, 0x10, 0x4C, 0x06, 0x80});
+    putVector(cpu, 16384, 0x8000, 0x8000);
+    iris::systems::nes::NesSystem nes;
+    std::string error;
+    REQUIRE(nes.loadBytes(cpu.data(), cpu.size(), "freeze-cpu", error));
+    nes.runFrame();
+    REQUIRE(nes.debugRead(0x10) == 0x02);
+
+    auto mmc3 = makeRom(4, 0, 2, 1, 0, false);
+    putPrg(mmc3, 0,
+           {0x78, 0xA9, 0x08, 0x8D, 0x00, 0x20, 0xA9, 0x18, 0x8D, 0x01, 0x20, 0xA9, 0x00, 0x8D, 0x00, 0xC0, 0x8D, 0x01,
+            0xC0, 0x8D, 0x01, 0xE0, 0x58, 0x4C, 0x17, 0x80});
+    putPrg(mmc3, 0x100, {0xE6, 0x10, 0xA9, 0x00, 0x8D, 0x00, 0xE0, 0x40});
+    putVector(mmc3, 32768, 0x8000, 0x8100);
+    REQUIRE(nes.loadBytes(mmc3.data(), mmc3.size(), "freeze-mmc3", error));
+    nes.runFrame();
+    REQUIRE(nes.debugRead(0x10) > 0);
+
+    auto frame = makeRom(0, 0, 2, 1, 0, false);
+    putPrg(frame, 0, {0x78, 0xD8, 0xA9, 0x00, 0x8D, 0x17, 0x40, 0x58, 0x4C, 0x08, 0x80});
+    putPrg(frame, 0x100, {0xAD, 0x15, 0x40, 0xE6, 0x10, 0x40});
+    putVector(frame, 32768, 0x8000, 0x8100);
+    REQUIRE(nes.loadBytes(frame.data(), frame.size(), "freeze-frame", error));
+    nes.runFrame();
+    nes.runFrame();
+    nes.runFrame();
+    REQUIRE(nes.debugRead(0x10) > 0);
 }
 
 TEST_CASE("PAL and Dendy headers select their own frame length") {

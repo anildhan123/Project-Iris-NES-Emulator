@@ -156,9 +156,16 @@ void Ppu::writeRegister(std::uint16_t address, std::uint8_t value) {
         if (!w_) {
             fineX_ = static_cast<std::uint8_t>(value & 0x07);
             t_ = static_cast<std::uint16_t>((t_ & ~0x001F) | (value >> 3));
+            if (rendering() && scanline_ < kHeight && dot_ >= 1 && dot_ <= 256) {
+                walkFineX_ = (walkFineX_ & ~0x07) | fineX_;
+                walkV_ = static_cast<std::uint16_t>((walkV_ & ~0x001F) | (t_ & 0x001F));
+            }
             w_ = true;
         } else {
             t_ = static_cast<std::uint16_t>((t_ & ~0x73E0) | ((value & 0x07) << 12) | ((value & 0xF8) << 2));
+            if (rendering() && scanline_ < kHeight && dot_ >= 1 && dot_ <= 256) {
+                walkV_ = static_cast<std::uint16_t>((walkV_ & ~0x73E0) | (t_ & 0x73E0));
+            }
             w_ = false;
         }
         break;
@@ -169,6 +176,11 @@ void Ppu::writeRegister(std::uint16_t address, std::uint8_t value) {
         } else {
             t_ = static_cast<std::uint16_t>((t_ & 0xFF00) | value);
             v_ = t_;
+            if (rendering() && scanline_ < kHeight && dot_ >= 1 && dot_ <= 256) {
+                walkV_ = v_;
+                walkFineX_ = fineX_;
+                tileLoaded_ = false;
+            }
             w_ = false;
         }
         break;
@@ -189,18 +201,47 @@ std::uint8_t Ppu::readRegister(std::uint16_t address) {
         dataLatch_ = value;
         return value;
     }
-    case 4:
-        dataLatch_ = oam_[oamAddr_];
+    case 4: {
+        // During sprite evaluation, OAMDATA reads are unreliable; return open-bus-ish $FF.
+        if (rendering() && scanline_ < kHeight && dot_ >= 1 && dot_ <= 64) {
+            dataLatch_ = 0xFF;
+        } else {
+            dataLatch_ = oam_[oamAddr_];
+        }
         return dataLatch_;
+    }
     case 7:
         dataLatch_ = readData();
         return dataLatch_;
     default:
+        // Write-only registers return the data bus latch (PPU open bus).
         return dataLatch_;
     }
 }
 
 void Ppu::writeOam(std::uint8_t value) { oam_[oamAddr_++] = value; }
+
+bool Ppu::sampleLight(int x, int y) const {
+    if (x < 0 || y < 0 || x >= kWidth || y >= kHeight) {
+        return false;
+    }
+    int bright = 0;
+    int count = 0;
+    for (int dy = -4; dy <= 4; ++dy) {
+        for (int dx = -4; dx <= 4; ++dx) {
+            const int px = x + dx;
+            const int py = y + dy;
+            if (px < 0 || py < 0 || px >= kWidth || py >= kHeight) {
+                continue;
+            }
+            const std::size_t offset = (static_cast<std::size_t>(py) * kWidth + static_cast<std::size_t>(px)) * 4;
+            const int luma = frameBuffer_[offset] + frameBuffer_[offset + 1] + frameBuffer_[offset + 2];
+            bright += luma;
+            ++count;
+        }
+    }
+    return count > 0 && (bright / count) >= 600;
+}
 
 void Ppu::writeData(std::uint8_t value) {
     writeVram(v_, value);
@@ -316,7 +357,7 @@ void Ppu::writePixel(int x, int y, std::uint8_t paletteIndex) {
     if ((mask_ & 0x01) != 0) {
         index = static_cast<std::uint8_t>(index & 0x30);
     }
-    Rgb color = paletteColor(index);
+    Rgb color = paletteColor(index, region_ == Region::Pal || region_ == Region::Dendy);
     if ((mask_ & 0x20) != 0) {
         color.green = static_cast<std::uint8_t>(color.green * 3 / 4);
         color.blue = static_cast<std::uint8_t>(color.blue * 3 / 4);

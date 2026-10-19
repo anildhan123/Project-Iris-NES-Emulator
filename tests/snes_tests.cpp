@@ -172,6 +172,34 @@ TEST_CASE("automatic joypad read is busy at vblank and then reports the directio
     REQUIRE(system.debugRead(0x0012) == 0x88);
 }
 
+TEST_CASE("port 2 auto-read and manual shift report a second controller") {
+    // Enable auto-read, wait for busy to clear, copy JOY2 into WRAM.
+    const std::vector<std::uint8_t> program = {
+        0x78, 0xA9, 0x01, 0x8D, 0x00, 0x42, 0xAD, 0x12, 0x42, 0x10, 0xFB, 0xAD, 0x12, 0x42, 0x29, 0x01,
+        0xD0, 0xF9, 0xAD, 0x1A, 0x42, 0x85, 0x20, 0xAD, 0x1B, 0x42, 0x85, 0x21, 0xAD, 0x1C, 0x42, 0x85,
+        0x22, 0xDB,
+    };
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> rom = loRom(program);
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.setController(1, static_cast<std::uint8_t>(iris::kButtonStart | iris::kButtonA));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0020) == 0x80);  // A on JOY2L
+    REQUIRE(system.debugRead(0x0021) == 0x50);  // Y+Start on JOY2H (A also holds Y)
+    REQUIRE(system.debugRead(0x0022) == 0x00);  // JOY3 stays 0 without a multitap
+
+    // Manual $4017 shift: strobe, release, first bit is B.
+    const std::vector<std::uint8_t> manual = {
+        0x78, 0xA9, 0x01, 0x8D, 0x16, 0x40, 0x9C, 0x16, 0x40, 0xAD, 0x17, 0x40, 0x85, 0x30, 0xDB,
+    };
+    REQUIRE(system.loadBytes(loRom(manual).data(), loRom(manual).size(), error));
+    system.setController(1, iris::kButtonB);
+    system.runFrame();
+    REQUIRE((system.debugRead(0x0030) & 0x01) == 0x01);
+    REQUIRE((system.debugRead(0x0030) & 0x1C) == 0x1C);
+}
+
 TEST_CASE("horizontal blank is reported and then clears on the next scanline") {
     // Wait until $4212 bit 6 is set, then until it clears. A game that writes
     // video memory outside vblank, including Final Fantasy VI, spins on this bit.
@@ -185,6 +213,29 @@ TEST_CASE("horizontal blank is reported and then clears on the next scanline") {
     REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
     system.runFrame();
     REQUIRE(system.debugRead(0x0010) == 0x01);
+}
+
+TEST_CASE("overscan delays the $4212 vblank flag") {
+    const auto countUntilVblank = [](bool overscan) {
+        std::vector<std::uint8_t> program;
+        if (overscan) {
+            store(program, 0x04, 0x33, 0x21);
+        }
+        // 16-bit counter in $10/$11 until $4212 bit 7.
+        program.insert(program.end(),
+                       {0xA9, 0x00, 0x85, 0x10, 0x85, 0x11, 0xAD, 0x12, 0x42, 0x30, 0x08, 0xE6, 0x10, 0xD0, 0xF7, 0xE6,
+                        0x11, 0x80, 0xF3, 0xDB});
+        iris::systems::snes::SnesSystem system;
+        std::string error;
+        const std::vector<std::uint8_t> rom = loRom(program);
+        REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+        system.runFrame();
+        return system.debugRead(0x0010) | (system.debugRead(0x0011) << 8);
+    };
+    const int normal = countUntilVblank(false);
+    const int tall = countUntilVblank(true);
+    REQUIRE(normal > 1000);
+    REQUIRE(tall > normal);
 }
 
 TEST_CASE("a Super NES controller reports Start on the high byte and A on the low byte") {
@@ -316,6 +367,86 @@ TEST_CASE("mode 7 draws the transformed character pixel") {
     REQUIRE(frame.rgba[0] == 255);
     REQUIRE(frame.rgba[1] == 0);
     REQUIRE(frame.rgba[2] == 0);
+}
+
+TEST_CASE("Mode 7 M7SEL flip, EXTBG, and M7 multiply results") {
+    // Pixel $81 (EXTBG high + color 1), identity matrix, CGRAM[1]=red.
+    auto mode7Setup = [](std::uint8_t pixel, std::uint8_t tm, std::uint8_t setini, std::uint8_t m7sel) {
+        std::vector<std::uint8_t> program;
+        store(program, 0x00, 0x16, 0x21);
+        store(program, 0x00, 0x17, 0x21);
+        store(program, 0x80, 0x15, 0x21);
+        store(program, 0x00, 0x18, 0x21);
+        store(program, pixel, 0x19, 0x21);
+        store(program, 0x00, 0x21, 0x21);
+        store(program, 0x00, 0x22, 0x21);
+        store(program, 0x00, 0x22, 0x21);
+        store(program, 0x01, 0x21, 0x21);
+        store(program, 0x1F, 0x22, 0x21);
+        store(program, 0x00, 0x22, 0x21);
+        store(program, 0x00, 0x1B, 0x21);
+        store(program, 0x01, 0x1B, 0x21);
+        store(program, 0x00, 0x1E, 0x21);
+        store(program, 0x01, 0x1E, 0x21);
+        store(program, m7sel, 0x1A, 0x21);
+        store(program, 0x07, 0x05, 0x21);
+        store(program, tm, 0x2C, 0x21);
+        store(program, setini, 0x33, 0x21);
+        store(program, 0x0F, 0x00, 0x21);
+        const auto loop = static_cast<std::uint8_t>(program.size());
+        program.insert(program.end(), {0x4C, loop, 0x80});
+        return program;
+    };
+
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+
+    const auto run = [&](const std::vector<std::uint8_t>& program) {
+        const std::vector<std::uint8_t> rom = loRom(program);
+        REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+        system.runFrame();
+        REQUIRE(system.info().detail.find("Stopped") == std::string::npos);
+        return system.frame();
+    };
+
+    // EXTBG high pixel shows on BG2 only.
+    {
+        const iris::FrameView frame = run(mode7Setup(0x81, 0x02, 0x40, 0x00));
+        REQUIRE(frame.rgba[0] == 255);
+        REQUIRE(frame.rgba[1] == 0);
+        REQUIRE(frame.rgba[2] == 0);
+    }
+    // Same high pixel is hidden when only BG1 is enabled.
+    {
+        const iris::FrameView frame = run(mode7Setup(0x81, 0x01, 0x40, 0x00));
+        REQUIRE(frame.rgba[0] == 0);
+        REQUIRE(frame.rgba[1] == 0);
+        REQUIRE(frame.rgba[2] == 0);
+    }
+
+    // H-flip moves the (0,0) texel to screen x=255.
+    {
+        const iris::FrameView frame = run(mode7Setup(0x01, 0x01, 0x00, 0x01));
+        REQUIRE(frame.rgba[0] == 0);
+        REQUIRE(frame.rgba[1] == 0);
+        REQUIRE(frame.rgba[2] == 0);
+        const int right = 255 * 4;
+        REQUIRE(frame.rgba[right] == 255);
+        REQUIRE(frame.rgba[right + 1] == 0);
+        REQUIRE(frame.rgba[right + 2] == 0);
+    }
+
+    // M7A=$0100 then M7B write $40 -> MPY = $4000.
+    std::vector<std::uint8_t> multiply = {
+        0xA9, 0x00, 0x8D, 0x1B, 0x21, 0xA9, 0x01, 0x8D, 0x1B, 0x21, 0xA9, 0x40, 0x8D, 0x1C, 0x21, 0xAD, 0x34, 0x21,
+        0x85, 0x10, 0xAD, 0x35, 0x21, 0x85, 0x11, 0xAD, 0x36, 0x21, 0x85, 0x12,
+    };
+    const auto idle = static_cast<std::uint8_t>(multiply.size());
+    multiply.insert(multiply.end(), {0x4C, idle, 0x80});
+    run(multiply);
+    REQUIRE(system.debugRead(0x0010) == 0x00);
+    REQUIRE(system.debugRead(0x0011) == 0x40);
+    REQUIRE(system.debugRead(0x0012) == 0x00);
 }
 
 TEST_CASE("DMA, HDMA, and IRQs take cycles on the scanline") {
@@ -598,41 +729,6 @@ TEST_CASE("background 3, priority, scroll, offset, and subscreen math draw the f
     REQUIRE(shifted.rgba[0] == 255);
     REQUIRE(shifted.rgba[2] == 0);
 
-    std::vector<std::uint8_t> offset;
-    store(offset, 0x80, 0x15, 0x21);
-    store(offset, 0x10, 0x16, 0x21);
-    store(offset, 0x10, 0x17, 0x21);
-    store(offset, 0xFF, 0x18, 0x21);
-    store(offset, 0x00, 0x19, 0x21);
-    store(offset, 0x00, 0x16, 0x21);
-    store(offset, 0x00, 0x17, 0x21);
-    store(offset, 0x00, 0x18, 0x21);
-    store(offset, 0x00, 0x19, 0x21);
-    store(offset, 0x01, 0x18, 0x21);
-    store(offset, 0x00, 0x19, 0x21);
-    store(offset, 0x00, 0x16, 0x21);
-    store(offset, 0x04, 0x17, 0x21);
-    store(offset, 0x08, 0x18, 0x21);
-    store(offset, 0x20, 0x19, 0x21);
-    store(offset, 0x00, 0x18, 0x21);
-    store(offset, 0x20, 0x19, 0x21);
-    store(offset, 0x00, 0x21, 0x21);
-    store(offset, 0x1F, 0x22, 0x21);
-    store(offset, 0x00, 0x22, 0x21);
-    store(offset, 0x01, 0x21, 0x21);
-    store(offset, 0x00, 0x22, 0x21);
-    store(offset, 0x7C, 0x22, 0x21);
-    store(offset, 0x01, 0x0B, 0x21);
-    store(offset, 0x05, 0x09, 0x21);
-    store(offset, 0x02, 0x05, 0x21);
-    store(offset, 0x01, 0x2C, 0x21);
-    store(offset, 0x0F, 0x00, 0x21);
-    const auto offsetLoop = static_cast<std::uint8_t>(offset.size());
-    offset.insert(offset.end(), {0x4C, offsetLoop, 0x80});
-    const iris::FrameView shiftedTile = show(offset);
-    REQUIRE(shiftedTile.rgba[0] == 0);
-    REQUIRE(shiftedTile.rgba[2] == 255);
-
     std::vector<std::uint8_t> behind;
     store(behind, 0x80, 0x15, 0x21);
     store(behind, 0x00, 0x16, 0x21);
@@ -672,6 +768,100 @@ TEST_CASE("background 3, priority, scroll, offset, and subscreen math draw the f
     REQUIRE(added.rgba[2] == 255);
 }
 
+TEST_CASE("Mode 2 OPT, subtract math, and color window edges") {
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const auto run = [&](const std::vector<std::uint8_t>& program, int frames = 1) {
+        const std::vector<std::uint8_t> rom = loRom(program);
+        REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+        for (int frame = 0; frame < frames; ++frame) {
+            system.runFrame();
+        }
+        REQUIRE(system.info().detail.find("Stopped") == std::string::npos);
+        return system.frame();
+    };
+
+    // Compact Mode 2 setup (same char/map style as backgroundProgram) plus OPT V on column 1.
+    std::vector<std::uint8_t> opt;
+    store(opt, 0x80, 0x15, 0x21);
+    store(opt, 0x00, 0x16, 0x21);
+    store(opt, 0x10, 0x17, 0x21);
+    store(opt, 0xFF, 0x18, 0x21);
+    store(opt, 0x00, 0x19, 0x21);
+    // Tile 1 at word $1010 (16 words after tile 0): row0 = color 2.
+    store(opt, 0x10, 0x16, 0x21);
+    store(opt, 0x10, 0x17, 0x21);
+    store(opt, 0x00, 0x18, 0x21);
+    store(opt, 0xFF, 0x19, 0x21);
+    // map (0,0)=tile0 pal1; map (1,1)=tile1 pal1 (x=8 → tile column 1 after OPT V).
+    store(opt, 0x00, 0x16, 0x21);
+    store(opt, 0x00, 0x17, 0x21);
+    store(opt, 0x00, 0x18, 0x21);
+    store(opt, 0x04, 0x19, 0x21);
+    store(opt, 0x21, 0x16, 0x21);
+    store(opt, 0x00, 0x17, 0x21);
+    store(opt, 0x01, 0x18, 0x21);
+    store(opt, 0x04, 0x19, 0x21);
+    // BG3SC=$08, V-offset entry for OPT column 0 at word $0820 = $2008 (BG1, V=8).
+    store(opt, 0x20, 0x16, 0x21);
+    store(opt, 0x08, 0x17, 0x21);
+    store(opt, 0x08, 0x18, 0x21);
+    store(opt, 0x20, 0x19, 0x21);
+    store(opt, 0x00, 0x21, 0x21);
+    store(opt, 0x1F, 0x22, 0x21);
+    store(opt, 0x00, 0x22, 0x21);
+    store(opt, 0x11, 0x21, 0x21);
+    store(opt, 0x1F, 0x22, 0x21);
+    store(opt, 0x00, 0x22, 0x21);
+    store(opt, 0x12, 0x21, 0x21);
+    store(opt, 0xE0, 0x22, 0x21);
+    store(opt, 0x03, 0x22, 0x21);
+    store(opt, 0x01, 0x0B, 0x21);
+    store(opt, 0x08, 0x09, 0x21);
+    store(opt, 0x02, 0x05, 0x21);
+    store(opt, 0x01, 0x2C, 0x21);
+    store(opt, 0x0F, 0x00, 0x21);
+    const auto optLoop = static_cast<std::uint8_t>(opt.size());
+    opt.insert(opt.end(), {0x4C, optLoop, 0x80});
+    {
+        const iris::FrameView frame = run(opt);
+        REQUIRE(frame.rgba[0] == 255);
+        REQUIRE(frame.rgba[1] == 0);
+        REQUIRE(frame.rgba[2] == 0);
+        // Column 1 (x=8) samples map row1 via OPT → green at CGRAM $12.
+        REQUIRE(frame.rgba[8 * 4] == 0);
+        REQUIRE(frame.rgba[8 * 4 + 1] == 255);
+        REQUIRE(frame.rgba[8 * 4 + 2] == 0);
+    }
+
+    // Color window: math only inside WH0..WH1 (CGWSEL %01xxxx); outside matches no-math.
+    const iris::FrameView plain = run(backgroundProgram(0, 0, false, 0, 0));
+    std::vector<std::uint8_t> clipped = backgroundProgram(0, 0, false, 0x01, 0x5F);
+    clipped.pop_back();
+    clipped.pop_back();
+    clipped.pop_back();
+    store(clipped, 0x00, 0x26, 0x21);
+    store(clipped, 0x07, 0x27, 0x21);
+    store(clipped, 0x20, 0x25, 0x21);  // color window 1 enable
+    store(clipped, 0x10, 0x30, 0x21);  // math inside window, fixed color
+    store(clipped, 0x01, 0x31, 0x21);
+    store(clipped, 0x5F, 0x32, 0x21);
+    const auto clipLoop = static_cast<std::uint8_t>(clipped.size());
+    clipped.insert(clipped.end(), {0x4C, clipLoop, 0x80});
+    {
+        const iris::FrameView frame = run(clipped);
+        const iris::FrameView added = run(backgroundProgram(0, 0, false, 0x01, 0x5F));
+        // Inside window matches full-screen add.
+        REQUIRE(frame.rgba[0] == added.rgba[0]);
+        REQUIRE(frame.rgba[1] == added.rgba[1]);
+        REQUIRE(frame.rgba[2] == added.rgba[2]);
+        // Outside window matches the no-math picture.
+        REQUIRE(frame.rgba[16] == plain.rgba[16]);
+        REQUIRE(frame.rgba[17] == plain.rgba[17]);
+        REQUIRE(frame.rgba[18] == plain.rgba[18]);
+    }
+}
+
 void waitPort(std::vector<std::uint8_t>& code, std::uint16_t port, std::uint8_t value) {
     code.insert(code.end(), {0xAD, static_cast<std::uint8_t>(port), static_cast<std::uint8_t>(port >> 8), 0xC9, value, 0xD0, 0xF9});
 }
@@ -702,7 +892,8 @@ void sendBlock(std::vector<std::uint8_t>& code, std::vector<std::pair<int, std::
 }
 
 std::vector<std::uint8_t> transferProgram(std::uint16_t entry,
-                                          const std::vector<std::pair<std::uint16_t, std::vector<std::uint8_t>>>& parts) {
+                                          const std::vector<std::pair<std::uint16_t, std::vector<std::uint8_t>>>& parts,
+                                          const std::vector<std::uint8_t>& afterStart = {}) {
     std::vector<std::uint8_t> code;
     std::vector<std::pair<int, std::vector<std::uint8_t>>> blocks;
     bool first = true;
@@ -714,6 +905,9 @@ std::vector<std::uint8_t> transferProgram(std::uint16_t entry,
     loadPort(code, static_cast<std::uint8_t>(entry >> 8), 0x2143);
     loadPort(code, 0x00, 0x2141);
     code.insert(code.end(), {0xAD, 0x40, 0x21, 0x18, 0x69, 0x02, 0xD0, 0x01, 0x1A, 0x8D, 0x40, 0x21});
+    if (!afterStart.empty()) {
+        code.insert(code.end(), afterStart.begin(), afterStart.end());
+    }
     const auto idle = static_cast<std::uint16_t>(0x8000 + code.size());
     code.insert(code.end(), {0x4C, static_cast<std::uint8_t>(idle), static_cast<std::uint8_t>(idle >> 8)});
     for (const auto& block : blocks) {
@@ -723,6 +917,186 @@ std::vector<std::uint8_t> transferProgram(std::uint16_t entry,
         code.insert(code.end(), block.second.begin(), block.second.end());
     }
     return code;
+}
+
+TEST_CASE("after boot the SPC answers an in-game port command") {
+    // Snapshot the IPL kick, signal ready, wait until the CPU changes port 0, then
+    // echo the command to port 1 and ack with $80 (engines must not treat the kick as a command).
+    const std::vector<std::uint8_t> spc = {0xE4, 0xF4, 0x8F, 0x00, 0xF4, 0x64, 0xF4, 0xF0, 0xFC, 0xE4, 0xF4, 0xC4,
+                                           0xF5, 0x8F, 0x80, 0xF4, 0x2F, 0xFE};
+    // Wait ready, send $42, wait ack, check $2144 mirror, store markers in WRAM.
+    const std::vector<std::uint8_t> after = {
+        0xAD, 0x40, 0x21, 0xD0, 0xFB, 0xA9, 0x42, 0x8D, 0x40, 0x21, 0xAD, 0x40, 0x21, 0xC9, 0x80, 0xD0, 0xF9,
+        0xAD, 0x41, 0x21, 0xC9, 0x42, 0xD0, 0xF2, 0xA9, 0x5A, 0x85, 0x10, 0xAD, 0x44, 0x21, 0xC9, 0x80, 0xD0, 0x02,
+        0xA9, 0xA5, 0x85, 0x11};
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> rom =
+        loRom(transferProgram(0x0200, {{static_cast<std::uint16_t>(0x0200), spc}}, after));
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.info().detail.find("Stopped") == std::string::npos);
+    REQUIRE(system.debugRead(0x0010) == 0x5A);
+    REQUIRE(system.debugRead(0x0011) == 0xA5);
+    REQUIRE(system.debugRead(0x2140) == 0x80);
+    REQUIRE(system.debugRead(0x2141) == 0x42);
+}
+
+TEST_CASE("Akao-style APU traffic keeps kick≠command and multi-port params") {
+    // Publish kick on $F5, ready on $F4=0, wait port0 != kick, echo $F5–$F7, ack $80;
+    // $F1 clears inputs; wait next command; ack $81.
+    const std::vector<std::uint8_t> spc = {
+        0xE4, 0xF4, 0xC4, 0xF5, 0x8F, 0x00, 0xF4, 0x64, 0xF4, 0xF0, 0xFC, 0xE4, 0xF5, 0xC4, 0xF5, 0xE4,
+        0xF6, 0xC4, 0xF6, 0xE4, 0xF7, 0xC4, 0xF7, 0x8F, 0x80, 0xF4, 0x8F, 0x10, 0xF1, 0xE4, 0xF4, 0x64,
+        0xF4, 0xF0, 0xFC, 0x8F, 0x81, 0xF4, 0x2F, 0xFE};
+    // Wait ready; rewrite kick from $2141 (must stay non-ack); params then $42; second cmd $43.
+    const std::vector<std::uint8_t> after = {
+        0xAD, 0x40, 0x21, 0xD0, 0xFB, 0xAD, 0x41, 0x21, 0x8D, 0x40, 0x21, 0xAD, 0x40, 0x21, 0xC9, 0x80,
+        0xD0, 0x02, 0x80, 0xFE, 0xA9, 0x11, 0x8D, 0x41, 0x21, 0xA9, 0x22, 0x8D, 0x42, 0x21, 0xA9, 0x33,
+        0x8D, 0x43, 0x21, 0xA9, 0x42, 0x8D, 0x40, 0x21, 0xAD, 0x40, 0x21, 0xC9, 0x80, 0xD0, 0xF9, 0xAD,
+        0x41, 0x21, 0xC9, 0x11, 0xD0, 0xF2, 0xAD, 0x42, 0x21, 0xC9, 0x22, 0xD0, 0xEB, 0xAD, 0x43, 0x21,
+        0xC9, 0x33, 0xD0, 0xE4, 0xA9, 0x43, 0x8D, 0x40, 0x21, 0xAD, 0x40, 0x21, 0xC9, 0x81, 0xD0, 0xF9,
+        0xA9, 0x5A, 0x85, 0x10, 0xAD, 0x47, 0x21, 0xC9, 0x33, 0xD0, 0x02, 0xA9, 0xA5, 0x85, 0x11};
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> rom =
+        loRom(transferProgram(0x0200, {{static_cast<std::uint16_t>(0x0200), spc}}, after));
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.info().detail.find("Stopped") == std::string::npos);
+    REQUIRE(system.debugRead(0x0010) == 0x5A);
+    REQUIRE(system.debugRead(0x0011) == 0xA5);
+    REQUIRE(system.debugRead(0x2140) == 0x81);
+    REQUIRE(system.debugRead(0x2141) == 0x11);
+    REQUIRE(system.debugRead(0x2142) == 0x22);
+    REQUIRE(system.debugRead(0x2143) == 0x33);
+}
+
+TEST_CASE("a 16-bit in-game APU command commits both port bytes before the SPC acks") {
+    // Ready, then REP #$20 / LDA #$2211 / STA $2140 writes cmd $11 and param $22 together.
+    const std::vector<std::uint8_t> spc = {0xE4, 0xF4, 0x8F, 0x00, 0xF4, 0x64, 0xF4, 0xF0, 0xFC, 0xE4, 0xF4, 0xC4,
+                                           0xF5, 0xE4, 0xF5, 0xC4, 0xF6, 0x8F, 0x80, 0xF4, 0x2F, 0xFE};
+    const std::vector<std::uint8_t> after = {
+        0xAD, 0x40, 0x21, 0xD0, 0xFB, 0x18, 0xFB, 0xC2, 0x20, 0xA9, 0x11, 0x22, 0x8D, 0x40, 0x21, 0xE2,
+        0x20, 0xAD, 0x40, 0x21, 0xC9, 0x80, 0xD0, 0xF9, 0xAD, 0x41, 0x21, 0xC9, 0x11, 0xD0, 0xF2, 0xAD,
+        0x42, 0x21, 0xC9, 0x22, 0xD0, 0xEB, 0xA9, 0x5A, 0x85, 0x10};
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> rom =
+        loRom(transferProgram(0x0200, {{static_cast<std::uint16_t>(0x0200), spc}}, after));
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) == 0x5A);
+    REQUIRE(system.debugRead(0x2140) == 0x80);
+    REQUIRE(system.debugRead(0x2141) == 0x11);
+    REQUIRE(system.debugRead(0x2142) == 0x22);
+}
+
+TEST_CASE("an SPC timer IRQ wakes SLEEP and answers the CPU") {
+    // Timer 0 target 1, enable, EI, SLEEP. IRQ at $0300 writes $5A to port 0 and RETI.
+    const std::vector<std::uint8_t> main = {0x8F, 0x01, 0xFA, 0x8F, 0x01, 0xF1, 0xA0, 0xEF, 0x2F, 0xFE};
+    const std::vector<std::uint8_t> irq = {0x8F, 0x5A, 0xF4, 0x7F};
+    const std::vector<std::uint8_t> vectors = {0x00, 0x03};
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> rom = loRom(transferProgram(
+        0x0200, {{static_cast<std::uint16_t>(0x0200), main},
+                 {static_cast<std::uint16_t>(0x0300), irq},
+                 {static_cast<std::uint16_t>(0xFFDE), vectors}}));
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.info().detail.find("Stopped") == std::string::npos);
+    REQUIRE(system.debugRead(0x2140) == 0x5A);
+}
+
+TEST_CASE("SPC700 ALU and bit opcodes do not halt and produce expected results") {
+    // OR/AND/ADC A,#imm and SET1/BBS — early-dispatch groups commercial engines use.
+    const std::vector<std::uint8_t> spc = {
+        0xE8, 0x0F,        // MOV A, #$0F
+        0x08, 0xF0,        // OR A, #$F0 -> $FF
+        0x28, 0x0F,        // AND A, #$0F -> $0F
+        0x80,              // SETC
+        0x88, 0x01,        // ADC A, #$01 -> $11
+        0xC4, 0x00,        // MOV $00, A
+        0x8F, 0x00, 0x11,  // MOV $11, #$00
+        0x02, 0x11,        // SET1 $11.0
+        0x03, 0x11, 0x02,  // BBS $11.0, skip MOV A,#$00
+        0xE8, 0x00,        // cleared only if BBS fails
+        0xE4, 0x00,        // MOV A, $00
+        0xC4, 0xF4,        // MOV $F4, A
+        0x2F, 0xFE,
+    };
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> rom =
+        loRom(transferProgram(0x0200, {{static_cast<std::uint16_t>(0x0200), spc}}));
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.info().detail.find("Stopped") == std::string::npos);
+    REQUIRE(system.debugRead(0x2140) == 0x11);
+}
+
+std::vector<std::uint8_t> hiRomProgram(const std::vector<std::uint8_t>& program) {
+    std::vector<std::uint8_t> rom(64 * 1024, 0);
+    for (std::size_t index = 0; index < program.size() && index < 0x7FC0; ++index) {
+        rom[0x8000 + index] = program[index];
+    }
+    rom[0xFFD5] = 0x21;
+    rom[0xFFD9] = 0x01;
+    rom[0xFFDC] = 0xFF;
+    rom[0xFFDD] = 0xFF;
+    rom[0xFFFC] = 0x00;
+    rom[0xFFFD] = 0x80;
+    return rom;
+}
+
+TEST_CASE("multi-block IPL and HiROM still reach an in-game APU ready state") {
+    // Second block carries a data byte; the entry program publishes $5A and that byte.
+    const std::vector<std::uint8_t> payload = {0xA5};
+    const std::vector<std::uint8_t> spc = {0x8F, 0x5A, 0x00, 0xE4, 0x00, 0xC4, 0xF4, 0xE5, 0x00, 0x03, 0xC4, 0xF5,
+                                           0x2F, 0xFE};
+    const std::vector<std::uint8_t> after = {0xAD, 0x40, 0x21, 0xC9, 0x5A, 0xD0, 0xF9, 0xAD, 0x41, 0x21, 0xC9, 0xA5,
+                                             0xD0, 0xF2, 0xA9, 0x5A, 0x85, 0x10};
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const auto program = transferProgram(0x0200,
+                                         {{static_cast<std::uint16_t>(0x0200), spc},
+                                          {static_cast<std::uint16_t>(0x0300), payload}},
+                                         after);
+    const std::vector<std::uint8_t> lo = loRom(program);
+    REQUIRE(system.loadBytes(lo.data(), lo.size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) == 0x5A);
+    REQUIRE(system.debugRead(0x2140) == 0x5A);
+    REQUIRE(system.debugRead(0x2141) == 0xA5);
+
+    const std::vector<std::uint8_t> hi = hiRomProgram(program);
+    REQUIRE(system.loadBytes(hi.data(), hi.size(), error));
+    REQUIRE(system.info().detail == "HiROM, NTSC");
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) == 0x5A);
+    REQUIRE(system.debugRead(0x2140) == 0x5A);
+    REQUIRE(system.debugRead(0x2141) == 0xA5);
+}
+
+TEST_CASE("horizontal blank edges stay line-relative through the NTSC short scanline") {
+    // Sixteen set→clear edges of $4212 bit 6 (same polarity as the FF6 wait test).
+    // Enough edges to pass NTSC line 240; a drifted cycle%1364 HBlank never clears again.
+    const std::vector<std::uint8_t> program = {
+        0xA2, 0x00, 0xAD, 0x12, 0x42, 0x29, 0x40, 0xF0, 0xF9, 0xAD, 0x12, 0x42, 0x29, 0x40, 0xD0, 0xF9,
+        0xE8, 0xE0, 0x10, 0xD0, 0xED, 0x86, 0x10, 0xDB,
+    };
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> rom = loRom(program);
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    for (int frame = 0; frame < 4; ++frame) {
+        system.runFrame();
+        if (system.debugRead(0x0010) == 0x10) {
+            break;
+        }
+    }
+    REQUIRE(system.debugRead(0x0010) == 0x10);
 }
 
 TEST_CASE("the SPC700 answers a transfer and the DSP plays a sample") {
@@ -763,7 +1137,7 @@ TEST_CASE("the SPC700 answers a transfer and the DSP plays a sample") {
     page(0x1C, 0xF2);
     page(0x7F, 0xF3);
     page(0x6C, 0xF2);
-    page(0x00, 0xF3);
+    page(0x20, 0xF3);  // echo write protect; EDL=0 would otherwise overwrite ESA
     page(0x4C, 0xF2);
     page(0x01, 0xF3);
     tone.insert(tone.end(), {0x2F, 0xFE});
@@ -802,6 +1176,156 @@ TEST_CASE("the SPC700 answers a transfer and the DSP plays a sample") {
     REQUIRE(peak > 0.05f);
     REQUIRE(leftPeak > 0.05f);
     REQUIRE(rightPeak > 0.05f);
+}
+
+TEST_CASE("FLG mute keeps the host quiet while ENVX still advances") {
+    std::vector<std::uint8_t> program;
+    const auto dsp = [&](std::uint8_t address, std::uint8_t value) {
+        program.insert(program.end(), {0x8F, address, 0xF2, 0x8F, value, 0xF3});
+    };
+    dsp(0x00, 0x7F);
+    dsp(0x01, 0x7F);
+    dsp(0x02, 0x00);
+    dsp(0x03, 0x10);
+    dsp(0x04, 0x00);
+    dsp(0x05, 0x8F);
+    dsp(0x06, 0xE0);
+    dsp(0x5D, 0x03);
+    dsp(0x0C, 0x7F);
+    dsp(0x1C, 0x7F);
+    // Mute only (no soft reset): DAC silent, envelopes still run.
+    dsp(0x6C, 0x40);
+    dsp(0x4C, 0x01);
+    program.insert(program.end(), {0x8F, 0x08, 0xF2, 0xE4, 0xF3, 0xC4, 0xF4, 0x2F, 0xF5});
+    std::vector<std::uint8_t> directory = {0x04, 0x03, 0x04, 0x03};
+    std::vector<std::uint8_t> sample = {0xC3, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77};
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> rom = loRom(transferProgram(
+        0x0200, {{static_cast<std::uint16_t>(0x0200), program},
+                 {static_cast<std::uint16_t>(0x0300), directory},
+                 {static_cast<std::uint16_t>(0x0304), sample}}));
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.runFrame();
+    const iris::AudioView muted = system.audio();
+    float peak = 0.0f;
+    for (int index = 0; index < muted.count; ++index) {
+        const float left = muted.samples[index * 2];
+        const float abs = left < 0.0f ? -left : left;
+        if (abs > peak) {
+            peak = abs;
+        }
+    }
+    REQUIRE(peak < 0.01f);
+    REQUIRE(system.debugRead(0x2140) >= 0x70);
+}
+
+TEST_CASE("pitch modulation is masked when the modulator voice uses noise") {
+    std::vector<std::uint8_t> program;
+    const auto dsp = [&](std::uint8_t address, std::uint8_t value) {
+        program.insert(program.end(), {0x8F, address, 0xF2, 0x8F, value, 0xF3});
+    };
+    // Voice 0 noise, voice 1 tone with PMON from voice 0 — NON must disable the mod.
+    dsp(0x00, 0x7F);
+    dsp(0x01, 0x7F);
+    dsp(0x02, 0x00);
+    dsp(0x03, 0x10);
+    dsp(0x04, 0x00);
+    dsp(0x05, 0x8F);
+    dsp(0x06, 0xE0);
+    dsp(0x10, 0x7F);
+    dsp(0x11, 0x7F);
+    dsp(0x12, 0x00);
+    dsp(0x13, 0x08);
+    dsp(0x14, 0x00);
+    dsp(0x15, 0x8F);
+    dsp(0x16, 0xE0);
+    dsp(0x5D, 0x03);
+    dsp(0x0C, 0x7F);
+    dsp(0x1C, 0x7F);
+    dsp(0x3D, 0x01);  // NON voice 0
+    dsp(0x2D, 0x02);  // PMON voice 1
+    dsp(0x6C, 0x00);
+    dsp(0x4C, 0x03);
+    // Publish voice 1 ENVX — tone + attack still run when PMON is masked by NON.
+    program.insert(program.end(), {0x8F, 0x18, 0xF2, 0xE4, 0xF3, 0xC4, 0xF4, 0x2F, 0xF5});
+    std::vector<std::uint8_t> directory = {0x04, 0x03, 0x04, 0x03};
+    std::vector<std::uint8_t> sample = {0xC3, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77};
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> rom = loRom(transferProgram(
+        0x0200, {{static_cast<std::uint16_t>(0x0200), program},
+                 {static_cast<std::uint16_t>(0x0300), directory},
+                 {static_cast<std::uint16_t>(0x0304), sample}}));
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.info().detail.find("Stopped") == std::string::npos);
+    const iris::AudioView played = system.audio();
+    float peak = 0.0f;
+    for (int index = 0; index < played.count; ++index) {
+        const float left = played.samples[index * 2];
+        const float abs = left < 0.0f ? -left : left;
+        if (abs > peak) {
+            peak = abs;
+        }
+    }
+    REQUIRE(peak > 0.02f);
+    REQUIRE(system.debugRead(0x2140) >= 0x70);
+}
+
+TEST_CASE("ADSR attack peaks and EDL zero still writes echo RAM") {
+    std::vector<std::uint8_t> program;
+    const auto dsp = [&](std::uint8_t address, std::uint8_t value) {
+        program.insert(program.end(), {0x8F, address, 0xF2, 0x8F, value, 0xF3});
+    };
+    // Voice 0: volumes, pitch $1000, source 0, ADSR AR=$F / SL=7 / SR=0.
+    dsp(0x00, 0x7F);
+    dsp(0x01, 0x7F);
+    dsp(0x02, 0x00);
+    dsp(0x03, 0x10);
+    dsp(0x04, 0x00);
+    dsp(0x05, 0x8F);
+    dsp(0x06, 0xE0);
+    dsp(0x5D, 0x03);  // DIR at $0300 (uploaded with the BRR block)
+    dsp(0x0C, 0x7F);
+    dsp(0x1C, 0x7F);
+    // Echo at $0400, EDL=0 (one stereo sample), FIR0=0x7F, EON voice 0.
+    dsp(0x6D, 0x04);
+    dsp(0x7D, 0x00);
+    dsp(0x0F, 0x7F);
+    dsp(0x2C, 0x40);
+    dsp(0x3C, 0x40);
+    dsp(0x4D, 0x01);
+    dsp(0x0D, 0x00);
+    dsp(0x6C, 0x00);
+    dsp(0x4C, 0x01);
+    // Copy ENVX ($08) to port 0 and echo RAM at ESA to port 1.
+    program.insert(program.end(),
+                   {0x8F, 0x08, 0xF2, 0xE4, 0xF3, 0xC4, 0xF4, 0xE5, 0x00, 0x04, 0xC4, 0xF5, 0x2F, 0xF2});
+    std::vector<std::uint8_t> directory = {0x04, 0x03, 0x04, 0x03};
+    std::vector<std::uint8_t> sample = {0xC3, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77};
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> rom = loRom(transferProgram(
+        0x0200, {{static_cast<std::uint16_t>(0x0200), program},
+                 {static_cast<std::uint16_t>(0x0300), directory},
+                 {static_cast<std::uint16_t>(0x0304), sample}}));
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.info().detail.find("Stopped") == std::string::npos);
+    REQUIRE(system.debugRead(0x2140) >= 0x70);
+    // EDL=0 still produces echo writes at ESA ($0400).
+    REQUIRE(system.debugRead(0x2141) != 0);
+    const iris::AudioView played = system.audio();
+    float peak = 0.0f;
+    for (int index = 0; index < played.count; ++index) {
+        const float left = played.samples[index * 2];
+        const float abs = left < 0.0f ? -left : left;
+        if (abs > peak) {
+            peak = abs;
+        }
+    }
+    REQUIRE(peak > 0.02f);
 }
 
 void staLong(std::vector<std::uint8_t>& code, std::uint8_t value, std::uint32_t address) {
@@ -1101,7 +1625,7 @@ TEST_CASE("SETINI overscan grows the picture and exotic map modes stay refused")
     REQUIRE(system.frame().height == 239);
 
     std::vector<std::uint8_t> exotic = loRom({});
-    exotic[0x7FD5] = 0x24;  // map mode 4
+    exotic[0x7FD5] = 0x26;  // map mode 6 stays refused
     REQUIRE_FALSE(system.loadBytes(exotic.data(), exotic.size(), error));
     REQUIRE(error.find("not supported") != std::string::npos);
 }
@@ -1137,4 +1661,379 @@ TEST_CASE("Cx4 and SA-1 bitstream slices answer the cartridge") {
     const std::vector<std::uint8_t> sdd1Rom = boardRom(sdd1, 0x20, 0x43);
     REQUIRE(system.loadBytes(sdd1Rom.data(), sdd1Rom.size(), error));
     REQUIRE(system.info().detail == "LoROM, NTSC, S-DD1");
+}
+
+TEST_CASE("SA-1 arithmetic, character conversion, and Cx4 multiply deepen chip paths") {
+    std::vector<std::uint8_t> arith;
+    store(arith, 0x00, 0x50, 0x22);
+    store(arith, 0x07, 0x51, 0x22);
+    store(arith, 0x00, 0x52, 0x22);
+    store(arith, 0x06, 0x53, 0x22);
+    store(arith, 0x00, 0x54, 0x22);
+    arith.insert(arith.end(), {0xAD, 0x06, 0x23, 0x8D, 0x10, 0x00});
+    arith.insert(arith.end(), {0xAD, 0x07, 0x23, 0x8D, 0x11, 0x00});
+    store(arith, 0x01, 0x50, 0x22);
+    store(arith, 100, 0x51, 0x22);
+    store(arith, 0x00, 0x52, 0x22);
+    store(arith, 0x07, 0x53, 0x22);
+    store(arith, 0x00, 0x54, 0x22);
+    arith.insert(arith.end(), {0xAD, 0x06, 0x23, 0x8D, 0x12, 0x00});
+    arith.insert(arith.end(), {0xAD, 0x08, 0x23, 0x8D, 0x13, 0x00});
+    finishIdle(arith);
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> arithRom = boardRom(arith, 0x23, 0x35);
+    REQUIRE(system.loadBytes(arithRom.data(), arithRom.size(), error));
+    REQUIRE(system.info().detail == "SA-1, NTSC");
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) == 42);
+    REQUIRE(system.debugRead(0x0011) == 0);
+    REQUIRE(system.debugRead(0x0012) == 14);
+    REQUIRE(system.debugRead(0x0013) == 2);
+
+    std::vector<std::uint8_t> cc2;
+    store(cc2, 0x00, 0x35, 0x22);
+    store(cc2, 0x00, 0x36, 0x22);
+    store(cc2, 0x00, 0x37, 0x22);
+    store(cc2, 0x02, 0x31, 0x22);
+    store(cc2, 0xB0, 0x30, 0x22);
+    for (std::uint8_t index = 0; index < 8; ++index) {
+        store(cc2, 0x01, static_cast<std::uint8_t>(0x40 + index), 0x22);
+    }
+    for (std::uint8_t index = 8; index < 15; ++index) {
+        store(cc2, 0x00, static_cast<std::uint8_t>(0x40 + index), 0x22);
+    }
+    store(cc2, 0x00, 0x4F, 0x22);
+    cc2.insert(cc2.end(), {0xAD, 0x00, 0x30, 0x8D, 0x10, 0x00});
+    cc2.insert(cc2.end(), {0xAD, 0x01, 0x30, 0x8D, 0x11, 0x00});
+    finishIdle(cc2);
+    const std::vector<std::uint8_t> cc2Rom = boardRom(cc2, 0x23, 0x35);
+    REQUIRE(system.loadBytes(cc2Rom.data(), cc2Rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) == 0xFF);
+    REQUIRE(system.debugRead(0x0011) == 0x00);
+
+    std::vector<std::uint8_t> cx4;
+    store(cx4, 0x03, 0x40, 0x7F);
+    store(cx4, 0x00, 0x41, 0x7F);
+    store(cx4, 0x05, 0x42, 0x7F);
+    store(cx4, 0x00, 0x43, 0x7F);
+    store(cx4, 0x05, 0x4F, 0x7F);
+    cx4.insert(cx4.end(), {0xAD, 0x50, 0x7F, 0x8D, 0x10, 0x00});
+    cx4.insert(cx4.end(), {0xAD, 0x51, 0x7F, 0x8D, 0x11, 0x00});
+    cx4.insert(cx4.end(), {0xAD, 0x52, 0x7F, 0x8D, 0x12, 0x00});
+    cx4.insert(cx4.end(), {0xAD, 0x53, 0x7F, 0x8D, 0x13, 0x00});
+    finishIdle(cx4);
+    const std::vector<std::uint8_t> cx4Rom = boardRom(cx4, 0x20, 0xF3);
+    REQUIRE(system.loadBytes(cx4Rom.data(), cx4Rom.size(), error));
+    REQUIRE(system.info().detail == "LoROM, NTSC, Cx4");
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) == 15);
+    REQUIRE(system.debugRead(0x0011) == 0);
+    REQUIRE(system.debugRead(0x0012) == 0);
+    REQUIRE(system.debugRead(0x0013) == 0);
+}
+
+TEST_CASE("Mode 5 interlace fields sample alternate source rows") {
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    std::vector<std::uint8_t> program;
+    store(program, 0x80, 0x15, 0x21);
+    store(program, 0x00, 0x16, 0x21);
+    store(program, 0x10, 0x17, 0x21);
+    // Tile 0 row0 = color 1, row1 = color 2 (4bpp Mode 5).
+    store(program, 0xFF, 0x18, 0x21);
+    store(program, 0x00, 0x19, 0x21);
+    store(program, 0x00, 0x18, 0x21);
+    store(program, 0xFF, 0x19, 0x21);
+    store(program, 0x00, 0x16, 0x21);
+    store(program, 0x00, 0x17, 0x21);
+    store(program, 0x00, 0x18, 0x21);
+    store(program, 0x04, 0x19, 0x21);
+    store(program, 0x00, 0x21, 0x21);
+    store(program, 0x1F, 0x22, 0x21);
+    store(program, 0x00, 0x22, 0x21);
+    store(program, 0x11, 0x21, 0x21);
+    store(program, 0x1F, 0x22, 0x21);
+    store(program, 0x00, 0x22, 0x21);
+    store(program, 0x12, 0x21, 0x21);
+    store(program, 0xE0, 0x22, 0x21);
+    store(program, 0x03, 0x22, 0x21);
+    store(program, 0x01, 0x0B, 0x21);
+    store(program, 0x05, 0x05, 0x21);
+    store(program, 0x01, 0x2C, 0x21);
+    store(program, 0x01, 0x33, 0x21);  // SETINI interlace
+    store(program, 0x0F, 0x00, 0x21);
+    const auto loop = static_cast<std::uint8_t>(program.size());
+    program.insert(program.end(), {0x4C, loop, 0x80});
+    const std::vector<std::uint8_t> rom = loRom(program);
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    // First frame writes SETINI after the line-0 field toggle; warm up so the
+    // next beginLine sees interlace enabled.
+    system.runFrame();
+    REQUIRE(system.frame().width == 512);
+    system.runFrame();
+    // Odd field samples fine row 1 → green at CGRAM $12.
+    REQUIRE(system.frame().rgba[0] == 0);
+    REQUIRE(system.frame().rgba[1] == 255);
+    REQUIRE(system.frame().rgba[2] == 0);
+    system.runFrame();
+    // Even field samples fine row 0 → red at CGRAM $11.
+    REQUIRE(system.frame().rgba[0] == 255);
+    REQUIRE(system.frame().rgba[1] == 0);
+    REQUIRE(system.frame().rgba[2] == 0);
+}
+
+TEST_CASE("SLHV latches OPHCT/OPVCT and PPU open bus retains the last read") {
+    // Wait for $4212 vblank (same pattern as the auto-joy tests), then latch HV.
+    const std::vector<std::uint8_t> program = {
+        0x78, 0xAD, 0x12, 0x42, 0x10, 0xFB, 0xAD, 0x37, 0x21, 0xAD, 0x3D, 0x21, 0x85, 0x10, 0xAD, 0x3D,
+        0x21, 0x85, 0x11, 0xAD, 0x3F, 0x21, 0x85, 0x12, 0xAD, 0x3B, 0x21, 0x85, 0x13, 0xDB,
+    };
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    REQUIRE(system.loadBytes(loRom(program).data(), loRom(program).size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) >= 225);
+    REQUIRE(system.debugRead(0x0012) == system.debugRead(0x0013));
+}
+
+TEST_CASE("NTSC short line and PAL line count fix the master clock budget") {
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    std::vector<std::uint8_t> program;
+    finishIdle(program);
+    REQUIRE(system.loadBytes(loRom(program).data(), loRom(program).size(), error));
+    system.runFrame();
+    REQUIRE(system.lastFrameMasterClocks() == 262 * 1364 - 4);
+    system.setRegionChoice(iris::RegionChoice::Pal);
+    system.runFrame();
+    REQUIRE(system.lastFrameMasterClocks() == 312 * 1364);
+    REQUIRE(system.framePeriodNs() == 1364LL * 312 * 1000000000LL / 21281370LL);
+}
+
+TEST_CASE("unaligned 16-bit WRAM stores survive page-cross cycle billing") {
+    // Native mode, 16-bit A, store $1234 at $00FF/$0100, then stop.
+    const std::vector<std::uint8_t> program = {
+        0x18, 0xFB, 0xC2, 0x20, 0xA9, 0x34, 0x12, 0x8D, 0xFF, 0x00, 0xE2, 0x20, 0xAD, 0xFF, 0x00, 0x85,
+        0x10, 0xAD, 0x00, 0x01, 0x85, 0x11, 0xDB,
+    };
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    REQUIRE(system.loadBytes(loRom(program).data(), loRom(program).size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) == 0x34);
+    REQUIRE(system.debugRead(0x0011) == 0x12);
+}
+
+TEST_CASE("multitap, mouse, and Super Scope report through auto-read and HV latch") {
+    const std::vector<std::uint8_t> program = {
+        0x78, 0xA9, 0x01, 0x8D, 0x00, 0x42, 0xAD, 0x12, 0x42, 0x10, 0xFB, 0xAD, 0x12, 0x42, 0x29, 0x01,
+        0xD0, 0xF9, 0xAD, 0x18, 0x42, 0x85, 0x20, 0xAD, 0x19, 0x42, 0x85, 0x21, 0xAD, 0x1C, 0x42, 0x85,
+        0x22, 0xAD, 0x1D, 0x42, 0x85, 0x23, 0xDB,
+    };
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    REQUIRE(system.loadBytes(loRom(program).data(), loRom(program).size(), error));
+    system.setInputDevice(0, iris::systems::snes::Bus::InputDevice::Multitap);
+    system.setController(0, iris::kButtonB);
+    system.setController(2, iris::kButtonStart);
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0021) == 0x80);  // B on JOY1H
+    REQUIRE(system.debugRead(0x0023) == 0x10);  // Start on JOY3H
+
+    std::vector<std::uint8_t> mouse;
+    finishIdle(mouse);
+    REQUIRE(system.loadBytes(loRom(mouse).data(), loRom(mouse).size(), error));
+    system.setInputDevice(0, iris::systems::snes::Bus::InputDevice::Mouse);
+    system.setPointer(5, 9);
+    system.setController(0, iris::kButtonA);
+    system.runFrame();
+    REQUIRE((system.debugRead(0x4219) & 0x01) != 0);
+
+    // Fire latches HV at the pointer; the program must not rewrite SLHV.
+    const std::vector<std::uint8_t> gun = {
+        0x78, 0xAD, 0x3C, 0x21, 0x85, 0x30, 0xAD, 0x3D, 0x21, 0x85, 0x31, 0xDB,
+    };
+    REQUIRE(system.loadBytes(loRom(gun).data(), loRom(gun).size(), error));
+    system.setInputDevice(0, iris::systems::snes::Bus::InputDevice::SuperScope);
+    system.setPointer(40, 60);
+    system.setController(0, iris::kButtonA);
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0030) == 40);
+    REQUIRE(system.debugRead(0x0031) == 60);
+}
+
+TEST_CASE("DSP-1 scale and DSP-4 projection commands answer with host arithmetic") {
+    std::vector<std::uint8_t> dsp;
+    staLong(dsp, 0x03, 0x308000);
+    staLong(dsp, 0x00, 0x308000);
+    staLong(dsp, 0x00, 0x308000);
+    staLong(dsp, 0x40, 0x308000);
+    staLong(dsp, 0x00, 0x308000);
+    staLong(dsp, 0x40, 0x308000);
+    staLong(dsp, 0x00, 0x308000);
+    staLong(dsp, 0x40, 0x308000);
+    ldaLongSta(dsp, 0x308000, 0x0010);
+    ldaLongSta(dsp, 0x308000, 0x0011);
+    finishIdle(dsp);
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    REQUIRE(system.loadBytes(boardRom(dsp, 0x20, 0x03).data(), boardRom(dsp, 0x20, 0x03).size(), error));
+    system.runFrame();
+    // $4000 * $4000 >> 15 = $2000
+    REQUIRE(system.debugRead(0x0010) == 0x00);
+    REQUIRE(system.debugRead(0x0011) == 0x20);
+
+    std::vector<std::uint8_t> dsp4;
+    staLong(dsp4, 0x00, 0x308000);
+    staLong(dsp4, 0x00, 0x308000);
+    staLong(dsp4, 0x10, 0x308000);
+    staLong(dsp4, 0x00, 0x308000);
+    staLong(dsp4, 0x00, 0x308000);
+    staLong(dsp4, 0x00, 0x308000);
+    staLong(dsp4, 0x00, 0x308000);
+    staLong(dsp4, 0x40, 0x308000);
+    ldaLongSta(dsp4, 0x308000, 0x0020);
+    ldaLongSta(dsp4, 0x308000, 0x0021);
+    finishIdle(dsp4);
+    REQUIRE(system.loadBytes(boardRom(dsp4, 0x20, 0x45).data(), boardRom(dsp4, 0x20, 0x45).size(), error));
+    REQUIRE(system.info().detail.find("DSP-4") != std::string::npos);
+    system.runFrame();
+    // horizon $4000 / distance $0010 = $0400
+    REQUIRE(system.debugRead(0x0020) == 0x00);
+    REQUIRE(system.debugRead(0x0021) == 0x04);
+}
+
+TEST_CASE("Super FX WITH/MULT/IBT and SA-1 type-1 character conversion") {
+    // IBT R1,#3 / WITH R1 / MULT R1 (3*3) / STOP — result in R1.
+    const std::uint8_t gsuCode[] = {0xA1, 0x03, 0x21, 0x81, 0x00};
+    std::vector<std::uint8_t> fx;
+    for (std::size_t index = 0; index < sizeof(gsuCode); ++index) {
+        staLong(fx, gsuCode[index], static_cast<std::uint32_t>(0x700000 + index));
+    }
+    store(fx, 0x70, 0x34, 0x30);
+    store(fx, 0x00, 0x1E, 0x30);
+    store(fx, 0x00, 0x1F, 0x30);
+    store(fx, 0x28, 0x3A, 0x30);  // SCMR high-speed bit
+    store(fx, 0x20, 0x30, 0x30);
+    finishIdle(fx);
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    REQUIRE(system.loadBytes(boardRom(fx, 0x20, 0x14).data(), boardRom(fx, 0x20, 0x14).size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x3002) == 9);
+    REQUIRE(system.debugRead(0x3003) == 0);
+
+    // Type-1 char conv: 2bpp tile of color-1 pixels in BW-RAM → I-RAM plane 0 = $FF.
+    std::vector<std::uint8_t> sa1;
+    for (int index = 0; index < 64; ++index) {
+        staLong(sa1, 0x01, static_cast<std::uint32_t>(0x400000 + index));
+    }
+    store(sa1, 0x00, 0x32, 0x22);
+    store(sa1, 0x00, 0x33, 0x22);
+    store(sa1, 0x00, 0x34, 0x22);
+    store(sa1, 0x00, 0x35, 0x22);
+    store(sa1, 0x00, 0x36, 0x22);
+    store(sa1, 0x00, 0x37, 0x22);
+    store(sa1, 0x02, 0x31, 0x22);  // CDMA 2bpp
+    store(sa1, 0xA0, 0x30, 0x22);  // DMAEN+CDEN type-1
+    sa1.insert(sa1.end(), {0xAD, 0x00, 0x30, 0x8D, 0x10, 0x00});
+    finishIdle(sa1);
+    REQUIRE(system.loadBytes(boardRom(sa1, 0x23, 0x35).data(), boardRom(sa1, 0x23, 0x35).size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) == 0xFF);
+}
+
+TEST_CASE("Cx4 distance, S-DD1 stream, SPC7110 port, OBC-1 remap, and map mode 4") {
+    std::vector<std::uint8_t> cx4;
+    store(cx4, 0x03, 0x40, 0x7F);
+    store(cx4, 0x00, 0x41, 0x7F);
+    store(cx4, 0x04, 0x42, 0x7F);
+    store(cx4, 0x00, 0x43, 0x7F);
+    store(cx4, 0x02, 0x4F, 0x7F);  // distance
+    cx4.insert(cx4.end(), {0xAD, 0x50, 0x7F, 0x8D, 0x10, 0x00});
+    finishIdle(cx4);
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    REQUIRE(system.loadBytes(boardRom(cx4, 0x20, 0xF3).data(), boardRom(cx4, 0x20, 0xF3).size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) == 5);  // sqrt(3^2+4^2)
+
+    std::vector<std::uint8_t> sdd1;
+    // Point decompress window at ROM $0100 (away from the program at $8000).
+    store(sdd1, 0x00, 0x02, 0x48);
+    store(sdd1, 0x01, 0x03, 0x48);
+    store(sdd1, 0x00, 0x04, 0x48);
+    store(sdd1, 0x01, 0x01, 0x48);
+    ldaLongSta(sdd1, 0x700000, 0x0011);
+    finishIdle(sdd1);
+    std::vector<std::uint8_t> sdd1Rom = boardRom(sdd1, 0x20, 0x43);
+    sdd1Rom[0x100] = 0x5A;
+    REQUIRE(system.loadBytes(sdd1Rom.data(), sdd1Rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0011) == 0x5A);
+
+    std::vector<std::uint8_t> spc;
+    store(spc, 0x00, 0x05, 0x48);
+    store(spc, 0x02, 0x06, 0x48);
+    store(spc, 0x00, 0x07, 0x48);
+    store(spc, 0x01, 0x04, 0x48);
+    spc.insert(spc.end(), {0xAD, 0x00, 0x48, 0x8D, 0x12, 0x00});
+    finishIdle(spc);
+    std::vector<std::uint8_t> spcRom = boardRom(spc, 0x20, 0xF5);
+    spcRom[0x200] = 0xA5;
+    REQUIRE(system.loadBytes(spcRom.data(), spcRom.size(), error));
+    REQUIRE(system.info().detail.find("SPC7110") != std::string::npos);
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0012) == 0xA5);
+
+    std::vector<std::uint8_t> obc;
+    store(obc, 0x80, 0xF0, 0x7F);
+    store(obc, 0x00, 0xF1, 0x7F);
+    store(obc, 0x3C, 0x00, 0x60);  // write through remap base $80
+    obc.insert(obc.end(), {0xAD, 0x00, 0x60, 0x8D, 0x13, 0x00});
+    finishIdle(obc);
+    REQUIRE(system.loadBytes(boardRom(obc, 0x20, 0x65).data(), boardRom(obc, 0x20, 0x65).size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0013) == 0x3C);
+
+    std::vector<std::uint8_t> map4 = loRom({});
+    map4[0x7FD5] = 0x24;  // uncommon LoROM variant
+    REQUIRE(system.loadBytes(map4.data(), map4.size(), error));
+    REQUIRE(system.info().detail.find("LoROM*") != std::string::npos);
+}
+
+TEST_CASE("SNES hardware acceptance suite freeze covers timing APU PPU and chips") {
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    // Timing: NTSC master clocks and DRAM/short-line budget.
+    std::vector<std::uint8_t> idle;
+    finishIdle(idle);
+    REQUIRE(system.loadBytes(loRom(idle).data(), loRom(idle).size(), error));
+    system.runFrame();
+    REQUIRE(system.lastFrameMasterClocks() == 262 * 1364 - 4);
+    // PPU: Mode 5 width.
+    const std::vector<std::uint8_t> mode5Rom = loRom(backgroundProgram(5, 0x04, false, 0, 0));
+    REQUIRE(system.loadBytes(mode5Rom.data(), mode5Rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.frame().width == 512);
+    // APU: software IPL still answers AA/BB before a transfer.
+    REQUIRE(system.debugRead(0x2140) == 0xAA);
+    REQUIRE(system.debugRead(0x2141) == 0xBB);
+    // Chip: DSP-1 still multiplies.
+    std::vector<std::uint8_t> dsp;
+    staLong(dsp, 0x00, 0x308000);
+    staLong(dsp, 0x00, 0x308000);
+    staLong(dsp, 0x00, 0x308000);
+    staLong(dsp, 0x40, 0x308000);
+    staLong(dsp, 0x00, 0x308000);
+    staLong(dsp, 0x40, 0x308000);
+    ldaLongSta(dsp, 0x308000, 0x0010);
+    ldaLongSta(dsp, 0x308000, 0x0011);
+    finishIdle(dsp);
+    REQUIRE(system.loadBytes(boardRom(dsp, 0x20, 0x03).data(), boardRom(dsp, 0x20, 0x03).size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) == 0x00);
+    REQUIRE(system.debugRead(0x0011) == 0x20);
 }

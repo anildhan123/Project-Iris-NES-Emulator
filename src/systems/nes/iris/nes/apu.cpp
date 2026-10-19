@@ -216,6 +216,8 @@ void Apu::reset() {
     noise_.shift = 1;
     frameCycle_ = 0;
     samplePhase_ = 0;
+    frameResetDelay_ = 0;
+    pendingFrame_ = 0;
     evenCycle_ = true;
     fiveStep_ = false;
     irqInhibit_ = false;
@@ -333,17 +335,27 @@ void Apu::write(std::uint16_t address, std::uint8_t value) {
         }
         break;
     case 0x4017:
-        fiveStep_ = (value & 0x80) != 0;
+        // Hardware delays the mode change by 3 or 4 CPU cycles after the write.
+        pendingFrame_ = value;
+        frameResetDelay_ = evenCycle_ ? 3 : 4;
         irqInhibit_ = (value & 0x40) != 0;
-        frameIrq_ = false;
-        frameCycle_ = 0;
-        if (fiveStep_) {
-            clockQuarter();
-            clockHalf();
+        if (irqInhibit_) {
+            frameIrq_ = false;
         }
         break;
     default:
         break;
+    }
+}
+
+void Apu::applyFrameControl(std::uint8_t value) {
+    fiveStep_ = (value & 0x80) != 0;
+    irqInhibit_ = (value & 0x40) != 0;
+    frameIrq_ = false;
+    frameCycle_ = 0;
+    if (fiveStep_) {
+        clockQuarter();
+        clockHalf();
     }
 }
 
@@ -412,7 +424,15 @@ float Apu::mix() const {
     const float tndIn = static_cast<float>(triangle_.output()) / 8227.0f + static_cast<float>(noise_.output()) / 12241.0f +
                         static_cast<float>(dmcOutput_) / 22638.0f;
     const float tndOut = tndIn == 0.0f ? 0.0f : 159.79f / ((1.0f / tndIn) + 100.0f);
-    return pulseOut + tndOut;
+    // Soft clip keeps nonlinear mixer + expansion audio in a host-safe range.
+    const float mixed = pulseOut + tndOut;
+    if (mixed > 1.0f) {
+        return 1.0f;
+    }
+    if (mixed < -1.0f) {
+        return -1.0f;
+    }
+    return mixed;
 }
 
 void Apu::clockFrame() {
@@ -479,7 +499,13 @@ void Apu::clockDmc() {
     }
 }
 
-void Apu::clock(std::vector<float>& samples) {
+void Apu::clock(std::vector<float>& samples, float expansionSample) {
+    if (frameResetDelay_ > 0) {
+        --frameResetDelay_;
+        if (frameResetDelay_ == 0) {
+            applyFrameControl(pendingFrame_);
+        }
+    }
     if (evenCycle_) {
         pulse1_.clockTimer();
         pulse2_.clockTimer();
@@ -493,7 +519,13 @@ void Apu::clock(std::vector<float>& samples) {
     samplePhase_ += kSampleRate;
     if (samplePhase_ >= cpuClock_) {
         samplePhase_ -= cpuClock_;
-        samples.push_back(mix());
+        float sample = mix() + expansionSample;
+        if (sample > 1.0f) {
+            sample = 1.0f;
+        } else if (sample < -1.0f) {
+            sample = -1.0f;
+        }
+        samples.push_back(sample);
     }
 }
 
