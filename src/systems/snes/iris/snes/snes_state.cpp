@@ -3,6 +3,7 @@
 #include "iris/byte_io.hpp"
 #include "iris/version.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <string>
@@ -39,15 +40,19 @@ int hexValue(char text) {
     return -1;
 }
 
-std::vector<std::uint8_t> thumbnailFrom(const std::uint8_t* frame) {
+std::vector<std::uint8_t> thumbnailFrom(const std::uint8_t* frame, int frameWidth) {
     std::vector<std::uint8_t> thumb(static_cast<std::size_t>(kThumbnailWidth * kThumbnailHeight * 4), 0);
-    if (frame == nullptr) {
+    if (frame == nullptr || frameWidth <= 0) {
         return thumb;
     }
+    const int stepX = std::max(1, frameWidth / kThumbnailWidth);
     for (int y = 0; y < kThumbnailHeight; ++y) {
         for (int x = 0; x < kThumbnailWidth; ++x) {
+            const int sourceX = std::min(frameWidth - 1, x * stepX);
             const std::size_t source =
-                (static_cast<std::size_t>(y * 4) * Ppu::kWidth + static_cast<std::size_t>(x * 4)) * 4;
+                (static_cast<std::size_t>(y * 4) * static_cast<std::size_t>(frameWidth) +
+                 static_cast<std::size_t>(sourceX)) *
+                4;
             const std::size_t destination =
                 (static_cast<std::size_t>(y) * kThumbnailWidth + static_cast<std::size_t>(x)) * 4;
             thumb[destination] = frame[source];
@@ -191,7 +196,7 @@ bool SnesSystem::saveState(std::vector<std::uint8_t>& bytes, std::string_view de
         error = "The state could not be created.";
         return false;
     }
-    const auto thumbnail = thumbnailFrom(bus_.ppu().pixels());
+    const auto thumbnail = thumbnailFrom(bus_.ppu().pixels(), bus_.ppu().width());
     const auto savedAt = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
             .count());

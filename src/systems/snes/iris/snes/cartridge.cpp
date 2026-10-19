@@ -36,17 +36,27 @@ Chip chipFor(int mapNibble, int type) {
     if (mapNibble == 3 && (type == 0x32 || type == 0x33 || type == 0x34 || type == 0x35)) {
         return Chip::Sa1;
     }
-    if (mapNibble == 0 && (type == 0x13 || type == 0x14 || type == 0x15 || type == 0x1A)) {
+    // $15 is DSP-2 (Dungeon Master). Super FX boards use $13, $14, or $1A.
+    if (mapNibble == 0 && (type == 0x13 || type == 0x14 || type == 0x1A)) {
         return Chip::SuperFx;
     }
-    if ((mapNibble == 0 || mapNibble == 1) && (type == 0x03 || type == 0x04)) {
+    if ((mapNibble == 0 || mapNibble == 1) && (type == 0x03 || type == 0x04 || type == 0x05)) {
         return Chip::Dsp1;
+    }
+    if ((mapNibble == 0 || mapNibble == 1) && type == 0x15) {
+        return Chip::Dsp2;
+    }
+    if ((mapNibble == 0 || mapNibble == 1) && type == 0x25) {
+        return Chip::Dsp3;
+    }
+    if ((mapNibble == 0 || mapNibble == 1) && type == 0x45) {
+        return Chip::Dsp4;
     }
     return Chip::None;
 }
 
 constexpr const char* kUnsupported =
-    "This Super NES mapping is not supported yet. This build plays LoROM, HiROM, ExHiROM, DSP-1, Super FX, and SA-1.";
+    "This Super NES mapping is not supported yet. This build plays LoROM, HiROM, ExHiROM, DSP-1 through DSP-4, Super FX, and SA-1.";
 
 }  // namespace
 
@@ -124,6 +134,12 @@ std::string boardText(const Cartridge& cartridge) {
     text += cartridge.standard == TvStandard::Pal ? "PAL" : "NTSC";
     if (cartridge.chip == Chip::Dsp1) {
         text += ", DSP-1";
+    } else if (cartridge.chip == Chip::Dsp2) {
+        text += ", DSP-2";
+    } else if (cartridge.chip == Chip::Dsp3) {
+        text += ", DSP-3";
+    } else if (cartridge.chip == Chip::Dsp4) {
+        text += ", DSP-4";
     } else if (cartridge.chip == Chip::SuperFx) {
         text += ", Super FX";
     }

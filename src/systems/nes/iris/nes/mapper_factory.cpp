@@ -11,7 +11,8 @@ namespace iris::systems::nes {
 namespace {
 
 constexpr const char* kSupported =
-    "This version plays NROM, MMC1, UxROM, CNROM, MMC3, AxROM, Color Dreams, BNROM, GxROM, and Camerica.";
+    "This version plays NROM, MMC1, UxROM, CNROM, MMC3, AxROM, MMC2, MMC4, Color Dreams, BNROM, GxROM, "
+    "Camerica, VRC1, NINA-003, mapper 87, DxROM, and BF9096.";
 
 bool multipleOf(std::size_t size, std::size_t unit) { return unit != 0 && size % unit == 0; }
 
@@ -31,6 +32,10 @@ const char* mapperLabel(int mapper) {
         return "MMC3";
     case 7:
         return "AxROM";
+    case 9:
+        return "MMC2";
+    case 10:
+        return "MMC4";
     case 11:
         return "Color Dreams";
     case 34:
@@ -39,6 +44,16 @@ const char* mapperLabel(int mapper) {
         return "GxROM";
     case 71:
         return "Camerica";
+    case 75:
+        return "VRC1";
+    case 79:
+        return "NINA-003";
+    case 87:
+        return "Mapper 87";
+    case 206:
+        return "DxROM";
+    case 232:
+        return "BF9096";
     default:
         return "NES";
     }
@@ -134,6 +149,34 @@ bool mapperSupported(const Cartridge& cartridge, std::string& error) {
             return false;
         }
         return true;
+    case 9:
+        if (submapper != 0) {
+            error = "MMC2 submapper " + std::to_string(submapper) + " is not supported.";
+            return false;
+        }
+        if (prg < 128 * 1024 || !multipleOf(prg, 8 * 1024)) {
+            error = "MMC2 requires at least 128 KiB of PRG ROM in 8 KiB banks.";
+            return false;
+        }
+        if (chr < 8 * 1024 || !multipleOf(chr, 4 * 1024)) {
+            error = "MMC2 requires CHR in 4 KiB banks.";
+            return false;
+        }
+        return true;
+    case 10:
+        if (submapper != 0) {
+            error = "MMC4 submapper " + std::to_string(submapper) + " is not supported.";
+            return false;
+        }
+        if (prg < 128 * 1024 || !multipleOf(prg, 16 * 1024)) {
+            error = "MMC4 requires at least 128 KiB of PRG ROM in 16 KiB banks.";
+            return false;
+        }
+        if (chr < 8 * 1024 || !multipleOf(chr, 4 * 1024)) {
+            error = "MMC4 requires CHR in 4 KiB banks.";
+            return false;
+        }
+        return true;
     case 11:
         if (submapper != 0) {
             error = "Color Dreams submapper " + std::to_string(submapper) + " is not supported.";
@@ -190,6 +233,76 @@ bool mapperSupported(const Cartridge& cartridge, std::string& error) {
             return false;
         }
         return true;
+    case 75:
+        if (submapper != 0) {
+            error = "VRC1 submapper " + std::to_string(submapper) + " is not supported.";
+            return false;
+        }
+        if (prg < 16 * 1024 || !multipleOf(prg, 8 * 1024)) {
+            error = "VRC1 requires PRG ROM in 8 KiB banks.";
+            return false;
+        }
+        if (chr < 8 * 1024 || !multipleOf(chr, 4 * 1024)) {
+            error = "VRC1 requires CHR in 4 KiB banks.";
+            return false;
+        }
+        return true;
+    case 79:
+        if (submapper != 0) {
+            error = "NINA-003 submapper " + std::to_string(submapper) + " is not supported.";
+            return false;
+        }
+        if (prg < 32 * 1024 || !multipleOf(prg, 32 * 1024)) {
+            error = "NINA-003 requires PRG ROM in 32 KiB banks.";
+            return false;
+        }
+        if (chr < 8 * 1024 || !multipleOf(chr, 8 * 1024)) {
+            error = "NINA-003 requires CHR in 8 KiB banks.";
+            return false;
+        }
+        return true;
+    case 87:
+        if (submapper != 0) {
+            error = "Mapper 87 submapper " + std::to_string(submapper) + " is not supported.";
+            return false;
+        }
+        if (prg != 16 * 1024 && prg != 32 * 1024) {
+            error = "Mapper 87 requires 16 KiB or 32 KiB of PRG ROM.";
+            return false;
+        }
+        if (chr < 8 * 1024 || !multipleOf(chr, 8 * 1024)) {
+            error = "Mapper 87 requires CHR in 8 KiB banks.";
+            return false;
+        }
+        return true;
+    case 206:
+        if (submapper != 0) {
+            error = "DxROM submapper " + std::to_string(submapper) + " is not supported.";
+            return false;
+        }
+        if (prg < 16 * 1024 || !multipleOf(prg, 8 * 1024)) {
+            error = "DxROM requires PRG ROM in 8 KiB banks.";
+            return false;
+        }
+        if (chr < 8 * 1024 || !multipleOf(chr, 1024)) {
+            error = "DxROM requires CHR in 1 KiB banks.";
+            return false;
+        }
+        return true;
+    case 232:
+        if (submapper != 0) {
+            error = "BF9096 submapper " + std::to_string(submapper) + " is not supported.";
+            return false;
+        }
+        if (prg < 64 * 1024 || !multipleOf(prg, 16 * 1024)) {
+            error = "BF9096 requires at least 64 KiB of PRG ROM in 16 KiB banks.";
+            return false;
+        }
+        if (chr != 8 * 1024) {
+            error = "BF9096 requires 8 KiB of CHR ROM or CHR RAM.";
+            return false;
+        }
+        return true;
     default:
         error = "Mapper " + std::to_string(mapper) + " is not supported. " + kSupported;
         return false;
@@ -210,6 +323,10 @@ std::unique_ptr<Mapper> createMapper(Cartridge& cartridge) {
         return std::make_unique<Mmc3>(cartridge);
     case 7:
         return std::make_unique<Axrom>(cartridge);
+    case 9:
+        return std::make_unique<Mmc2>(cartridge);
+    case 10:
+        return std::make_unique<Mmc4>(cartridge);
     case 11:
         return std::make_unique<ColorDreams>(cartridge);
     case 34:
@@ -218,6 +335,16 @@ std::unique_ptr<Mapper> createMapper(Cartridge& cartridge) {
         return std::make_unique<Gxrom>(cartridge);
     case 71:
         return std::make_unique<Camerica>(cartridge);
+    case 75:
+        return std::make_unique<Vrc1>(cartridge);
+    case 79:
+        return std::make_unique<Nina003>(cartridge);
+    case 87:
+        return std::make_unique<Mapper87>(cartridge);
+    case 206:
+        return std::make_unique<Mapper206>(cartridge);
+    case 232:
+        return std::make_unique<Mapper232>(cartridge);
     default:
         return nullptr;
     }

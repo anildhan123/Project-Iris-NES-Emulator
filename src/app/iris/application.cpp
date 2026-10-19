@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -131,9 +132,18 @@ int Application::run(int argc, char** argv) {
             return code;
         }
 
-        const auto createSystem = [](SystemKind kind) -> std::unique_ptr<IEmulatedSystem> {
+        const auto createSystem = [paths](SystemKind kind) -> std::unique_ptr<IEmulatedSystem> {
             if (kind == SystemKind::Snes) {
-                return systems::snes::createSnesSystem();
+                auto snes = std::make_unique<systems::snes::SnesSystem>();
+                if (std::filesystem::exists(paths->iplRom)) {
+                    std::string iplError;
+                    if (!snes->loadIplFile(paths->iplRom, iplError)) {
+                        log::warn(std::string("IPL ROM was not loaded: ") + iplError);
+                    } else {
+                        log::info("Loaded user IPL ROM from firmware/ipl.rom.");
+                    }
+                }
+                return snes;
             }
             return systems::nes::createNesSystem();
         };

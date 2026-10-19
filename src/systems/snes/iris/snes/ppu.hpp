@@ -23,12 +23,15 @@ public:
     void reloadOam() { oamByte_ = static_cast<int>(oamWord_ & 0x1FF) * 2; }
 
     [[nodiscard]] const std::uint8_t* pixels() const { return frame_.data(); }
-    [[nodiscard]] int width() const { return kWidth; }
+    [[nodiscard]] int width() const;
     [[nodiscard]] int height() const { return kHeight; }
+    [[nodiscard]] bool highResolution() const;
     void saveState(iris::ByteWriter& out) const;
     [[nodiscard]] bool loadState(iris::ByteReader& in);
 
     static constexpr int kWidth = 256;
+    static constexpr int kHiResWidth = 512;
+    static constexpr int kMaxWidth = 512;
     static constexpr int kHeight = 224;
 
 private:
@@ -44,12 +47,12 @@ private:
     [[nodiscard]] int mode7Pixel(int x, int y) const;
     [[nodiscard]] int mapWord(std::uint8_t screen, int tileX, int tileY) const;
     [[nodiscard]] Texel sampleLayer(int layer, int x, int y, std::uint8_t windowMask) const;
-    void paintLayer(int layer, int y, Texel* row) const;
+    void paintLayer(int layer, int y, Texel* row, int lineWidth) const;
     [[nodiscard]] bool layerMasked(int x, std::uint8_t select, bool enabled, std::uint8_t combine) const;
     [[nodiscard]] std::uint16_t applyMath(std::uint16_t color, int addRed, int addGreen, int addBlue) const;
     [[nodiscard]] int stackRank(int mode, int source, int priority) const;
     [[nodiscard]] int spriteByte(int tile) const;
-    void collectSprites(int y, Texel* dots) const;
+    void collectSprites(int y, Texel* dots, int lineWidth) const;
 
     std::uint8_t inidisp_ = 0x8F;
     std::uint8_t obsel_ = 0;

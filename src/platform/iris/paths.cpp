@@ -29,6 +29,8 @@ AppPaths pathsFromRoot(std::filesystem::path root) {
     paths.screenshots = paths.root / "screenshots";
     paths.shaders = paths.root / "shaders";
     paths.library = paths.root / "library";
+    paths.firmware = paths.root / "firmware";
+    paths.iplRom = paths.firmware / "ipl.rom";
     return paths;
 }
 
@@ -106,6 +108,7 @@ bool ensureAppDirectories(const AppPaths& paths) {
         paths.screenshots,
         paths.shaders,
         paths.library,
+        paths.firmware,
     };
     for (const auto& directory : directories) {
         std::error_code error;

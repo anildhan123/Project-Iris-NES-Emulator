@@ -17,11 +17,13 @@ struct FrameView {
     int height = 0;
 };
 
-// Mono samples produced by the most recent runFrame. Valid until the next runFrame or unload.
+// Host samples from the most recent runFrame. Valid until the next runFrame or unload.
+// count is the number of frames. samples holds count * channels interleaved floats.
 struct AudioView {
     const float* samples = nullptr;
     int count = 0;
     int sampleRate = 48000;
+    int channels = 1;
 };
 
 struct SystemInfo {

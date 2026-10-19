@@ -10,21 +10,30 @@ class ByteWriter;
 
 namespace iris::systems::snes {
 
-// SPC700 and S-DSP. The Nintendo IPL ROM is not present. A transfer uses the
-// documented port protocol, and a jump to $FFC0 returns to that protocol.
+// SPC700 and S-DSP. The upload protocol is implemented in software by default.
+// A 64-byte IPL image the user supplies can be mapped at $FFC0 and executed.
+// Nintendo's IPL dump is not shipped with Iris.
 class Apu {
 public:
     static constexpr int kOutputRate = 48000;
+    static constexpr int kIplSize = 64;
 
     void power();
     void beginFrame();
     void catchUp(int masterCycle, int masterClock);
     void finishAudio(int masterCycles, int masterClock);
 
+    // Install a 64-byte IPL image. Empty clears the image and returns to the
+    // software protocol. Nintendo firmware must not be redistributed with Iris.
+    [[nodiscard]] bool installIpl(const std::uint8_t* data, std::size_t size);
+    [[nodiscard]] bool hasIpl() const { return hasIpl_; }
+
     [[nodiscard]] std::uint8_t readPort(int index) const;
     void writePort(int index, std::uint8_t value);
     [[nodiscard]] const float* samples() const { return samples_.data(); }
-    [[nodiscard]] int sampleCount() const { return static_cast<int>(samples_.size()); }
+    // Number of host frames. Each frame has channels() interleaved floats.
+    [[nodiscard]] int sampleCount() const { return static_cast<int>(samples_.size()) / channels(); }
+    [[nodiscard]] int channels() const { return 2; }
     void saveState(iris::ByteWriter& out) const;
     [[nodiscard]] bool loadState(iris::ByteReader& in);
 
@@ -37,6 +46,7 @@ private:
         int previous = 0;
         int envelope = 0;
         int output = 0;
+        int history[4] = {};
         bool playing = false;
         bool release = false;
         bool blockEnds = false;
@@ -49,9 +59,10 @@ private:
     void run(int cycles);
     [[nodiscard]] int instruction();
     void tickTimers(int cycles);
-    [[nodiscard]] float renderSample();
+    void renderSample(float& left, float& right);
     void keyOn(int voice);
     void decodeBlock(Voice& voice);
+    [[nodiscard]] int interpolate(const Voice& voice, int cursor) const;
     [[nodiscard]] std::uint8_t read8(std::uint16_t address);
     void write8(std::uint16_t address, std::uint8_t value);
     [[nodiscard]] std::uint8_t readReg(std::uint16_t address);
@@ -70,10 +81,12 @@ private:
     void call(std::uint16_t address);
 
     std::vector<std::uint8_t> ram_;
-    std::vector<float> raw_;
+    std::vector<float> rawLeft_;
+    std::vector<float> rawRight_;
     std::vector<float> samples_;
     std::vector<int> echoLeft_;
     std::vector<int> echoRight_;
+    std::uint8_t ipl_[kIplSize] = {};
     Voice voice_[8]{};
     std::uint8_t dsp_[128] = {};
     std::uint8_t cpuIn_[4] = {};
@@ -102,6 +115,7 @@ private:
     int noise_ = 0x4000;
     std::int64_t cycleAccum_ = 0;
     std::int64_t outputAccum_ = 0;
+    bool hasIpl_ = false;
     bool booting_ = true;
     bool transferring_ = false;
     bool halted_ = false;

@@ -47,6 +47,7 @@ void Bus::map(std::vector<std::uint8_t> rom, bool hiRom, bool exHiRom, std::size
     chip_ = chip;
     sram_.assign(sramBytes, 0);
     dsp_.power();
+    dsp_.setChip(chip_);
     gsu_.power();
     gsu_.bind(&rom_);
     iram_.clear();
@@ -68,6 +69,7 @@ void Bus::resetApu() {
 
 void Bus::resetChips() {
     dsp_.power();
+    dsp_.setChip(chip_);
     gsu_.halt();
     ccnt_ = 0;
     sa1Running_ = false;
@@ -110,8 +112,68 @@ void Bus::writeSa1Reg(std::uint16_t address, std::uint8_t value) {
     }
     if (address == 0x2203) {
         crv_ = static_cast<std::uint16_t>((crv_ & 0xFF00) | value);
-    } else if (address == 0x2204) {
+        return;
+    }
+    if (address == 0x2204) {
         crv_ = static_cast<std::uint16_t>((crv_ & 0x00FF) | (static_cast<std::uint16_t>(value) << 8));
+        return;
+    }
+    if (address == 0x2230) {
+        sa1DmaControl_ = value;
+        // Bit 7 starts a DMA between I-RAM and BW-RAM for character conversion.
+        if ((value & 0x80) != 0 && sa1DmaCount_ != 0 && !iram_.empty() && !bwram_.empty()) {
+            const bool toIram = (value & 0x01) != 0;
+            int left = sa1DmaCount_ == 0 ? 65536 : sa1DmaCount_;
+            std::uint32_t source = sa1DmaSource_;
+            std::uint32_t dest = sa1DmaDest_;
+            while (left > 0) {
+                if (toIram) {
+                    const std::uint8_t byte = source < bwram_.size() ? bwram_[source] : 0;
+                    iram_[dest & 0x07FF] = byte;
+                } else {
+                    const std::uint8_t byte = iram_[source & 0x07FF];
+                    if (dest < bwram_.size()) {
+                        bwram_[dest] = byte;
+                    }
+                }
+                source = (source + 1) & 0x3FFFF;
+                dest = (dest + 1) & 0x3FFFF;
+                --left;
+            }
+            sa1DmaControl_ = static_cast<std::uint8_t>(value & 0x7F);
+        }
+        return;
+    }
+    if (address == 0x2232) {
+        sa1DmaSource_ = (sa1DmaSource_ & 0xFFFF00u) | value;
+        return;
+    }
+    if (address == 0x2233) {
+        sa1DmaSource_ = (sa1DmaSource_ & 0xFF00FFu) | (static_cast<std::uint32_t>(value) << 8);
+        return;
+    }
+    if (address == 0x2234) {
+        sa1DmaSource_ = (sa1DmaSource_ & 0x00FFFFu) | (static_cast<std::uint32_t>(value & 0x03) << 16);
+        return;
+    }
+    if (address == 0x2235) {
+        sa1DmaDest_ = (sa1DmaDest_ & 0xFFFF00u) | value;
+        return;
+    }
+    if (address == 0x2236) {
+        sa1DmaDest_ = (sa1DmaDest_ & 0xFF00FFu) | (static_cast<std::uint32_t>(value) << 8);
+        return;
+    }
+    if (address == 0x2237) {
+        sa1DmaDest_ = (sa1DmaDest_ & 0x00FFFFu) | (static_cast<std::uint32_t>(value & 0x03) << 16);
+        return;
+    }
+    if (address == 0x2238) {
+        sa1DmaCount_ = static_cast<std::uint16_t>((sa1DmaCount_ & 0xFF00) | value);
+        return;
+    }
+    if (address == 0x2239) {
+        sa1DmaCount_ = static_cast<std::uint16_t>((sa1DmaCount_ & 0x00FF) | (static_cast<std::uint16_t>(value) << 8));
     }
 }
 
@@ -393,7 +455,7 @@ std::uint8_t Bus::read(std::uint8_t bank, std::uint16_t address) {
             return value;
         }
     }
-    if (chip_ == Chip::Dsp1) {
+    if (chip_ == Chip::Dsp1 || chip_ == Chip::Dsp2 || chip_ == Chip::Dsp3 || chip_ == Chip::Dsp4) {
         std::uint8_t value = 0;
         if (dsp_.read(bank, address, hiRom_, value)) {
             return value;
@@ -506,7 +568,8 @@ void Bus::write(std::uint8_t bank, std::uint16_t address, std::uint8_t value) {
     if (chip_ == Chip::SuperFx && gsu_.cpuWrite(bank, address, value)) {
         return;
     }
-    if (chip_ == Chip::Dsp1 && dsp_.write(bank, address, hiRom_, value)) {
+    if ((chip_ == Chip::Dsp1 || chip_ == Chip::Dsp2 || chip_ == Chip::Dsp3 || chip_ == Chip::Dsp4) &&
+        dsp_.write(bank, address, hiRom_, value)) {
         return;
     }
     if (chip_ == Chip::Sa1 && writeSa1(bank, address, value)) {

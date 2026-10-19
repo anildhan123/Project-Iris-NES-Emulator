@@ -214,3 +214,21 @@ Full mobile frontends and other consoles are not started.
 - Version 0.22.0. The configuration schema stays at version 7.
 
 Full mobile frontends and other consoles are not started.
+
+## Compatibility follow-up after Milestone 22 (implemented)
+
+- `$4212` reports horizontal blank. Modes 5 and 6 draw 512 dots. Each scanline charges DRAM refresh, and NTSC shortens one scanline.
+- DSP-1 answers more geometry commands. DSP-2, DSP-3, and DSP-4 boards load. Super FX plots packed 2-bit and 4-bit screens and runs additional opcodes. SA-1 can DMA between I-RAM and BW-RAM.
+- NES MMC2 and NINA-003 load beside the earlier mappers.
+- The Nintendo IPL ROM is still not included. Timing inside an instruction is still approximate. A commercial soundtrack is not claimed. Other NES mappers and the remaining chip command sets stay out until a tested program needs them.
+
+Full mobile frontends and other consoles are not started.
+
+## Firmware, chips, mappers, and soundtrack follow-up (implemented)
+
+- A user may place a 64-byte IPL image at `firmware/ipl.rom`. When present it is mapped at `$FFC0` and executed. The built-in upload protocol remains the default. Nintendo's IPL dump is not shipped.
+- DSP-1 projection and attitude helpers, DSP-2 convert replies, DSP-3 and DSP-4 command slices, and more Super FX ALU ops are in this build.
+- NES MMC4, VRC1, mapper 87, DxROM, and BF9096 load beside the earlier boards.
+- The DSP mixes stereo at 48000 Hz with Gaussian BRR interpolation. A cartridge that uploads an SPC700 soundtrack plays through that path. Timing inside an instruction is still approximate.
+
+Full mobile frontends and other consoles are not started.

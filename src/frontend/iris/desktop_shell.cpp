@@ -947,7 +947,7 @@ StartupPick pickSystem(
         ImGui::SetCursorPosX(startX);
         ImGui::Dummy(ImVec2(0.0f, 10.0f));
         ImGui::PushTextWrapPos(startX + contentWidth);
-        ImGui::TextUnformatted("Super NES sound is the SPC700 and DSP. LoROM, HiROM, ExHiROM, DSP-1, Super FX, and SA-1 are in this build. DMA, HDMA, and IRQs take cycles on the scanline. Timing inside an instruction is still approximate. Save states can be stored and restored for the loaded game. The Nintendo IPL ROM, other enhancement chips, and high resolution are not.");
+        ImGui::TextUnformatted("Super NES sound is the SPC700 and stereo DSP with Gaussian BRR. LoROM, HiROM, ExHiROM, DSP-1 through DSP-4, Super FX, and SA-1 are in this build. DMA, HDMA, and IRQs take cycles on the scanline. Timing inside an instruction is still approximate. Save states can be stored and restored for the loaded game. Place an optional 64-byte IPL at firmware/ipl.rom; Nintendo's dump is not shipped.");
         ImGui::PopTextWrapPos();
         ImGui::EndChild();
 
@@ -1236,7 +1236,7 @@ int DesktopShell::run() {
     const std::string aboutText = std::string(kProductName) + " " + kVersionString +
                                    "\n\nThis build plays NES cartridges on NROM, MMC1, UxROM, CNROM, MMC3, AxROM, Color Dreams, BNROM, GxROM, and Camerica. "
                                    "A NES 2.0 header can select PAL timing. "
-                                   "Super NES plays a LoROM, HiROM, or ExHiROM board, including save RAM, four backgrounds, scroll, priority, mosaic, DMA, HDMA, windows, and color math. DMA, HDMA, and IRQs take their cycles on the scanline. Timing inside an instruction is still approximate. A cartridge can upload an SPC700 program, and the DSP mixes it to mono at 48000 Hz. DSP-1, Super FX, and SA-1 boards run in this build. The Nintendo IPL ROM is not included. Iris Demo moves a marker with the arrow keys and stays silent because it does not upload a program. Save states restore the running machine for the same game. Other enhancement chips and high resolution are not in this build. "
+                                   "Super NES plays a LoROM, HiROM, or ExHiROM board, including save RAM, four backgrounds, scroll, priority, mosaic, DMA, HDMA, windows, and color math. DMA, HDMA, and IRQs take their cycles on the scanline. Timing inside an instruction is still approximate. A cartridge can upload an SPC700 program, and the DSP mixes stereo at 48000 Hz with Gaussian BRR. DSP-1 through DSP-4, Super FX, and SA-1 boards run in this build. An optional user IPL may be placed at firmware/ipl.rom; Nintendo's dump is not shipped. Iris Demo moves a marker with the arrow keys and stays silent because it does not upload a program. Save states restore the running machine for the same game. "
                                    "Iris Demo, written for this project, is generated beside the executable.\n\n"
                                    "Open a ROM with File, Open Game, or from the library. "
                                    "The arrow keys move. On Super NES, Z and A hold Y so a game can run or roll, X is B, and S repeats B. On NES, Z is A, X is B, A repeats A, and S repeats B. Right Shift is Select, and Enter is Start. "
@@ -1542,11 +1542,13 @@ int DesktopShell::run() {
                                 queuedSamples + audio.count < audioQueueSamples(config_.audioLatency)) {
                                 const float volume = std::min(config_.volume, 1.0f);
                                 const int channels = useWave ? 1 : playbackChannels.load();
+                                const int sourceChannels = audio.channels > 0 ? audio.channels : 1;
                                 chunk.resize(static_cast<std::size_t>(audio.count) * static_cast<std::size_t>(channels));
                                 for (int index = 0; index < audio.count; ++index) {
-                                    const float sample = audio.samples[index] * volume;
                                     for (int channel = 0; channel < channels; ++channel) {
-                                        chunk[static_cast<std::size_t>(index * channels + channel)] = sample;
+                                        const int source = channel < sourceChannels ? channel : sourceChannels - 1;
+                                        chunk[static_cast<std::size_t>(index * channels + channel)] =
+                                            audio.samples[index * sourceChannels + source] * volume;
                                     }
                                 }
                             }

@@ -16,6 +16,9 @@ enum class TvStandard {
 enum class Chip {
     None,
     Dsp1,
+    Dsp2,
+    Dsp3,
+    Dsp4,
     SuperFx,
     Sa1,
 };

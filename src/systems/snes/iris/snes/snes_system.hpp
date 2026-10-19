@@ -20,6 +20,9 @@ public:
 
     bool loadContent(const std::filesystem::path& path, std::string& error) override;
     bool loadBytes(const std::uint8_t* data, std::size_t size, std::string& error);
+    // Optional 64-byte IPL image from the user. Nintendo firmware is not shipped.
+    bool loadIplFile(const std::filesystem::path& path, std::string& error);
+    [[nodiscard]] bool hasIpl() const;
     void unload() override;
     [[nodiscard]] bool loaded() const override { return loaded_; }
     void reset() override;

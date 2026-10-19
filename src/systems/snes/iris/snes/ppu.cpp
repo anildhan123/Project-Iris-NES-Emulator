@@ -29,11 +29,20 @@ Ppu::Ppu() {
     power();
 }
 
+bool Ppu::highResolution() const {
+    const int mode = bgmode_ & 0x07;
+    return mode == 5 || mode == 6;
+}
+
+int Ppu::width() const {
+    return highResolution() ? kHiResWidth : kWidth;
+}
+
 void Ppu::power() {
     vram_.assign(64 * 1024, 0);
     oam_.assign(544, 0);
     cgram_.assign(256, 0);
-    frame_.assign(static_cast<std::size_t>(kWidth * kHeight * 4), 0);
+    frame_.assign(static_cast<std::size_t>(kMaxWidth * kHeight * 4), 0);
     reset();
 }
 
@@ -604,8 +613,8 @@ void Ppu::render() {
     }
 }
 
-void Ppu::paintLayer(int layer, int y, Texel* row) const {
-    for (int x = 0; x < kWidth; ++x) {
+void Ppu::paintLayer(int layer, int y, Texel* row, int lineWidth) const {
+    for (int x = 0; x < lineWidth; ++x) {
         row[x] = {};
     }
     const int mode = bgmode_ & 0x07;
@@ -648,6 +657,8 @@ void Ppu::paintLayer(int layer, int y, Texel* row) const {
     const bool useOffset = (mode == 2 || mode == 4 || mode == 6) && layer <= 1 && !(mode == 6 && layer != 0);
     const bool mosaic = (mosaic_ & (0x10 << layer)) != 0;
     const int mosaicSize = (mosaic_ & 0x0F) + 1;
+    // Modes 5 and 6 draw 512 dots. Each character pixel is one half-dot wide, so
+    // the same 8 by 8 tile covers twice the horizontal map range of a low-res line.
     const std::uint8_t* vram = vram_.data();
     const std::size_t vramSize = vram_.size();
     int cacheTileX = 0x7FFFFFFF;
@@ -658,16 +669,16 @@ void Ppu::paintLayer(int layer, int y, Texel* row) const {
     bool cacheFlipX = false;
     bool cacheEmpty = true;
     std::uint8_t plane[8] = {};
-    for (int x = 0; x < kWidth; ++x) {
-        int sampleX = x;
-        int sampleY = y;
+    for (int x = 0; x < lineWidth; ++x) {
+        int sampleX = x + (hofs_[layer] & 0x3FF);
+        int sampleY = y + (vofs_[layer] & 0x3FF);
         if (mosaic) {
-            sampleX -= sampleX % mosaicSize;
-            sampleY -= sampleY % mosaicSize;
+            const int unit = lineWidth > kWidth ? 2 : 1;
+            const int mosaicX = (x / unit) - ((x / unit) % mosaicSize);
+            sampleX = mosaicX * unit + (x % unit) + (hofs_[layer] & 0x3FF);
+            sampleY = (y - (y % mosaicSize)) + (vofs_[layer] & 0x3FF);
         }
-        const int scrolledX = sampleX;
-        sampleX += hofs_[layer] & 0x3FF;
-        sampleY += vofs_[layer] & 0x3FF;
+        const int scrolledX = sampleX - (hofs_[layer] & 0x3FF);
         if (useOffset) {
             const int column = scrolledX >> 3;
             const int rowIndex = static_cast<int>(vofs_[2]) >> 3;
@@ -682,7 +693,7 @@ void Ppu::paintLayer(int layer, int y, Texel* row) const {
                 sample = pixel + (word & 0x03FF);
             };
             applyOffset(mapWord(bg3sc_, table + column * 2, rowIndex), scrolledX, sampleX);
-            applyOffset(mapWord(bg3sc_, table + column * 2 + 1, rowIndex), sampleY - (vofs_[layer] & 0x3FF), sampleY);
+            applyOffset(mapWord(bg3sc_, table + column * 2 + 1, rowIndex), y, sampleY);
         }
         const int tileX = sampleX >> 3;
         const int tileY = sampleY >> 3;
@@ -743,11 +754,12 @@ void Ppu::renderLine(int y) {
     if (y < 0 || y >= kHeight) {
         return;
     }
-    std::uint8_t* pixelOut = frame_.data() + static_cast<std::size_t>(y * kWidth * 4);
+    const int lineWidth = width();
+    std::uint8_t* pixelOut = frame_.data() + static_cast<std::size_t>(y * lineWidth * 4);
     const int level = inidisp_ & 0x0F;
     const bool blank = (inidisp_ & 0x80) != 0 || level == 0;
     if (blank) {
-        for (int x = 0; x < kWidth; ++x) {
+        for (int x = 0; x < lineWidth; ++x) {
             pixelOut[x * 4] = 0;
             pixelOut[x * 4 + 1] = 0;
             pixelOut[x * 4 + 2] = 0;
@@ -759,26 +771,26 @@ void Ppu::renderLine(int y) {
     const bool mode7 = mode == 7;
     const bool useSub = (cgwsel_ & 0x02) != 0 && (cgadsub_ & 0x3F) != 0;
     const std::uint8_t enabled = static_cast<std::uint8_t>(tm_ | (useSub ? ts_ : 0));
-    Texel layers[4][kWidth];
+    Texel layers[4][kMaxWidth];
     bool layerReady[4] = {};
     if (!mode7) {
         for (int layer = 0; layer < 4; ++layer) {
             if ((enabled & (1 << layer)) == 0) {
                 continue;
             }
-            paintLayer(layer, y, layers[layer]);
+            paintLayer(layer, y, layers[layer], lineWidth);
             layerReady[layer] = true;
         }
     }
-    int mode7Index[kWidth] = {};
+    int mode7Index[kMaxWidth] = {};
     if (mode7 && (enabled & 0x01) != 0) {
-        for (int x = 0; x < kWidth; ++x) {
+        for (int x = 0; x < lineWidth; ++x) {
             mode7Index[x] = mode7Pixel(x, y);
         }
     }
-    Texel sprites[kWidth] = {};
+    Texel sprites[kMaxWidth] = {};
     if ((enabled & 0x10) != 0) {
-        collectSprites(y, sprites);
+        collectSprites(y, sprites, lineWidth);
     }
     int rank[5][4];
     for (int source = 0; source < 5; ++source) {
@@ -810,10 +822,13 @@ void Ppu::renderLine(int y) {
             best.placed = placed;
         }
     };
-    for (int x = 0; x < kWidth; ++x) {
+    const int windowXScale = lineWidth > kWidth ? 2 : 1;
+    for (int x = 0; x < lineWidth; ++x) {
+        const int windowX = x / windowXScale;
         const auto sampleScreen = [&](std::uint8_t enable, std::uint8_t windowMask) {
             Hit best;
-            if (mode7 && (enable & 0x01) != 0 && !layerMasked(x, w12sel_, (windowMask & 0x01) != 0, wlog_ & 0x03)) {
+            if (mode7 && (enable & 0x01) != 0 &&
+                !layerMasked(windowX, w12sel_, (windowMask & 0x01) != 0, wlog_ & 0x03)) {
                 consider(best, mode7Index[x], 0, 0, 0x01);
             } else if (!mode7) {
                 for (int layer = 3; layer >= 0; --layer) {
@@ -828,14 +843,17 @@ void Ppu::renderLine(int y) {
                     } else if (layer == 3) {
                         window = static_cast<std::uint8_t>(w34sel_ >> 4);
                     }
-                    if (layerMasked(x, window, (windowMask & (1 << layer)) != 0, static_cast<std::uint8_t>(wlog_ >> (layer * 2)))) {
+                    if (layerMasked(
+                            windowX, window, (windowMask & (1 << layer)) != 0,
+                            static_cast<std::uint8_t>(wlog_ >> (layer * 2)))) {
                         continue;
                     }
                     consider(best, layers[layer][x].index, layer, layers[layer][x].priority, 1 << layer);
                 }
             }
             if ((enable & 0x10) != 0 &&
-                !layerMasked(x, wobjsel_, (windowMask & 0x10) != 0, static_cast<std::uint8_t>(wobjlog_ & 0x03))) {
+                !layerMasked(
+                    windowX, wobjsel_, (windowMask & 0x10) != 0, static_cast<std::uint8_t>(wobjlog_ & 0x03))) {
                 consider(best, sprites[x].index, 4, sprites[x].priority, 0x10);
             }
             return best;
@@ -873,7 +891,8 @@ void Ppu::renderLine(int y) {
     }
 }
 
-void Ppu::collectSprites(int y, Texel* dots) const {
+void Ppu::collectSprites(int y, Texel* dots, int lineWidth) const {
+    const int scale = lineWidth > kWidth ? 2 : 1;
     for (int index = 127; index >= 0; --index) {
         const std::size_t entry = static_cast<std::size_t>(index) * 4;
         if (entry + 3 >= oam_.size()) {
@@ -893,7 +912,7 @@ void Ppu::collectSprites(int y, Texel* dots) const {
         const bool large = ((high >> (shift + 1)) & 0x01) != 0;
         const int spriteWidth = large ? kLargeW[sizeSelect] : kSmallW[sizeSelect];
         const int spriteHeight = large ? kLargeH[sizeSelect] : kSmallH[sizeSelect];
-        const int originX = oam_[entry] | (((high >> shift) & 0x01) != 0 ? 0x100 : 0);
+        const int originX = (oam_[entry] | (((high >> shift) & 0x01) != 0 ? 0x100 : 0)) * scale;
         const int originY = oam_[entry + 1];
         const int tile = oam_[entry + 2] | ((oam_[entry + 3] & 0x01) << 8);
         const int palette = (oam_[entry + 3] >> 1) & 0x07;
@@ -907,28 +926,30 @@ void Ppu::collectSprites(int y, Texel* dots) const {
         const int localY = flipY ? spriteHeight - 1 - rowFromTop : rowFromTop;
         const int row = localY & 7;
         const int tileRow = localY >> 3;
-        for (int px = 0; px < spriteWidth; ++px) {
-                const int screenX = (originX + px) & 0x1FF;
-                if (screenX >= kWidth) {
-                    continue;
-                }
-                const int localX = flipX ? spriteWidth - 1 - px : px;
-                const int subTile = (tile + (localX >> 3) + tileRow * 16) & 0x1FF;
-                const std::size_t tileByte = static_cast<std::size_t>(spriteByte(subTile) + row * 2);
-                if (tileByte + 17 >= vram_.size()) {
-                    continue;
-                }
-                const int column = 7 - (localX & 7);
-                const int pixel = ((vram_[tileByte] >> column) & 1) | (((vram_[tileByte + 1] >> column) & 1) << 1) |
-                                  (((vram_[tileByte + 16] >> column) & 1) << 2) |
-                                  (((vram_[tileByte + 17] >> column) & 1) << 3);
-                if (pixel == 0) {
-                    continue;
-                }
-                dots[screenX].index = 128 + palette * 16 + pixel;
-                dots[screenX].priority = priority;
+        const int drawWidth = spriteWidth * scale;
+        for (int px = 0; px < drawWidth; ++px) {
+            const int screenX = (originX + px) & (scale > 1 ? 0x3FF : 0x1FF);
+            if (screenX >= lineWidth) {
+                continue;
             }
+            const int sourceX = px / scale;
+            const int localX = flipX ? spriteWidth - 1 - sourceX : sourceX;
+            const int subTile = (tile + (localX >> 3) + tileRow * 16) & 0x1FF;
+            const std::size_t tileByte = static_cast<std::size_t>(spriteByte(subTile) + row * 2);
+            if (tileByte + 17 >= vram_.size()) {
+                continue;
+            }
+            const int column = 7 - (localX & 7);
+            const int pixel = ((vram_[tileByte] >> column) & 1) | (((vram_[tileByte + 1] >> column) & 1) << 1) |
+                              (((vram_[tileByte + 16] >> column) & 1) << 2) |
+                              (((vram_[tileByte + 17] >> column) & 1) << 3);
+            if (pixel == 0) {
+                continue;
+            }
+            dots[screenX].index = 128 + palette * 16 + pixel;
+            dots[screenX].priority = priority;
         }
+    }
 }
 
 

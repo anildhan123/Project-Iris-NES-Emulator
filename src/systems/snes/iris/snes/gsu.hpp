@@ -10,9 +10,9 @@ class ByteWriter;
 
 namespace iris::systems::snes {
 
-// Super FX (GSU). The program runs when the GO flag is set. Plot writes one
-// byte per pixel at SCBR * 1024 + Y * 256 + X. The pixel cache, packed 2/4bpp
-// screens, and the remaining opcodes are not in this build.
+// Super FX (GSU). The program runs when the GO flag is set. Plot uses SCBR and
+// SCMR: 8-bit screens write one byte per pixel, and 2-bit or 4-bit screens pack
+// into Game Pak RAM. Logical, shift, and GETB helpers are included.
 class Gsu {
 public:
     void power();
@@ -42,6 +42,7 @@ private:
     std::uint8_t rombr_ = 0;
     std::uint8_t ramb_ = 0;
     std::uint8_t scbr_ = 0;
+    std::uint8_t scmr_ = 0;
     std::uint8_t color_ = 0;
     std::uint8_t source_ = 0;
     std::uint8_t dest_ = 0;

@@ -6,6 +6,8 @@
 
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -440,6 +442,7 @@ TEST_CASE("windows, color math, and background modes 2 through 5 draw distinct p
     REQUIRE(mode3.rgba[2] == 255);
 
     const iris::FrameView mode5 = run(backgroundProgram(5, 0x04, false, 0, 0));
+    REQUIRE(mode5.width == 512);
     REQUIRE(mode5.rgba[0] == 255);
     REQUIRE(mode5.rgba[2] == 0);
 }
@@ -774,14 +777,31 @@ TEST_CASE("the SPC700 answers a transfer and the DSP plays a sample") {
     REQUIRE(system.info().detail.find("Stopped") == std::string::npos);
     const iris::AudioView played = system.audio();
     REQUIRE(played.count > 100);
+    REQUIRE(played.channels == 2);
     float peak = 0.0f;
+    float leftPeak = 0.0f;
+    float rightPeak = 0.0f;
     for (int index = 0; index < played.count; ++index) {
-        const float sampleValue = played.samples[index] < 0.0f ? -played.samples[index] : played.samples[index];
-        if (sampleValue > peak) {
-            peak = sampleValue;
+        const float left = played.samples[index * 2];
+        const float right = played.samples[index * 2 + 1];
+        const float leftAbs = left < 0.0f ? -left : left;
+        const float rightAbs = right < 0.0f ? -right : right;
+        if (leftAbs > leftPeak) {
+            leftPeak = leftAbs;
+        }
+        if (rightAbs > rightPeak) {
+            rightPeak = rightAbs;
+        }
+        if (leftAbs > peak) {
+            peak = leftAbs;
+        }
+        if (rightAbs > peak) {
+            peak = rightAbs;
         }
     }
     REQUIRE(peak > 0.05f);
+    REQUIRE(leftPeak > 0.05f);
+    REQUIRE(rightPeak > 0.05f);
 }
 
 void staLong(std::vector<std::uint8_t>& code, std::uint8_t value, std::uint32_t address) {
@@ -805,6 +825,38 @@ std::vector<std::uint8_t> boardRom(const std::vector<std::uint8_t>& program, std
     rom[0x7FD5] = mapMode;
     rom[0x7FD6] = type;
     return rom;
+}
+
+TEST_CASE("a user IPL ROM maps at $FFC0 when CONTROL bit 7 is set") {
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    std::uint8_t ipl[64] = {};
+    // Original Iris test IPL: MOV $F4,#$A5 / MOV $F5,#$5A / loop. Not a Nintendo dump.
+    ipl[0] = 0x8F;
+    ipl[1] = 0xA5;
+    ipl[2] = 0xF4;
+    ipl[3] = 0x8F;
+    ipl[4] = 0x5A;
+    ipl[5] = 0xF5;
+    ipl[6] = 0x2F;
+    ipl[7] = 0xFE;
+    const auto path = std::filesystem::temp_directory_path() / "iris_test_ipl.rom";
+    {
+        std::ofstream out(path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(ipl), sizeof(ipl));
+        REQUIRE(out);
+    }
+    REQUIRE(system.loadIplFile(path, error));
+    REQUIRE(system.hasIpl());
+    std::error_code removeError;
+    std::filesystem::remove(path, removeError);
+    std::vector<std::uint8_t> program;
+    finishIdle(program);
+    const std::vector<std::uint8_t> rom = loRom(program);
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x2140) == 0xA5);
+    REQUIRE(system.debugRead(0x2141) == 0x5A);
 }
 
 TEST_CASE("DSP-1, Super FX, and SA-1 answer the cartridge") {

@@ -4,12 +4,13 @@
 #include "iris/emulated_system.hpp"
 #include "iris/system_kind.hpp"
 
+#include <functional>
 #include <memory>
 #include <string>
 
 namespace iris {
 
-using SystemFactory = std::unique_ptr<IEmulatedSystem> (*)(SystemKind);
+using SystemFactory = std::function<std::unique_ptr<IEmulatedSystem>(SystemKind)>;
 
 class DesktopShell {
 public:

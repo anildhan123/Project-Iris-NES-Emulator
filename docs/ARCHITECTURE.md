@@ -27,8 +27,8 @@ iris_jni (Android only)
 | `iris_common` | Version, errors, logging, configuration values and JSON validation | SDL, ImGui, Win32, a system core |
 | `iris_platform` | Data directories, safe path joins, atomic file replacement | SDL, ImGui, UI widgets |
 | `iris_emulator` | `IEmulatedSystem`, frame and audio views, controller button bits | SDL, ImGui, CPU, PPU, or mapper types |
-| `iris_nes` | iNES parsing, NROM, MMC1, UxROM, CNROM, MMC3, CPU, bus, PPU, APU, controllers | SDL, ImGui, Win32 UI |
-| `iris_snes` | LoROM, HiROM, and ExHiROM, 65816, SRAM, DMA and HDMA on the scanline, horizontal and vertical IRQ, horizontal blank in `$4212`, windows, fixed and subscreen color math, modes 0–7, four backgrounds, scroll, priority, offset-per-tile, mosaic, sprite sizes, SPC700, DSP, DSP-1, Super FX, SA-1, and save states. The IPL ROM is not included | SDL, ImGui, Win32 UI, the NES core |
+| `iris_nes` | iNES parsing, NROM, MMC1, UxROM, CNROM, MMC3, AxROM, MMC2, MMC4, Color Dreams, BNROM, GxROM, Camerica, VRC1, NINA-003, mapper 87, DxROM, BF9096, CPU, bus, PPU, APU, controllers | SDL, ImGui, Win32 UI |
+| `iris_snes` | LoROM, HiROM, and ExHiROM, 65816, SRAM, DMA and HDMA on the scanline, horizontal and vertical IRQ, horizontal blank in `$4212`, DRAM refresh and the NTSC short scanline, windows, fixed and subscreen color math, modes 0–7 including 512-dot modes 5 and 6, four backgrounds, scroll, priority, offset-per-tile, mosaic, sprite sizes, SPC700, stereo DSP with Gaussian BRR, DSP-1 through DSP-4, Super FX, SA-1, save states, and optional user IPL at `firmware/ipl.rom` (Nintendo firmware is not shipped) | SDL, ImGui, Win32 UI, the NES core |
 | `iris_core` | C functions around the NES system: load, run, frame, audio, and save state | SDL, ImGui, CPU, PPU, or mapper types in the header |
 | `iris_frontend` | SDL3 window, OpenGL context, ImGui presentation, file dialog, audio queue | CPU, PPU, APU, or mapper types |
 | `iris_app` | Process startup, `--version`, optional ROM path, shutdown | Emulator internals |
@@ -42,7 +42,7 @@ The desktop calls `IEmulatedSystem`. It does not read or write CPU, PPU, or mapp
 1. Resolve the data directory, start logging, and load configuration, as in Milestone 1.
 2. Create the NES system and open the window.
 3. If a ROM path was passed on the command line, or the user chooses File → Open Game, parse it as iNES or NES 2.0.
-4. NROM, MMC1, UxROM, CNROM, MMC3, AxROM, Color Dreams, BNROM, GxROM, and Camerica run when the header sizes match that board. Anything else is reported and the previous game, if any, stays loaded.
+4. NROM, MMC1, UxROM, CNROM, MMC3, AxROM, MMC2, MMC4, Color Dreams, BNROM, GxROM, Camerica, VRC1, NINA-003, mapper 87, DxROM, and BF9096 run when the header sizes match that board. Anything else is reported and the previous game, if any, stays loaded.
 5. While the game is running, the window calls `runFrame` once per frame period reported by the system, not once per host refresh. NTSC is about 16.64 ms. PAL and Dendy are longer. Pause skips that call.
 6. The completed 256×240 RGBA picture is uploaded unchanged. A host shader samples that texture into a separate image. Nearest is the default. Smooth, sharp, and CRT sampling, then brightness, contrast, saturation, and gamma, never write back to the PPU. Save thumbnails use the PPU texture.
 7. The picture is integer-scaled to fit, or to a chosen 1×–6× size. If that size does not fit, the next smaller integer is used and the status bar explains it. Pixel aspect keeps each emulated pixel square in the window; 4:3 uses a four-by-three box. Fullscreen is borderless. Samples from that frame are queued to the audio device. A missing audio device does not stop the picture.

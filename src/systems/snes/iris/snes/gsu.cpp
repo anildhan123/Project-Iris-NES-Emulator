@@ -23,6 +23,7 @@ void Gsu::power() {
     rombr_ = 0;
     ramb_ = 0;
     scbr_ = 0;
+    scmr_ = 0;
     color_ = 0;
     source_ = 0;
     dest_ = 0;
@@ -198,10 +199,54 @@ void Gsu::run(int budget) {
             continue;
         }
         if (op == 0x4C) {
-            const auto address = (static_cast<std::uint32_t>(scbr_) << 10) + static_cast<std::uint32_t>(r_[2]) * 256u +
-                                 (r_[1] & 0xFF);
-            ramWrite(address, color_);
+            const int x = r_[1] & 0xFF;
+            const int y = r_[2] & 0xFF;
+            const int depth = scmr_ & 0x03;
+            if (depth == 0) {
+                const auto address = (static_cast<std::uint32_t>(scbr_) << 10) + static_cast<std::uint32_t>(y) * 256u +
+                                     static_cast<std::uint32_t>(x);
+                ramWrite(address, color_);
+            } else if (depth == 1) {
+                const auto address = (static_cast<std::uint32_t>(scbr_) << 10) +
+                                     static_cast<std::uint32_t>(y) * 64u + static_cast<std::uint32_t>(x >> 2);
+                const int shift = (3 - (x & 3)) * 2;
+                const auto packed = static_cast<std::uint8_t>((ramRead(address) & ~(0x03 << shift)) |
+                                                              ((color_ & 0x03) << shift));
+                ramWrite(address, packed);
+            } else {
+                const auto address = (static_cast<std::uint32_t>(scbr_) << 10) +
+                                     static_cast<std::uint32_t>(y) * 128u + static_cast<std::uint32_t>(x >> 1);
+                const int shift = (1 - (x & 1)) * 4;
+                const auto packed = static_cast<std::uint8_t>((ramRead(address) & ~(0x0F << shift)) |
+                                                              ((color_ & 0x0F) << shift));
+                ramWrite(address, packed);
+            }
             r_[1] = static_cast<std::uint16_t>(r_[1] + 1);
+            finishPrefix();
+            continue;
+        }
+        if ((op & 0xF0) == 0xC0) {
+            const std::uint16_t left = r_[to];
+            const std::uint16_t right = r_[op & 0x0F];
+            const std::uint16_t result =
+                alt1_ ? static_cast<std::uint16_t>(left & right) : static_cast<std::uint16_t>(left | right);
+            r_[to] = result;
+            sfr_ = static_cast<std::uint16_t>((sfr_ & ~kZero) | (result == 0 ? kZero : 0));
+            finishPrefix();
+            continue;
+        }
+        if (op == 0x3B) {
+            r_[to] = static_cast<std::uint16_t>(r_[from] >> 1);
+            finishPrefix();
+            continue;
+        }
+        if (op == 0x97) {
+            r_[to] = static_cast<std::uint16_t>(static_cast<std::int16_t>(r_[from]) >> 1);
+            finishPrefix();
+            continue;
+        }
+        if (op == 0xEF) {
+            r_[to] = static_cast<std::uint16_t>(r_[from] & 0xFF);
             finishPrefix();
             continue;
         }
@@ -233,6 +278,55 @@ void Gsu::run(int budget) {
             const auto product = static_cast<std::int32_t>(static_cast<std::int16_t>(r_[from])) *
                                  static_cast<std::int32_t>(static_cast<std::int16_t>(r_[6]));
             r_[to] = static_cast<std::uint16_t>(product >> 16);
+            finishPrefix();
+            continue;
+        }
+        if (op == 0x9E) {
+            const auto product = static_cast<std::int32_t>(static_cast<std::int16_t>(r_[from])) *
+                                 static_cast<std::int32_t>(static_cast<std::int16_t>(r_[6]));
+            r_[to] = static_cast<std::uint16_t>(product);
+            finishPrefix();
+            continue;
+        }
+        if ((op & 0xF0) == 0x60) {
+            const std::uint16_t left = r_[to];
+            const std::uint16_t right = r_[op & 0x0F];
+            const std::uint16_t result = static_cast<std::uint16_t>(left ^ right);
+            r_[to] = result;
+            sfr_ = static_cast<std::uint16_t>((sfr_ & ~kZero) | (result == 0 ? kZero : 0));
+            finishPrefix();
+            continue;
+        }
+        if ((op & 0xF0) == 0x70) {
+            const std::uint16_t left = r_[to];
+            const std::uint16_t right = r_[op & 0x0F];
+            const auto sum = static_cast<std::uint32_t>(left) + static_cast<std::uint16_t>(~right) + 1u;
+            setAddFlags(left, static_cast<std::uint16_t>(~right), sum);
+            r_[to] = static_cast<std::uint16_t>(sum);
+            finishPrefix();
+            continue;
+        }
+        if (op == 0xDF) {
+            r_[to] = 0;
+            sfr_ = static_cast<std::uint16_t>(sfr_ | kZero);
+            finishPrefix();
+            continue;
+        }
+        if (op == 0x4B) {
+            const auto offset = fetch();
+            r_[11] = r_[15];
+            r_[15] = static_cast<std::uint16_t>(r_[15] + offset);
+            finishPrefix();
+            continue;
+        }
+        if (op == 0x9C) {
+            r_[to] = static_cast<std::uint16_t>(static_cast<std::int16_t>(r_[from]) < 0 ? -static_cast<std::int16_t>(r_[from])
+                                                                                       : static_cast<std::int16_t>(r_[from]));
+            finishPrefix();
+            continue;
+        }
+        if (op == 0x9D) {
+            r_[to] = static_cast<std::uint16_t>(-static_cast<std::int16_t>(r_[from]));
             finishPrefix();
             continue;
         }
@@ -312,6 +406,10 @@ bool Gsu::cpuRead(std::uint8_t bank, std::uint16_t address, std::uint8_t& value)
         value = scbr_;
         return true;
     }
+    if (address == 0x303A) {
+        value = scmr_;
+        return true;
+    }
     if (address == 0x303C) {
         value = ramb_;
         return true;
@@ -368,6 +466,10 @@ bool Gsu::cpuWrite(std::uint8_t bank, std::uint16_t address, std::uint8_t value)
         scbr_ = value;
         return true;
     }
+    if (address == 0x303A) {
+        scmr_ = value;
+        return true;
+    }
     if (address == 0x303C) {
         ramb_ = value;
         return true;
@@ -384,6 +486,7 @@ void Gsu::saveState(iris::ByteWriter& out) const {
     out.u8(rombr_);
     out.u8(ramb_);
     out.u8(scbr_);
+    out.u8(scmr_);
     out.u8(color_);
     out.u8(source_);
     out.u8(dest_);
@@ -404,6 +507,7 @@ bool Gsu::loadState(iris::ByteReader& in) {
     const auto rombr = in.u8();
     const auto ramb = in.u8();
     const auto scbr = in.u8();
+    const auto scmr = in.u8();
     const auto color = in.u8();
     const auto source = in.u8();
     const auto dest = in.u8();
@@ -427,6 +531,7 @@ bool Gsu::loadState(iris::ByteReader& in) {
     rombr_ = rombr;
     ramb_ = ramb;
     scbr_ = scbr;
+    scmr_ = scmr;
     color_ = color;
     source_ = source;
     dest_ = dest;

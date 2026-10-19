@@ -37,6 +37,9 @@ public:
     void finishAudio(int masterCycles, int masterClock);
     [[nodiscard]] const float* audioSamples() const { return apu_.samples(); }
     [[nodiscard]] int audioCount() const { return apu_.sampleCount(); }
+    [[nodiscard]] int audioChannels() const { return apu_.channels(); }
+    [[nodiscard]] bool installIpl(const std::uint8_t* data, std::size_t size) { return apu_.installIpl(data, size); }
+    [[nodiscard]] bool hasIpl() const { return apu_.hasIpl(); }
     [[nodiscard]] bool virqEnabled() const { return (nmitimen_ & 0x20) != 0; }
     [[nodiscard]] bool hirqEnabled() const { return (nmitimen_ & 0x10) != 0; }
     [[nodiscard]] int irqLine() const { return vtime_; }
@@ -112,6 +115,10 @@ private:
     Chip chip_ = Chip::None;
     std::uint8_t ccnt_ = 0;
     std::uint16_t crv_ = 0;
+    std::uint8_t sa1DmaControl_ = 0;
+    std::uint32_t sa1DmaSource_ = 0;
+    std::uint32_t sa1DmaDest_ = 0;
+    std::uint16_t sa1DmaCount_ = 0;
     bool sa1Running_ = false;
     bool sa1Start_ = false;
     bool sa1Access_ = false;

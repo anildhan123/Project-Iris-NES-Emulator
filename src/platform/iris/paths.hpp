@@ -23,6 +23,8 @@ struct AppPaths {
     std::filesystem::path screenshots;
     std::filesystem::path shaders;
     std::filesystem::path library;
+    std::filesystem::path firmware;
+    std::filesystem::path iplRom;
 };
 
 [[nodiscard]] std::optional<std::string> environmentValue(const char* name);

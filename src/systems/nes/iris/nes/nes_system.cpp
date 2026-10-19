@@ -198,7 +198,7 @@ FrameView NesSystem::frame() const {
 }
 
 AudioView NesSystem::audio() const {
-    return AudioView{audio_.data(), static_cast<int>(audio_.size()), Apu::kSampleRate};
+    return AudioView{audio_.data(), static_cast<int>(audio_.size()), Apu::kSampleRate, 1};
 }
 
 void NesSystem::setController(int port, std::uint8_t buttons) {

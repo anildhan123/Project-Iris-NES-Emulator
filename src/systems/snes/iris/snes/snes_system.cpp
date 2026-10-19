@@ -61,6 +61,35 @@ bool SnesSystem::loadBytes(const std::uint8_t* data, std::size_t size, std::stri
     return adopt(parsed.value(), error);
 }
 
+bool SnesSystem::loadIplFile(const std::filesystem::path& path, std::string& error) {
+    std::vector<std::uint8_t> bytes;
+    std::string readError;
+    if (!readAll(path, bytes, readError)) {
+        error = "The IPL ROM could not be opened.";
+        return false;
+    }
+    if (bytes.size() != Apu::kIplSize) {
+        error = "The IPL ROM must be exactly 64 bytes.";
+        return false;
+    }
+    if (!bus_.installIpl(bytes.data(), bytes.size())) {
+        error = "The IPL ROM could not be installed.";
+        return false;
+    }
+    bus_.power();
+    if (loaded_) {
+        bus_.map(cartridge_.rom, cartridge_.hiRom, cartridge_.exHiRom, cartridge_.sramBytes, cartridge_.chip);
+        applyRegion();
+        cpu_.reset(bus_);
+        bus_.resetChips();
+        sa1_.resetTo(0);
+    }
+    error.clear();
+    return true;
+}
+
+bool SnesSystem::hasIpl() const { return bus_.hasIpl(); }
+
 bool SnesSystem::adopt(Cartridge cartridge, std::string& error) {
     if (cartridge.rom.size() < 32 * 1024) {
         error = "The Super NES ROM is too small.";
@@ -135,19 +164,40 @@ void SnesSystem::runFrame() {
         return;
     }
     const int lines = standard_ == TvStandard::Pal ? 312 : 262;
-    const int frameCycles = kDotsPerLine * lines;
+    // NTSC shortens one scanline by four master clocks each frame. DRAM refresh
+    // removes forty clocks inside every line, which is when the CPU cannot run.
+    const int shortLine = standard_ == TvStandard::Ntsc ? 240 : -1;
+    int frameCycles = 0;
+    for (int line = 0; line < lines; ++line) {
+        frameCycles += line == shortLine ? kDotsPerLine - 4 : kDotsPerLine;
+    }
     const int nmiCycle = kDotsPerLine * kVblankLine;
     const int clock = standard_ == TvStandard::Pal ? 21281370 : 21477272;
     bus_.beginFrame();
     int cycles = 0;
+    int lineStart = 0;
     bool signaled = false;
     bool vIrqDone = false;
     bool hdmaStarted = false;
     int hIrqLine = -1;
     for (int line = 0; line < lines; ++line) {
-        const int lineEnd = (line + 1) * kDotsPerLine;
+        const int lineDots = line == shortLine ? kDotsPerLine - 4 : kDotsPerLine;
+        const int lineEnd = lineStart + lineDots;
+        constexpr int kRefreshStart = 1292;
+        constexpr int kRefreshClocks = 40;
         bool hIrqDone = false;
         while (cycles < lineEnd && cycles < frameCycles && !cpu_.stopped()) {
+            const int dot = cycles - lineStart;
+            if (dot >= kRefreshStart && dot < kRefreshStart + kRefreshClocks) {
+                cycles = lineStart + kRefreshStart + kRefreshClocks;
+                if (cycles > lineEnd) {
+                    cycles = lineEnd;
+                }
+                bus_.setCycle(cycles);
+                const int caught = cycles < frameCycles ? cycles : frameCycles;
+                bus_.catchUpApu(caught, clock);
+                continue;
+            }
             bus_.setCycle(cycles);
             if (!signaled && cycles >= nmiCycle) {
                 bus_.raiseNmi();
@@ -156,7 +206,7 @@ void SnesSystem::runFrame() {
                 }
                 signaled = true;
             }
-            const int dot = cycles - line * kDotsPerLine;
+            const int activeDot = cycles - lineStart;
             const bool vOn = bus_.virqEnabled();
             const bool hOn = bus_.hirqEnabled();
             if (hIrqLine != line) {
@@ -167,11 +217,11 @@ void SnesSystem::runFrame() {
                 bus_.raiseIrq();
                 cpu_.signalIrq();
                 vIrqDone = true;
-            } else if (hOn && !vOn && !hIrqDone && dot >= bus_.irqDot() * 4) {
+            } else if (hOn && !vOn && !hIrqDone && activeDot >= bus_.irqDot() * 4) {
                 bus_.raiseIrq();
                 cpu_.signalIrq();
                 hIrqDone = true;
-            } else if (vOn && hOn && !vIrqDone && line >= bus_.irqLine() && dot >= bus_.irqDot() * 4) {
+            } else if (vOn && hOn && !vIrqDone && line >= bus_.irqLine() && activeDot >= bus_.irqDot() * 4) {
                 bus_.raiseIrq();
                 cpu_.signalIrq();
                 vIrqDone = true;
@@ -181,7 +231,7 @@ void SnesSystem::runFrame() {
                 if (!signaled && nmiCycle > cycles && nmiCycle < wake) {
                     wake = nmiCycle;
                 }
-                const int irqAt = line * kDotsPerLine + bus_.irqDot() * 4;
+                const int irqAt = lineStart + bus_.irqDot() * 4;
                 const bool irqDue = (vOn && !hOn && !vIrqDone && line >= bus_.irqLine()) ||
                                     (hOn && !vOn && !hIrqDone && irqAt >= cycles) ||
                                     (vOn && hOn && !vIrqDone && line >= bus_.irqLine() && irqAt >= cycles);
@@ -209,8 +259,8 @@ void SnesSystem::runFrame() {
                 if (!signaled && nmiCycle > cycles && nmiCycle < wake) {
                     wake = nmiCycle;
                 }
-                const int irqAt = line * kDotsPerLine + bus_.irqDot() * 4;
-                const bool irqDue = (vOn && !hOn && !vIrqDone && line >= bus_.irqLine() && cycles >= line * kDotsPerLine) ||
+                const int irqAt = lineStart + bus_.irqDot() * 4;
+                const bool irqDue = (vOn && !hOn && !vIrqDone && line >= bus_.irqLine() && cycles >= lineStart) ||
                                     (hOn && !vOn && !hIrqDone && irqAt > cycles) ||
                                     (vOn && hOn && !vIrqDone && line >= bus_.irqLine() && irqAt > cycles);
                 if (irqDue) {
@@ -252,6 +302,10 @@ void SnesSystem::runFrame() {
             cycles += bus_.transferHdma();
             bus_.drawLine(line);
         }
+        lineStart = lineEnd;
+        if (cycles < lineStart) {
+            cycles = lineStart;
+        }
     }
     bus_.catchUpApu(frameCycles, clock);
     bus_.finishAudio(frameCycles, clock);
@@ -260,7 +314,7 @@ void SnesSystem::runFrame() {
 FrameView SnesSystem::frame() const {
     FrameView view;
     view.rgba = bus_.ppu().pixels();
-    view.width = Ppu::kWidth;
+    view.width = bus_.ppu().width();
     view.height = Ppu::kHeight;
     return view;
 }
@@ -269,7 +323,7 @@ AudioView SnesSystem::audio() const {
     if (bus_.audioCount() <= 0 || bus_.audioSamples() == nullptr) {
         return {};
     }
-    return AudioView{bus_.audioSamples(), bus_.audioCount(), Apu::kOutputRate};
+    return AudioView{bus_.audioSamples(), bus_.audioCount(), Apu::kOutputRate, bus_.audioChannels()};
 }
 
 void SnesSystem::setController(int port, std::uint8_t buttons) {
@@ -285,6 +339,12 @@ std::string SnesSystem::detailText() const {
     detail += standard_ == TvStandard::Pal ? "PAL" : "NTSC";
     if (cartridge_.chip == Chip::Dsp1) {
         detail += ", DSP-1";
+    } else if (cartridge_.chip == Chip::Dsp2) {
+        detail += ", DSP-2";
+    } else if (cartridge_.chip == Chip::Dsp3) {
+        detail += ", DSP-3";
+    } else if (cartridge_.chip == Chip::Dsp4) {
+        detail += ", DSP-4";
     } else if (cartridge_.chip == Chip::SuperFx) {
         detail += ", Super FX";
     }
