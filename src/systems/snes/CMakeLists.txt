@@ -14,6 +14,7 @@ add_library(iris_snes STATIC
     iris/snes/bus.hpp
     iris/snes/cartridge.cpp
     iris/snes/cartridge.hpp
+    iris/snes/catalogue.hpp
     iris/snes/cpu.cpp
     iris/snes/cpu.hpp
     iris/snes/dsp1.cpp

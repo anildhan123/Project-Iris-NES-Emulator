@@ -473,11 +473,51 @@ Full mobile frontends and other consoles are not started.
 ## Milestone 60 — NES hardware acceptance suite freeze (implemented)
 
 - The suite freezes CPU math, MMC3 IRQ, frame-counter IRQ, MMC5 multiply, VRC6 expansion audio, and Four Score / Zapper smoke. NES hardware milestones 49–60 are marked implemented.
-- This does not claim every commercial title. A catalogue claim waits for later work.
+- Hardware freeze does not claim every commercial title. Catalogue work continues in milestones 61–68.
+
+## Commercial Super NES playability programme
+
+Hardware milestones 29–48 froze the Super NES core. Milestones 61–68 turn that into a **commercial catalogue** with honest status labels. No commercial ROMs are shipped. “100%” here means every listed **board class** is covered and statused — not that every dump has been playtested in CI.
+
+## Milestone 61 — Catalogue schema and matrix document (implemented)
+
+- `docs/COMMERCIAL_CATALOGUE.md` and `catalogue.hpp` define title → board class → status rows.
+- Status values are `hardware-path`, `partial`, and `blocked`.
+
+## Milestone 62 — Board-class suite coverage (implemented)
+
+- The suite loads a synthetic cartridge for each catalogue map/chip class (LoROM, HiROM, ExHiROM, SA-1, Super FX, DSP-1…4, Cx4, S-DD1, SPC7110, OBC-1, ST010/011/018).
+
+## Milestone 63 — Mainstream LoROM / HiROM class freeze (implemented)
+
+- Representative LoROM/HiROM titles (Mario, Zelda, Metroid, Chrono Trigger, Final Fantasy VI class) are marked `hardware-path` against the existing commercial APU/PPU suite.
+
+## Milestone 64 — Mode 7 / racing class freeze (implemented)
+
+- F-Zero-class Mode 7 rows stay on the Mode 7 suite path from milestones 33–34.
+
+## Milestone 65 — DSP / OBC / ST01x class freeze (implemented)
+
+- DSP-1…4, OBC-1, and ST010/011/018 catalogue rows map to the existing chip suite smokes.
+
+## Milestone 66 — SA-1 / Super FX / Cx4 / S-DD1 / SPC7110 class deepen (implemented)
+
+- SA-1 type-1/2, Super FX, and Cx4 remain `hardware-path`.
+- S-DD1 bank enables and SPC7110 `$480C` ready / `$4840` RTC stand-ins answer commercial polls. Those boards stay `partial` without Nintendo tables.
+- The Super NES detail string appends `(catalogue: partial)` for S-DD1 and SPC7110.
+
+## Milestone 67 — Local legal-dump worksheet (implemented)
+
+- `docs/COMMERCIAL_CATALOGUE.md` documents how a user records SHA-256 / play results privately. No ROM download or bundling.
+
+## Milestone 68 — Commercial catalogue freeze (implemented)
+
+- The suite freezes catalogue size, FF6 / SFA2 status samples, board-class loads, and SPC7110 ready/RTC smoke.
+- This freezes the catalogue **programme**, not a claim that every commercial cartridge plays perfectly.
 
 ## Complete hardware milestone plan
 
-When every row below is **implemented**, NES and Super NES **hardware emulation** has no remaining planned gaps in this roadmap. Product work (mobile apps, debugger UI, other consoles) stays outside this hardware list.
+When every row below is **implemented**, NES and Super NES **hardware emulation** has no remaining planned gaps in this roadmap. Product work (mobile apps, debugger UI, other consoles) stays outside the hardware list; the commercial catalogue programme is tracked separately below.
 
 ### Super NES hardware completion
 
@@ -521,6 +561,19 @@ When every row below is **implemented**, NES and Super NES **hardware emulation*
 | 59 | Controllers: Zapper, Four Score / expansion port devices | implemented |
 | 60 | NES hardware acceptance suite freeze (CPU + PPU + APU + mappers) | implemented |
 
+### Commercial Super NES catalogue programme
+
+| ID | Milestone | Status |
+|---|---|---|
+| 61 | Catalogue schema and matrix document | implemented |
+| 62 | Board-class suite coverage | implemented |
+| 63 | Mainstream LoROM / HiROM class freeze | implemented |
+| 64 | Mode 7 / racing class freeze | implemented |
+| 65 | DSP / OBC / ST01x class freeze | implemented |
+| 66 | SA-1 / Super FX / Cx4 / S-DD1 / SPC7110 class deepen | implemented |
+| 67 | Local legal-dump worksheet (no ROMs shipped) | implemented |
+| 68 | Commercial catalogue freeze | implemented |
+
 ### Outside hardware emulation (not part of the “no pending hardware” goal)
 
 | Item | Notes |
@@ -528,5 +581,5 @@ When every row below is **implemented**, NES and Super NES **hardware emulation*
 | Desktop debugger / trace UI | Product feature, not console hardware |
 | Full mobile frontends | Android/iOS product shells; cores already expose C API |
 | Other consoles | Separate system modules after NES/SNES hardware completion |
-| Commercial game catalogue | Optional compatibility matrix; not a hardware milestone |
 | Shipping Nintendo IPL / DSP ROMs | Forbidden; use documented tables or user-supplied firmware only |
+| End-to-end commercial playthrough CI | Requires legal dumps outside the repo; not claimed by M68 |

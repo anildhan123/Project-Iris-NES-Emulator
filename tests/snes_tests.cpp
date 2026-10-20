@@ -1,3 +1,4 @@
+#include "iris/snes/catalogue.hpp"
 #include "iris/snes/demo_rom.hpp"
 #include "iris/snes/snes_system.hpp"
 #include "iris/system_kind.hpp"
@@ -236,6 +237,23 @@ TEST_CASE("overscan delays the $4212 vblank flag") {
     const int tall = countUntilVblank(true);
     REQUIRE(normal > 1000);
     REQUIRE(tall > normal);
+}
+
+TEST_CASE("NMI auto-joy sees Start after the busy flag clears") {
+    // Final Fantasy VI reads $4218/$4219 from NMI once $4212 bit 0 drops.
+    const std::vector<std::uint8_t> program = {
+        0x78, 0xA9, 0x81, 0x8D, 0x00, 0x42, 0x4C, 0x06, 0x80, 0xAD, 0x12, 0x42, 0x29, 0x01, 0xD0, 0xF9,
+        0xAD, 0x19, 0x42, 0x85, 0x10, 0x40,
+    };
+    std::vector<std::uint8_t> rom = loRom(program);
+    rom[0x7FFA] = 0x09;
+    rom[0x7FFB] = 0x80;
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.setController(0, iris::kButtonStart);
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0010) == 0x10);
 }
 
 TEST_CASE("a Super NES controller reports Start on the high byte and A on the low byte") {
@@ -992,21 +1010,20 @@ TEST_CASE("a 16-bit in-game APU command commits both port bytes before the SPC a
     REQUIRE(system.debugRead(0x2142) == 0x22);
 }
 
-TEST_CASE("an SPC timer IRQ wakes SLEEP and answers the CPU") {
-    // Timer 0 target 1, enable, EI, SLEEP. IRQ at $0300 writes $5A to port 0 and RETI.
-    const std::vector<std::uint8_t> main = {0x8F, 0x01, 0xFA, 0x8F, 0x01, 0xF1, 0xA0, 0xEF, 0x2F, 0xFE};
-    const std::vector<std::uint8_t> irq = {0x8F, 0x5A, 0xF4, 0x7F};
-    const std::vector<std::uint8_t> vectors = {0x00, 0x03};
+TEST_CASE("an SPC timer overflow is polled from the counter") {
+    // Timers do not raise an IRQ. The driver reads $FD until the 4-bit count is non-zero.
+    const std::vector<std::uint8_t> main = {
+        0x8F, 0x01, 0xFA, 0x8F, 0x01, 0xF1, 0xE4, 0xFD, 0xF0, 0xFC, 0xC4, 0xF4, 0x2F, 0xFE,
+    };
     iris::systems::snes::SnesSystem system;
     std::string error;
-    const std::vector<std::uint8_t> rom = loRom(transferProgram(
-        0x0200, {{static_cast<std::uint16_t>(0x0200), main},
-                 {static_cast<std::uint16_t>(0x0300), irq},
-                 {static_cast<std::uint16_t>(0xFFDE), vectors}}));
+    const std::vector<std::uint8_t> rom = loRom(transferProgram(0x0200, {{static_cast<std::uint16_t>(0x0200), main}}));
     REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
     system.runFrame();
     REQUIRE(system.info().detail.find("Stopped") == std::string::npos);
-    REQUIRE(system.debugRead(0x2140) == 0x5A);
+    const int count = system.debugRead(0x2140);
+    REQUIRE(count >= 1);
+    REQUIRE(count <= 15);
 }
 
 TEST_CASE("SPC700 ALU and bit opcodes do not halt and produce expected results") {
@@ -1328,6 +1345,98 @@ TEST_CASE("ADSR attack peaks and EDL zero still writes echo RAM") {
     REQUIRE(peak > 0.02f);
 }
 
+TEST_CASE("BRR end is header bit 0 and loop is header bit 1") {
+    const auto peakFor = [](std::uint8_t firstHeader) {
+        std::vector<std::uint8_t> program;
+        const auto dsp = [&](std::uint8_t address, std::uint8_t value) {
+            program.insert(program.end(), {0x8F, address, 0xF2, 0x8F, value, 0xF3});
+        };
+        dsp(0x00, 0x7F);
+        dsp(0x01, 0x7F);
+        dsp(0x02, 0x00);
+        dsp(0x03, 0x10);
+        dsp(0x04, 0x00);
+        dsp(0x05, 0x8F);
+        dsp(0x06, 0xE0);
+        dsp(0x5D, 0x03);
+        dsp(0x0C, 0x7F);
+        dsp(0x1C, 0x7F);
+        dsp(0x6C, 0x00);
+        dsp(0x4C, 0x01);
+        program.insert(program.end(), {0x2F, 0xFE});
+        // First block is silent. The following block is loud and loops.
+        // Bit 1 alone must not end the voice; bit 0 alone must.
+        std::vector<std::uint8_t> sample = {firstHeader, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                                            0xC3, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77};
+        std::vector<std::uint8_t> directory = {0x04, 0x03, 0x04, 0x03};
+        iris::systems::snes::SnesSystem system;
+        std::string error;
+        const std::vector<std::uint8_t> rom = loRom(transferProgram(
+            0x0200, {{static_cast<std::uint16_t>(0x0200), program},
+                     {static_cast<std::uint16_t>(0x0300), directory},
+                     {static_cast<std::uint16_t>(0x0304), sample}}));
+        REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+        system.runFrame();
+        const iris::AudioView played = system.audio();
+        float peak = 0.0f;
+        for (int index = 0; index < played.count; ++index) {
+            const float left = played.samples[index * 2];
+            const float abs = left < 0.0f ? -left : left;
+            if (abs > peak) {
+                peak = abs;
+            }
+        }
+        return peak;
+    };
+    REQUIRE(peakFor(0x02) > 0.02f);
+    REQUIRE(peakFor(0x01) < 0.01f);
+}
+
+TEST_CASE("a loud BRR waveform does not flip into a click") {
+    std::vector<std::uint8_t> program;
+    const auto dsp = [&](std::uint8_t address, std::uint8_t value) {
+        program.insert(program.end(), {0x8F, address, 0xF2, 0x8F, value, 0xF3});
+    };
+    dsp(0x00, 0x7F);
+    dsp(0x01, 0x7F);
+    dsp(0x02, 0x00);
+    dsp(0x03, 0x08);
+    dsp(0x04, 0x00);
+    dsp(0x05, 0x8F);
+    dsp(0x06, 0xE0);
+    dsp(0x5D, 0x03);
+    dsp(0x0C, 0x7F);
+    dsp(0x1C, 0x7F);
+    dsp(0x6C, 0x00);
+    dsp(0x4C, 0x01);
+    program.insert(program.end(), {0x2F, 0xFE});
+    std::vector<std::uint8_t> directory = {0x04, 0x03, 0x04, 0x03};
+    std::vector<std::uint8_t> sample = {0xC3, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77, 0x77};
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const std::vector<std::uint8_t> rom = loRom(transferProgram(
+        0x0200, {{static_cast<std::uint16_t>(0x0200), program},
+                 {static_cast<std::uint16_t>(0x0300), directory},
+                 {static_cast<std::uint16_t>(0x0304), sample}}));
+    REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    system.runFrame();
+    const iris::AudioView played = system.audio();
+    float peak = 0.0f;
+    float lowest = 0.0f;
+    for (int index = 0; index < played.count * played.channels; ++index) {
+        const float sampleValue = played.samples[index];
+        const float abs = sampleValue < 0.0f ? -sampleValue : sampleValue;
+        if (abs > peak) {
+            peak = abs;
+        }
+        if (sampleValue < lowest) {
+            lowest = sampleValue;
+        }
+    }
+    REQUIRE(peak > 0.25f);
+    REQUIRE(lowest > -0.08f);
+}
+
 void staLong(std::vector<std::uint8_t>& code, std::uint8_t value, std::uint32_t address) {
     code.insert(code.end(), {0xA9, value, 0x8F, static_cast<std::uint8_t>(address), static_cast<std::uint8_t>(address >> 8),
                              static_cast<std::uint8_t>(address >> 16)});
@@ -1591,6 +1700,116 @@ TEST_CASE("a Super NES path selects that system and a NES path does not") {
     REQUIRE(std::string(iris::systemKindName(iris::SystemKind::Snes)) == "Super NES");
 }
 
+TEST_CASE("16 by 16 tiles and VRAM translation land on the character the map names") {
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    const auto show = [&](const std::vector<std::uint8_t>& program) {
+        const std::vector<std::uint8_t> rom = loRom(program);
+        REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+        system.runFrame();
+        REQUIRE(system.info().detail.find("Stopped") == std::string::npos);
+        return system.frame();
+    };
+
+    // Tile 1 row 0 is red, tile 2 row 0 is green. One 16×16 map word names tile 1,
+    // so x=8 is the second quadrant (tile 2), not the next map cell.
+    std::vector<std::uint8_t> large;
+    store(large, 0x80, 0x00, 0x21);
+    store(large, 0x80, 0x15, 0x21);
+    store(large, 0x08, 0x16, 0x21);
+    store(large, 0x00, 0x17, 0x21);
+    store(large, 0xFF, 0x18, 0x21);
+    store(large, 0x00, 0x19, 0x21);
+    store(large, 0x10, 0x16, 0x21);
+    store(large, 0x00, 0x17, 0x21);
+    store(large, 0x00, 0x18, 0x21);
+    store(large, 0xFF, 0x19, 0x21);
+    store(large, 0x00, 0x16, 0x21);
+    store(large, 0x04, 0x17, 0x21);
+    store(large, 0x01, 0x18, 0x21);
+    store(large, 0x00, 0x19, 0x21);
+    store(large, 0x00, 0x21, 0x21);
+    store(large, 0x00, 0x22, 0x21);
+    store(large, 0x00, 0x22, 0x21);
+    store(large, 0x1F, 0x22, 0x21);
+    store(large, 0x00, 0x22, 0x21);
+    store(large, 0xE0, 0x22, 0x21);
+    store(large, 0x03, 0x22, 0x21);
+    store(large, 0x04, 0x07, 0x21);
+    store(large, 0x00, 0x0B, 0x21);
+    store(large, 0x10, 0x05, 0x21);
+    store(large, 0x01, 0x2C, 0x21);
+    store(large, 0x0F, 0x00, 0x21);
+    const auto largeLoop = static_cast<std::uint8_t>(large.size());
+    large.insert(large.end(), {0x4C, largeLoop, 0x80});
+    const iris::FrameView tiles = show(large);
+    REQUIRE(tiles.rgba[0] == 255);
+    REQUIRE(tiles.rgba[1] == 0);
+    REQUIRE(tiles.rgba[8 * 4] == 0);
+    REQUIRE(tiles.rgba[8 * 4 + 1] == 255);
+
+    // 8-bit VRAM translation stores word address 1 at word 8 (tile 1, row 0).
+    std::vector<std::uint8_t> translated;
+    store(translated, 0x80, 0x00, 0x21);
+    store(translated, 0x84, 0x15, 0x21);
+    store(translated, 0x01, 0x16, 0x21);
+    store(translated, 0x00, 0x17, 0x21);
+    store(translated, 0xFF, 0x18, 0x21);
+    store(translated, 0x00, 0x19, 0x21);
+    store(translated, 0x80, 0x15, 0x21);
+    store(translated, 0x00, 0x16, 0x21);
+    store(translated, 0x04, 0x17, 0x21);
+    store(translated, 0x01, 0x18, 0x21);
+    store(translated, 0x00, 0x19, 0x21);
+    store(translated, 0x00, 0x21, 0x21);
+    store(translated, 0x00, 0x22, 0x21);
+    store(translated, 0x00, 0x22, 0x21);
+    store(translated, 0x1F, 0x22, 0x21);
+    store(translated, 0x00, 0x22, 0x21);
+    store(translated, 0x04, 0x07, 0x21);
+    store(translated, 0x00, 0x0B, 0x21);
+    store(translated, 0x00, 0x05, 0x21);
+    store(translated, 0x01, 0x2C, 0x21);
+    store(translated, 0x0F, 0x00, 0x21);
+    const auto translatedLoop = static_cast<std::uint8_t>(translated.size());
+    translated.insert(translated.end(), {0x4C, translatedLoop, 0x80});
+    const iris::FrameView moved = show(translated);
+    REQUIRE(moved.rgba[0] == 255);
+    REQUIRE(moved.rgba[1] == 0);
+
+    // One 8×8 sprite with only its leftmost pixel set must not repeat across the line.
+    std::vector<std::uint8_t> sprite;
+    store(sprite, 0x80, 0x00, 0x21);
+    store(sprite, 0x80, 0x15, 0x21);
+    store(sprite, 0x00, 0x16, 0x21);
+    store(sprite, 0x00, 0x17, 0x21);
+    store(sprite, 0x80, 0x18, 0x21);
+    store(sprite, 0x00, 0x19, 0x21);
+    store(sprite, 0x00, 0x02, 0x21);
+    store(sprite, 0x00, 0x03, 0x21);
+    store(sprite, 0x20, 0x04, 0x21);
+    store(sprite, 0x10, 0x04, 0x21);
+    store(sprite, 0x00, 0x04, 0x21);
+    store(sprite, 0x00, 0x04, 0x21);
+    store(sprite, 0x80, 0x21, 0x21);
+    store(sprite, 0x00, 0x22, 0x21);
+    store(sprite, 0x00, 0x22, 0x21);
+    store(sprite, 0x1F, 0x22, 0x21);
+    store(sprite, 0x00, 0x22, 0x21);
+    store(sprite, 0x10, 0x2C, 0x21);
+    store(sprite, 0x0F, 0x00, 0x21);
+    const auto spriteLoop = static_cast<std::uint8_t>(sprite.size());
+    sprite.insert(sprite.end(), {0x4C, spriteLoop, 0x80});
+    const iris::FrameView objects = show(sprite);
+    const auto at = [&](int x, int y) {
+        return static_cast<std::size_t>((y * objects.width + x) * 4);
+    };
+    const std::size_t lit = at(32, 16);
+    REQUIRE(objects.rgba[lit] == 255);
+    REQUIRE(objects.rgba[at(40, 16)] == 0);
+    REQUIRE(objects.rgba[at(48, 16)] == 0);
+}
+
 TEST_CASE("vblank reloads the sprite address before the next object list") {
     std::vector<std::uint8_t> program = {
         0x78, 0x9C, 0x02, 0x21, 0x9C, 0x03, 0x21, 0xA9, 0x01, 0x8D, 0x04, 0x21, 0xA9, 0x02, 0x8D, 0x04, 0x21,
@@ -1660,7 +1879,8 @@ TEST_CASE("Cx4 and SA-1 bitstream slices answer the cartridge") {
     finishIdle(sdd1);
     const std::vector<std::uint8_t> sdd1Rom = boardRom(sdd1, 0x20, 0x43);
     REQUIRE(system.loadBytes(sdd1Rom.data(), sdd1Rom.size(), error));
-    REQUIRE(system.info().detail == "LoROM, NTSC, S-DD1");
+    REQUIRE(system.info().detail.find("S-DD1") != std::string::npos);
+    REQUIRE(system.info().detail.find("catalogue: partial") != std::string::npos);
 }
 
 TEST_CASE("SA-1 arithmetic, character conversion, and Cx4 multiply deepen chip paths") {
@@ -2036,4 +2256,96 @@ TEST_CASE("SNES hardware acceptance suite freeze covers timing APU PPU and chips
     system.runFrame();
     REQUIRE(system.debugRead(0x0010) == 0x00);
     REQUIRE(system.debugRead(0x0011) == 0x20);
+}
+
+TEST_CASE("commercial catalogue board classes cover map and chip paths") {
+    using iris::systems::snes::BoardClass;
+    using iris::systems::snes::CatalogueStatus;
+    using iris::systems::snes::kCommercialCatalogue;
+    using iris::systems::snes::kCommercialCatalogueCount;
+    using iris::systems::snes::statusLabel;
+
+    REQUIRE(kCommercialCatalogueCount >= 30);
+    REQUIRE(iris::systems::snes::findCatalogueEntry("Final Fantasy VI") != nullptr);
+    REQUIRE(iris::systems::snes::findCatalogueEntry("Final Fantasy VI")->status == CatalogueStatus::HardwarePath);
+    REQUIRE(iris::systems::snes::findCatalogueEntry("Street Fighter Alpha 2")->status == CatalogueStatus::Partial);
+    REQUIRE(std::string(statusLabel(CatalogueStatus::Partial)) == "partial");
+
+    // Every chip/map class used in the catalogue (except ExHiROM size) must load.
+    struct Probe {
+        std::uint8_t map;
+        std::uint8_t type;
+    };
+    const Probe probes[] = {
+        {0x20, 0x00}, {0x23, 0x35}, {0x20, 0x14}, {0x20, 0x03}, {0x20, 0x15}, {0x20, 0x25}, {0x20, 0x45},
+        {0x20, 0xF3}, {0x20, 0x43}, {0x20, 0xF5}, {0x20, 0x65}, {0x20, 0xF6}, {0x20, 0xF7}, {0x20, 0xF8},
+    };
+    for (const Probe& probe : probes) {
+        std::vector<std::uint8_t> program;
+        finishIdle(program);
+        iris::systems::snes::SnesSystem system;
+        std::string error;
+        const auto rom = boardRom(program, probe.map, probe.type);
+        INFO("map=" << static_cast<int>(probe.map) << " type=" << static_cast<int>(probe.type));
+        REQUIRE(system.loadBytes(rom.data(), rom.size(), error));
+    }
+    {
+        // HiROM needs a 64 KiB image with the header at $FFC0.
+        std::vector<std::uint8_t> image(64 * 1024, 0);
+        image[0x8000] = 0x4C;
+        image[0x8001] = 0x00;
+        image[0x8002] = 0x80;
+        const std::string hiTitle = "HIROM CATALOGUE";
+        for (std::size_t index = 0; index < hiTitle.size(); ++index) {
+            image[0xFFC0 + index] = static_cast<std::uint8_t>(hiTitle[index]);
+        }
+        image[0xFFD5] = 0x21;
+        image[0xFFD9] = 0x01;
+        image[0xFFDC] = 0xFF;
+        image[0xFFDD] = 0xFF;
+        image[0xFFFC] = 0x00;
+        image[0xFFFD] = 0x80;
+        iris::systems::snes::SnesSystem system;
+        std::string error;
+        REQUIRE(system.loadBytes(image.data(), image.size(), error));
+        REQUIRE(system.info().detail == "HiROM, NTSC");
+    }
+    {
+        // ExHiROM needs a >4 MiB image with a scored header at $40FFC0.
+        std::vector<std::uint8_t> exImage(0x410000, 0);
+        const std::uint8_t exCode[] = {0x4C, 0x00, 0x80};
+        for (std::size_t index = 0; index < sizeof(exCode); ++index) {
+            exImage[0x408000 + index] = exCode[index];
+        }
+        const std::string exTitle = "EXHIROM CATALOGUE";
+        for (std::size_t index = 0; index < exTitle.size(); ++index) {
+            exImage[0x40FFC0 + index] = static_cast<std::uint8_t>(exTitle[index]);
+        }
+        exImage[0x40FFD5] = 0x25;
+        exImage[0x40FFD9] = 0x01;
+        exImage[0x40FFDC] = 0xFF;
+        exImage[0x40FFDD] = 0xFF;
+        exImage[0x40FFFC] = 0x00;
+        exImage[0x40FFFD] = 0x80;
+        iris::systems::snes::SnesSystem system;
+        std::string error;
+        REQUIRE(system.loadBytes(exImage.data(), exImage.size(), error));
+        REQUIRE(system.info().detail == "ExHiROM, NTSC");
+    }
+
+    // SPC7110 ready status and RTC window answer so commercial polls do not hang.
+    std::vector<std::uint8_t> spc;
+    store(spc, 0x00, 0x05, 0x48);
+    store(spc, 0x00, 0x06, 0x48);
+    store(spc, 0x00, 0x07, 0x48);
+    store(spc, 0x01, 0x04, 0x48);
+    spc.insert(spc.end(), {0xAD, 0x0C, 0x48, 0x8D, 0x20, 0x00});  // $480C
+    spc.insert(spc.end(), {0xAD, 0x40, 0x48, 0x8D, 0x21, 0x00});  // $4840 RTC
+    finishIdle(spc);
+    iris::systems::snes::SnesSystem system;
+    std::string error;
+    REQUIRE(system.loadBytes(boardRom(spc, 0x20, 0xF5).data(), boardRom(spc, 0x20, 0xF5).size(), error));
+    system.runFrame();
+    REQUIRE(system.debugRead(0x0020) == 0x80);
+    REQUIRE(system.debugRead(0x0021) == 0x00);
 }

@@ -23,6 +23,31 @@ int sign13(int value) {
     return value;
 }
 
+// $2115 bits 3–2 remap a linear DMA into 8×8 tile order. The increment uses the
+// address before this remap.
+std::uint16_t mapVramAddress(std::uint8_t vmain, std::uint16_t address) {
+    switch ((vmain >> 2) & 0x03) {
+    case 1:
+        return static_cast<std::uint16_t>((address & 0xFF00) | ((address & 0x001F) << 3) | ((address & 0x00E0) >> 5));
+    case 2:
+        return static_cast<std::uint16_t>((address & 0xFE00) | ((address & 0x003F) << 3) | ((address & 0x01C0) >> 6));
+    case 3:
+        return static_cast<std::uint16_t>((address & 0xFC00) | ((address & 0x007F) << 3) | ((address & 0x0380) >> 7));
+    default:
+        return address;
+    }
+}
+
+int vramAddressStep(std::uint8_t vmain) {
+    if ((vmain & 0x03) == 1) {
+        return 32;
+    }
+    if ((vmain & 0x03) != 0) {
+        return 128;
+    }
+    return 1;
+}
+
 }  // namespace
 
 Ppu::Ppu() {
@@ -162,12 +187,13 @@ std::uint8_t Ppu::read(std::uint16_t address) {
         // Bit 0: 5C77. Bit 7: interlace field when SETINI selects interlaced output.
         value = static_cast<std::uint8_t>(0x01 | ((field_ & 1) != 0 ? 0x80 : 0));
     } else if (address == 0x2139 || address == 0x213A) {
-        const std::size_t byte = static_cast<std::size_t>(vramAddress_ & 0x7FFF) * 2 + (address == 0x213A ? 1 : 0);
+        const std::size_t byte =
+            static_cast<std::size_t>(mapVramAddress(vmain_, vramAddress_) & 0x7FFF) * 2 + (address == 0x213A ? 1 : 0);
         if (byte < vram_.size()) {
             value = vram_[byte];
         }
         if ((address == 0x213A) == ((vmain_ & 0x80) != 0)) {
-            vramAddress_ = static_cast<std::uint16_t>((vramAddress_ + 1) & 0x7FFF);
+            vramAddress_ = static_cast<std::uint16_t>((vramAddress_ + vramAddressStep(vmain_)) & 0x7FFF);
         }
     } else if (address == 0x2138) {
         const int index = oamByte_;
@@ -383,19 +409,13 @@ void Ppu::writeScroll(int layer, bool vertical, std::uint8_t value) {
 }
 
 void Ppu::writeVram(bool high, std::uint8_t value) {
-    const std::size_t byte = static_cast<std::size_t>(vramAddress_ & 0x7FFF) * 2 + (high ? 1 : 0);
+    const std::size_t byte = static_cast<std::size_t>(mapVramAddress(vmain_, vramAddress_) & 0x7FFF) * 2 + (high ? 1 : 0);
     if (byte >= vram_.size()) {
         return;
     }
     vram_[byte] = value;
     if (high == ((vmain_ & 0x80) != 0)) {
-        int step = 1;
-        if ((vmain_ & 0x03) == 1) {
-            step = 32;
-        } else if ((vmain_ & 0x03) != 0) {
-            step = 128;
-        }
-        vramAddress_ = static_cast<std::uint16_t>((vramAddress_ + step) & 0x7FFF);
+        vramAddress_ = static_cast<std::uint16_t>((vramAddress_ + vramAddressStep(vmain_)) & 0x7FFF);
     }
 }
 
@@ -788,6 +808,8 @@ void Ppu::paintLayer(int layer, int y, Texel* row, int lineWidth) const {
     const int planeSpan = bpp == 8 ? 49 : (bpp == 4 ? 17 : 1);
     const bool mosaic = (mosaic_ & (0x10 << layer)) != 0;
     const int mosaicSize = (mosaic_ & 0x0F) + 1;
+    // BGMODE bits 4–7 select 16×16 tiles. One map word then covers four 8×8 characters.
+    const bool largeTile = (bgmode_ & (0x10 << layer)) != 0;
     // Modes 5 and 6 draw 512 dots. Each character pixel is one half-dot wide, so
     // the same 8 by 8 tile covers twice the horizontal map range of a low-res line.
     const std::uint8_t* vram = vram_.data();
@@ -822,12 +844,23 @@ void Ppu::paintLayer(int layer, int y, Texel* row, int lineWidth) const {
             cacheTileY = tileY;
             cacheFineY = fineY;
             cacheEmpty = true;
-            const int word = mapWord(screen, tileX, tileY);
-            const int tile = word & 0x3FF;
+            const int word = mapWord(screen, largeTile ? (tileX >> 1) : tileX, largeTile ? (tileY >> 1) : tileY);
+            int tile = word & 0x3FF;
             cachePalette = (word >> 10) & 0x07;
             cachePriority = (word & 0x2000) != 0 ? 1 : 0;
             cacheFlipX = (word & 0x4000) != 0;
             const bool flipY = (word & 0x8000) != 0;
+            if (largeTile) {
+                int subX = tileX & 1;
+                int subY = tileY & 1;
+                if (cacheFlipX) {
+                    subX ^= 1;
+                }
+                if (flipY) {
+                    subY ^= 1;
+                }
+                tile = (tile + subX + subY * 16) & 0x3FF;
+            }
             const int tileRow = flipY ? 7 - (sampleY & 7) : (sampleY & 7);
             const std::size_t tileByte = static_cast<std::size_t>(charBase + tile * bytesPerTile + tileRow * 2);
             if (tileByte + static_cast<std::size_t>(planeSpan) < vramSize) {
@@ -1078,8 +1111,9 @@ void Ppu::collectSprites(int y, Texel* dots, int lineWidth) const {
         const int priority = (oam_[entry + 3] >> 4) & 0x03;
         const bool flipX = (oam_[entry + 3] & 0x40) != 0;
         const bool flipY = (oam_[entry + 3] & 0x80) != 0;
-        const int rowFromTop = y - originY;
-        if (rowFromTop < 0 || rowFromTop >= spriteHeight) {
+        // Sprite Y is 8-bit and wraps, so a sprite that starts near the bottom can cover the top.
+        const int rowFromTop = (y - originY) & 0xFF;
+        if (rowFromTop >= spriteHeight) {
             continue;
         }
         const int localY = flipY ? spriteHeight - 1 - rowFromTop : rowFromTop;

@@ -1,5 +1,7 @@
 #include "iris/snes/cartridge.hpp"
 
+#include "iris/snes/catalogue.hpp"
+
 namespace iris::systems::snes {
 namespace {
 
@@ -250,6 +252,12 @@ std::string boardText(const Cartridge& cartridge) {
         break;
     default:
         break;
+    }
+    const CatalogueStatus status = statusForCartridge(cartridge);
+    if (status == CatalogueStatus::Partial) {
+        text += " (catalogue: partial)";
+    } else if (status == CatalogueStatus::Blocked) {
+        text += " (catalogue: blocked)";
     }
     return text;
 }

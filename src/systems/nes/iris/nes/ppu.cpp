@@ -115,6 +115,9 @@ void Ppu::clock() {
     if ((scanline_ < kHeight || scanline_ == preRender) && dot_ >= 257 && dot_ <= 320) {
         fetchSpritePattern();
     }
+    if (scanline_ == preRender && dot_ == 257 && rendering()) {
+        copyHorizontal();
+    }
     if (scanline_ == preRender && dot_ == 280 && rendering()) {
         copyVertical();
     }
@@ -156,16 +159,11 @@ void Ppu::writeRegister(std::uint16_t address, std::uint8_t value) {
         if (!w_) {
             fineX_ = static_cast<std::uint8_t>(value & 0x07);
             t_ = static_cast<std::uint16_t>((t_ & ~0x001F) | (value >> 3));
-            if (rendering() && scanline_ < kHeight && dot_ >= 1 && dot_ <= 256) {
-                walkFineX_ = (walkFineX_ & ~0x07) | fineX_;
-                walkV_ = static_cast<std::uint16_t>((walkV_ & ~0x001F) | (t_ & 0x001F));
-            }
             w_ = true;
         } else {
+            // $2005 only updates the latch. Applying Y to the line walker here
+            // rewinds the scanlines already counted, so sprites (Mario) sit above the playfield.
             t_ = static_cast<std::uint16_t>((t_ & ~0x73E0) | ((value & 0x07) << 12) | ((value & 0xF8) << 2));
-            if (rendering() && scanline_ < kHeight && dot_ >= 1 && dot_ <= 256) {
-                walkV_ = static_cast<std::uint16_t>((walkV_ & ~0x73E0) | (t_ & 0x73E0));
-            }
             w_ = false;
         }
         break;

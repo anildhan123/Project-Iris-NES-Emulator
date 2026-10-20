@@ -33,7 +33,11 @@ void Expansion::power() {
     byteIndex_ = 0;
     command_ = 0;
     sdd1Address_ = 0;
+    sdd1DmaEnable_ = 0;
+    sdd1BankEnable_ = 0x0F;  // all $70–$73 banks enabled until a game writes $4801
     spc7110Address_ = 0;
+    spc7110Status_ = 0x80;  // data-port ready
+    std::fill(std::begin(spc7110Rtc_), std::end(spc7110Rtc_), static_cast<std::uint8_t>(0));
     bitstream_ = 0;
     bitCount_ = 0;
     waitingOutput_ = false;
@@ -71,6 +75,11 @@ bool Expansion::read(std::uint8_t bank, std::uint16_t address, bool hiRom, std::
     if (chip_ == Chip::Sdd1) {
         // Decompress window: host stand-in returns sequential ROM bytes (no Nintendo table).
         if (mapped >= 0x70 && mapped <= 0x73 && address < 0x8000) {
+            const int bankBit = mapped - 0x70;
+            if ((sdd1BankEnable_ & static_cast<std::uint8_t>(1u << bankBit)) == 0) {
+                value = 0;
+                return true;
+            }
             value = romAt(sdd1Address_++);
             return true;
         }
@@ -85,6 +94,15 @@ bool Expansion::read(std::uint8_t bank, std::uint16_t address, bool hiRom, std::
             // Data port: sequential ROM stream configured by $4805–$4807.
             value = romAt(spc7110Address_++);
             regs_[0] = value;
+            spc7110Status_ = 0x80;
+            return true;
+        }
+        if (address == 0x480C) {
+            value = spc7110Status_;
+            return true;
+        }
+        if (address >= 0x4840 && address <= 0x4846) {
+            value = spc7110Rtc_[address - 0x4840];
             return true;
         }
         if (address >= 0x4801 && address <= 0x483F) {
@@ -187,6 +205,12 @@ bool Expansion::write(std::uint8_t bank, std::uint16_t address, bool hiRom, std:
     if (chip_ == Chip::Sdd1) {
         if ((mapped <= 0x3F || mapped >= 0x80) && address >= 0x4800 && address <= 0x4807) {
             regs_[address - 0x4800] = value;
+            if (address == 0x4800) {
+                sdd1DmaEnable_ = value;
+            }
+            if (address == 0x4801) {
+                sdd1BankEnable_ = value == 0 ? 0x0F : value;
+            }
             if (address == 0x4801 || address == 0x4805) {
                 sdd1Address_ = (static_cast<std::uint32_t>(regs_[2]) << 16) | (static_cast<std::uint32_t>(regs_[3]) << 8) |
                                regs_[4];
@@ -196,11 +220,16 @@ bool Expansion::write(std::uint8_t bank, std::uint16_t address, bool hiRom, std:
         return false;
     }
     if (chip_ == Chip::Spc7110) {
+        if (address >= 0x4840 && address <= 0x4846) {
+            spc7110Rtc_[address - 0x4840] = value;
+            return true;
+        }
         if (address >= 0x4800 && address <= 0x483F) {
             regs_[address - 0x4800] = value;
             if (address == 0x4804 || address == 0x4807) {
                 spc7110Address_ = (static_cast<std::uint32_t>(regs_[5]) << 16) | (static_cast<std::uint32_t>(regs_[6]) << 8) |
                                   regs_[7];
+                spc7110Status_ = 0x80;
             }
             return true;
         }
@@ -398,6 +427,11 @@ void Expansion::saveState(iris::ByteWriter& out) const {
     out.u32(static_cast<std::uint32_t>(byteIndex_));
     out.u8(command_);
     out.u32(sdd1Address_);
+    out.u8(sdd1DmaEnable_);
+    out.u8(sdd1BankEnable_);
+    out.u32(spc7110Address_);
+    out.u8(spc7110Status_);
+    out.bytes(spc7110Rtc_, sizeof(spc7110Rtc_));
     out.u16(bitstream_);
     out.u32(static_cast<std::uint32_t>(bitCount_));
     out.boolean(waitingOutput_);
@@ -425,6 +459,12 @@ bool Expansion::loadState(iris::ByteReader& in) {
     const auto byteIndex = static_cast<int>(in.u32());
     const auto command = in.u8();
     const auto sdd1Address = in.u32();
+    const auto sdd1DmaEnable = in.u8();
+    const auto sdd1BankEnable = in.u8();
+    const auto spc7110Address = in.u32();
+    const auto spc7110Status = in.u8();
+    std::uint8_t spc7110Rtc[7] = {};
+    in.bytes(spc7110Rtc, sizeof(spc7110Rtc));
     const auto bitstream = in.u16();
     const auto bitCount = static_cast<int>(in.u32());
     const auto waitingOutput = in.boolean();
@@ -448,10 +488,14 @@ bool Expansion::loadState(iris::ByteReader& in) {
     byteIndex_ = byteIndex;
     command_ = command;
     sdd1Address_ = sdd1Address;
+    sdd1DmaEnable_ = sdd1DmaEnable;
+    sdd1BankEnable_ = sdd1BankEnable == 0 ? 0x0F : sdd1BankEnable;
+    spc7110Address_ = spc7110Address;
+    spc7110Status_ = spc7110Status;
+    std::copy(std::begin(spc7110Rtc), std::end(spc7110Rtc), std::begin(spc7110Rtc_));
     bitstream_ = bitstream;
     bitCount_ = bitCount;
     waitingOutput_ = waitingOutput;
-    spc7110Address_ = 0;
     return true;
 }
 

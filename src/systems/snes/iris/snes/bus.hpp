@@ -79,6 +79,15 @@ public:
     [[nodiscard]] const Ppu& ppu() const { return ppu_; }
     [[nodiscard]] const std::vector<std::uint8_t>& rom() const { return rom_; }
     [[nodiscard]] bool nmiEnabled() const { return (nmitimen_ & 0x80) != 0; }
+    // The NMI handler's read acknowledges $4210. Arm the flag again on RTI so a
+    // main-thread poll in that same vblank still observes it.
+    void setNmiService(bool active) { nmiService_ = active; }
+    void endNmiService() {
+        if (nmiService_) {
+            nmiFlag_ = true;
+        }
+        nmiService_ = false;
+    }
 
 private:
     struct DmaChannel {
@@ -177,6 +186,7 @@ private:
     // so multi-port and 16-bit command writes commit together (Akao-style traffic).
     bool apuIoHold_ = false;
     bool nmiFlag_ = false;
+    bool nmiService_ = false;
     bool irqFlag_ = false;
     bool hiRom_ = false;
     bool exHiRom_ = false;

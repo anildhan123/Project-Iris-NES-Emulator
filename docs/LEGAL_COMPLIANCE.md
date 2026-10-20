@@ -5,6 +5,7 @@ Iris is an independently written emulator. It does not distribute commercial gam
 ## Project rules
 
 - Do not commit commercial ROMs, BIOS files, proprietary firmware, or copied cartridge data.
+- `docs/COMMERCIAL_CATALOGUE.md` lists public title names and board classes only. It is not a ROM pack and must never gain dump files or download links.
 - Do not download games from ROM sites, and do not add a ROM search.
 - Users supply files they are legally entitled to use. Owning a cartridge does not by itself make every dump or download lawful.
 - Do not copy another emulator's branding, icons, or artwork.

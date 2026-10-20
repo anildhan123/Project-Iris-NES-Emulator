@@ -43,7 +43,11 @@ private:
     int byteIndex_ = 0;
     std::uint8_t command_ = 0;
     std::uint32_t sdd1Address_ = 0;
+    std::uint8_t sdd1DmaEnable_ = 0;
+    std::uint8_t sdd1BankEnable_ = 0;
     std::uint32_t spc7110Address_ = 0;
+    std::uint8_t spc7110Status_ = 0x80;
+    std::uint8_t spc7110Rtc_[7] = {};
     std::uint16_t bitstream_ = 0;
     int bitCount_ = 0;
     bool waitingOutput_ = false;

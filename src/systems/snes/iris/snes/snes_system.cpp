@@ -243,9 +243,13 @@ void SnesSystem::runFrame() {
                 hIrqDone = false;
                 hIrqLine = line;
             }
-            if (vOn && !hOn && !vIrqDone && line >= bus_.irqLine()) {
+            if (vOn && !hOn && !vIrqDone && line == bus_.irqLine()) {
                 bus_.raiseIrq();
-                cpu_.signalIrq();
+                if (line < bus_.vblankLine()) {
+                    cpu_.signalIrqBeforeNmi();
+                } else {
+                    cpu_.signalIrq();
+                }
                 vIrqDone = true;
             } else if (hOn && !vOn && !hIrqDone && activeDot >= bus_.irqDot() * 4) {
                 bus_.raiseIrq();
@@ -348,6 +352,18 @@ void SnesSystem::runFrame() {
         }
         // Run the Super FX for this scanline so GO work stays tied to the picture.
         bus_.stepGsu(bus_.gsuBudgetForLine());
+        // A long DMA can jump the program counter past the vertical IRQ line without
+        // entering that line's CPU loop. Latch the IRQ here, before vblank NMI, so
+        // the handler's forced blank does not overwrite the NMI brightness write.
+        if (!vIrqDone && bus_.virqEnabled() && !bus_.hirqEnabled() && line == bus_.irqLine()) {
+            bus_.raiseIrq();
+            if (line < bus_.vblankLine()) {
+                cpu_.signalIrqBeforeNmi();
+            } else {
+                cpu_.signalIrq();
+            }
+            vIrqDone = true;
+        }
         if (!signaled && line >= bus_.vblankLine()) {
             bus_.raiseNmi();
             if (bus_.nmiEnabled()) {

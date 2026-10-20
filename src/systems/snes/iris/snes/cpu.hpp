@@ -19,6 +19,9 @@ public:
     void resetTo(std::uint16_t pc);
     void signalNmi();
     void signalIrq();
+    // Vertical IRQ at a line above vblank must run before the vblank NMI when a
+    // long instruction made both pending at the next step.
+    void signalIrqBeforeNmi();
     int step(Bus& bus);
     // WAI is asleep until NMI or an IRQ the flags allow. The frame loop can
     // advance to that event instead of stepping two cycles at a time.
@@ -73,6 +76,7 @@ private:
     bool emulation_ = true;
     bool nmiPending_ = false;
     bool irqPending_ = false;
+    bool irqFirst_ = false;
     bool waiting_ = false;
     bool spinning_ = false;
     bool stopped_ = false;

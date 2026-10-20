@@ -44,6 +44,7 @@ void Bus::power() {
     dmaStall_ = 0;
     cycle_ = 0;
     nmiFlag_ = false;
+    nmiService_ = false;
     irqFlag_ = false;
     ccnt_ = 0;
     crv_ = 0;
@@ -1032,7 +1033,15 @@ void Bus::write(std::uint8_t bank, std::uint16_t address, std::uint8_t value) {
             return;
         }
         if (address == 0x4200) {
+            const std::uint8_t previous = nmitimen_;
             nmitimen_ = value;
+            // Auto-read is tied to vblank, not to the NMI enable bit. A game that
+            // turns the read on after this line's vblank edge still needs a latch.
+            if ((previous & 0x01) == 0 && (value & 0x01) != 0 && scanline_ >= vblankLine() && !autoJoyPending_) {
+                commitAutoJoy();
+                joyBusyUntil_ = cycle_ + 4224;
+                autoJoyPending_ = true;
+            }
             return;
         }
         if (address == 0x420B) {

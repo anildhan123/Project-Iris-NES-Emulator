@@ -815,21 +815,49 @@ ImU32 shellPacked(const ShellColor& color, int alpha = 255) {
     return IM_COL32(channel(color.red), channel(color.green), channel(color.blue), alpha);
 }
 
-void drawOriginalConsole(ImDrawList* draw, ImVec2 origin, bool superNes) {
-    if (draw == nullptr) {
+ImU32 scaleAlpha(ImU32 color, int alpha) {
+    const int mixed = (static_cast<int>((color >> 24) & 0xFF) * std::clamp(alpha, 0, 255)) / 255;
+    return (color & 0x00FFFFFFu) | (static_cast<ImU32>(mixed) << 24);
+}
+
+void drawConsolePlate(ImDrawList* draw, ImVec2 origin, float width, float height, bool superNes, int alpha, bool mirror) {
+    if (draw == nullptr || width < 8.0f || height < 8.0f || alpha <= 0) {
         return;
     }
+    const auto at = [&](float x, float y) {
+        const float py = mirror ? (origin.y + height - y) : (origin.y + y);
+        return ImVec2(origin.x + x, py);
+    };
+    const auto box = [&](float x, float y, float w, float h, ImU32 color, float rounding) {
+        const ImVec2 a = at(x, y);
+        const ImVec2 b = at(x + w, y + h);
+        draw->AddRectFilled(
+            ImVec2(std::min(a.x, b.x), std::min(a.y, b.y)), ImVec2(std::max(a.x, b.x), std::max(a.y, b.y)),
+            scaleAlpha(color, alpha), rounding);
+    };
+    const auto dot = [&](float x, float y, float radius, ImU32 color) {
+        draw->AddCircleFilled(at(x, y), radius, scaleAlpha(color, alpha));
+    };
+    const float round = superNes ? width * 0.08f : width * 0.04f;
     if (!superNes) {
-        draw->AddRectFilled(origin, ImVec2(origin.x + 128.0f, origin.y + 40.0f), IM_COL32(88, 90, 96, 255), 4.0f);
-        draw->AddRectFilled(ImVec2(origin.x + 14.0f, origin.y + 8.0f), ImVec2(origin.x + 78.0f, origin.y + 24.0f), IM_COL32(36, 38, 42, 255), 2.0f);
-        draw->AddCircleFilled(ImVec2(origin.x + 96.0f, origin.y + 20.0f), 7.0f, IM_COL32(176, 64, 58, 255));
-        draw->AddCircleFilled(ImVec2(origin.x + 114.0f, origin.y + 20.0f), 7.0f, IM_COL32(58, 92, 168, 255));
+        box(0.0f, 0.0f, width, height, IM_COL32(210, 208, 214, 255), round);
+        box(width * 0.08f, height * 0.06f, width * 0.84f, height * 0.14f, IM_COL32(42, 44, 50, 255), width * 0.02f);
+        box(width * 0.12f, height * 0.28f, width * 0.46f, height * 0.46f, IM_COL32(32, 34, 40, 255), width * 0.02f);
+        box(width * 0.18f, height * 0.34f, width * 0.34f, height * 0.07f, IM_COL32(96, 98, 104, 255), 2.0f);
+        dot(width * 0.72f, height * 0.40f, width * 0.055f, IM_COL32(186, 52, 48, 255));
+        dot(width * 0.86f, height * 0.40f, width * 0.055f, IM_COL32(40, 42, 48, 255));
+        box(width * 0.68f, height * 0.58f, width * 0.22f, height * 0.045f, IM_COL32(64, 66, 72, 255), 2.0f);
         return;
     }
-    draw->AddRectFilled(origin, ImVec2(origin.x + 148.0f, origin.y + 36.0f), IM_COL32(72, 76, 84, 255), 8.0f);
-    draw->AddRectFilled(ImVec2(origin.x + 36.0f, origin.y + 8.0f), ImVec2(origin.x + 96.0f, origin.y + 24.0f), IM_COL32(32, 34, 40, 255), 2.0f);
-    draw->AddRectFilled(ImVec2(origin.x + 108.0f, origin.y + 12.0f), ImVec2(origin.x + 122.0f, origin.y + 26.0f), IM_COL32(168, 72, 78, 255), 3.0f);
-    draw->AddRectFilled(ImVec2(origin.x + 128.0f, origin.y + 12.0f), ImVec2(origin.x + 142.0f, origin.y + 26.0f), IM_COL32(70, 110, 168, 255), 3.0f);
+    box(0.0f, 0.0f, width, height, IM_COL32(86, 90, 118, 255), round);
+    box(width * 0.10f, height * 0.07f, width * 0.80f, height * 0.16f, IM_COL32(36, 38, 54, 255), width * 0.04f);
+    box(width * 0.14f, height * 0.30f, width * 0.40f, height * 0.40f, IM_COL32(30, 32, 46, 255), width * 0.03f);
+    const float button = width * 0.065f;
+    dot(width * 0.68f, height * 0.38f, button, IM_COL32(176, 84, 176, 255));
+    dot(width * 0.84f, height * 0.38f, button, IM_COL32(64, 112, 196, 255));
+    dot(width * 0.68f, height * 0.54f, button, IM_COL32(64, 156, 96, 255));
+    dot(width * 0.84f, height * 0.54f, button, IM_COL32(196, 72, 72, 255));
+    box(width * 0.66f, height * 0.72f, width * 0.22f, height * 0.04f, IM_COL32(186, 58, 62, 255), 3.0f);
 }
 
 struct StartupPick {
@@ -843,8 +871,82 @@ StartupPick pickSystem(
     std::error_code demoError;
     const bool nesReady = !nesDemo.empty() && std::filesystem::is_regular_file(nesDemo, demoError);
     const bool snesReady = !snesDemo.empty() && std::filesystem::is_regular_file(snesDemo, demoError);
+    struct ConsoleEntry {
+        SystemKind kind;
+        const char* name;
+        const char* detail;
+        bool superNes;
+        bool demoReady;
+        const std::filesystem::path* demo;
+    };
+    const ConsoleEntry consoles[] = {
+        {SystemKind::Nes, "NES", "Cartridges, save states, and sound.", false, nesReady, &nesDemo},
+        {SystemKind::Snes, "Super NES", "LoROM, HiROM, and the SPC700.", true, snesReady, &snesDemo},
+    };
+    constexpr int consoleCount = 2;
+    const auto wrapIndex = [&](int value) {
+        int index = value % consoleCount;
+        if (index < 0) {
+            index += consoleCount;
+        }
+        return index;
+    };
+    struct HeldPads {
+        struct Slot {
+            SDL_JoystickID id = 0;
+            SDL_Gamepad* pad = nullptr;
+        };
+        std::vector<Slot> slots;
+        ~HeldPads() {
+            for (Slot& slot : slots) {
+                if (slot.pad != nullptr) {
+                    SDL_CloseGamepad(slot.pad);
+                }
+            }
+        }
+        void refresh() {
+            int count = 0;
+            SDL_JoystickID* ids = SDL_GetGamepads(&count);
+            std::vector<SDL_JoystickID> live;
+            if (ids != nullptr) {
+                live.assign(ids, ids + count);
+                SDL_free(ids);
+            }
+            slots.erase(
+                std::remove_if(
+                    slots.begin(),
+                    slots.end(),
+                    [&](Slot& slot) {
+                        const bool present = std::find(live.begin(), live.end(), slot.id) != live.end();
+                        if (!present && slot.pad != nullptr) {
+                            SDL_CloseGamepad(slot.pad);
+                            slot.pad = nullptr;
+                        }
+                        return !present;
+                    }),
+                slots.end());
+            for (const SDL_JoystickID id : live) {
+                const bool known = std::any_of(slots.begin(), slots.end(), [&](const Slot& slot) { return slot.id == id; });
+                if (known) {
+                    continue;
+                }
+                SDL_Gamepad* pad = SDL_OpenGamepad(id);
+                if (pad != nullptr) {
+                    slots.push_back(Slot{id, pad});
+                }
+            }
+        }
+    } pads;
     StartupPick pick;
     bool chosen = false;
+    int target = 0;
+    float shown = 0.0f;
+    int holdDirection = 0;
+    int holdFrames = 0;
+    // Ignore a key, click, or pad button that is already down when the window opens.
+    bool confirmWasDown = true;
+    bool quitWasDown = true;
+    bool mouseWasDown = true;
     while (!chosen) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -874,92 +976,228 @@ StartupPick pickSystem(
                 ImGuiWindowFlags_NoBringToFrontOnFocus);
         ImGui::PopStyleVar(2);
 
-        const ImVec2 origin = ImGui::GetWindowPos();
-        const ImVec2 size = ImGui::GetWindowSize();
-        ImDrawList* draw = ImGui::GetWindowDrawList();
-        drawShadedBand(origin, ImVec2(origin.x + size.x, origin.y + size.y), palette.headerTop, palette.face);
-        const float band = 84.0f;
-        drawShadedBand(origin, ImVec2(origin.x + size.x, origin.y + band), palette.titleTop, palette.titleBottom);
-        draw->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + band * 0.42f), IM_COL32(255, 255, 255, 36));
-        draw->AddText(ImVec2(origin.x + 28.0f, origin.y + 16.0f), shellPacked(palette.titleText), "Iris");
-        draw->AddText(
-            ImVec2(origin.x + 28.0f, origin.y + 44.0f), shellPacked(palette.titleText), "Choose a system, then play or open a game.");
-        draw->AddRect(origin, ImVec2(origin.x + size.x, origin.y + size.y), shellPacked(palette.frame));
-
-        const float gap = 20.0f;
-        const float footer = 56.0f;
-        const bool sideBySide = size.x >= 620.0f;
-        const float cardWidth = sideBySide ? std::min(320.0f, std::max(220.0f, (size.x - 64.0f - gap) * 0.5f))
-                                           : std::min(420.0f, std::max(240.0f, size.x - 64.0f));
-        const float cardHeight = 286.0f;
-        const float contentWidth = sideBySide ? cardWidth * 2.0f + gap : cardWidth;
-        const float startX = std::max(16.0f, (size.x - contentWidth) * 0.5f);
-        ImGui::SetCursorPos(ImVec2(0.0f, band + 16.0f));
-        ImGui::BeginChild("##system-cards", ImVec2(size.x, std::max(1.0f, size.y - band - footer - 16.0f)), ImGuiChildFlags_None);
-
-        const auto card = [&](const char* id, const char* title, const char* body, bool superNes, SystemKind cardKind,
-                              const std::filesystem::path& demo, bool demoReady) {
-            ImGui::PushStyleColor(
-                ImGuiCol_ChildBg, ImVec4(std::min(palette.face.red + 0.06f, 1.0f), std::min(palette.face.green + 0.06f, 1.0f),
-                                         std::min(palette.face.blue + 0.05f, 1.0f), 1.0f));
-            ImGui::BeginChild(id, ImVec2(cardWidth, cardHeight), ImGuiChildFlags_Borders);
-            drawSectionHeader(title, palette);
-            ImGui::Dummy(ImVec2(0.0f, 8.0f));
-            const float iconWidth = superNes ? 148.0f : 128.0f;
-            ImGui::SetCursorPosX(std::max(8.0f, (cardWidth - iconWidth) * 0.5f));
-            drawOriginalConsole(ImGui::GetWindowDrawList(), ImGui::GetCursorScreenPos(), superNes);
-            ImGui::Dummy(ImVec2(1.0f, superNes ? 36.0f : 40.0f));
-            ImGui::TextWrapped("%s", body);
-            const float buttonWidth = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-            ImGui::SetCursorPosY(cardHeight - ImGui::GetFrameHeight() * 2.0f - 18.0f);
-            if (ImGui::Button("Continue", ImVec2(buttonWidth, 0.0f))) {
-                pick.kind = cardKind;
-                pick.rom.clear();
-                chosen = true;
+        pads.refresh();
+        int direction = 0;
+        bool confirmDown = false;
+        bool quitDown = false;
+        const bool* keys = SDL_GetKeyboardState(nullptr);
+        if (keys != nullptr) {
+            if (keys[SDL_SCANCODE_LEFT] && !keys[SDL_SCANCODE_RIGHT]) {
+                direction = -1;
+            } else if (keys[SDL_SCANCODE_RIGHT]) {
+                direction = 1;
             }
-            ImGui::BeginDisabled(!demoReady);
-            if (ImGui::Button("Play Iris Demo", ImVec2(buttonWidth, 0.0f))) {
-                pick.kind = cardKind;
-                pick.rom = demo.string();
-                chosen = true;
-            }
-            ImGui::EndDisabled();
-            if (!demoReady && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                ImGui::SetTooltip("Iris Demo is placed beside the program when it is built.");
-            }
-            ImGui::EndChild();
-            ImGui::PopStyleColor();
-        };
-
-        ImGui::SetCursorPos(ImVec2(startX, 12.0f));
-        card(
-            "##nes-card", "NES", "Cartridges, save states, and sound. Continue to open a game, or play the original demo.",
-            false, SystemKind::Nes, nesDemo, nesReady);
-        if (sideBySide) {
-            ImGui::SameLine(0.0f, gap);
-        } else {
-            ImGui::SetCursorPosX(startX);
+            confirmDown = keys[SDL_SCANCODE_RETURN] || keys[SDL_SCANCODE_KP_ENTER];
+            quitDown = keys[SDL_SCANCODE_ESCAPE];
         }
-        card(
-            "##snes-card", "Super NES",
-            "LoROM and HiROM. The demo is stripes and a marker. The arrow keys move it.",
-            true, SystemKind::Snes, snesDemo, snesReady);
-        ImGui::SetCursorPosX(startX);
-        ImGui::Dummy(ImVec2(0.0f, 10.0f));
-        ImGui::PushTextWrapPos(startX + contentWidth);
-        ImGui::TextUnformatted("Super NES sound is the SPC700 and stereo DSP with Gaussian BRR. LoROM, HiROM, ExHiROM, DSP-1 through DSP-4, Super FX, and SA-1 are in this build. DMA, HDMA, and IRQs take cycles on the scanline. Timing inside an instruction is still approximate. Save states can be stored and restored for the loaded game. Place an optional 64-byte IPL at firmware/ipl.rom; Nintendo's dump is not shipped.");
-        ImGui::PopTextWrapPos();
-        ImGui::EndChild();
-
-        ImGui::SetCursorPos(ImVec2((size.x - 120.0f) * 0.5f, size.y - 42.0f));
-        if (ImGui::Button("Quit", ImVec2(120.0f, 0.0f))) {
+        int stick = 0;
+        for (const HeldPads::Slot& slot : pads.slots) {
+            if (slot.pad == nullptr) {
+                continue;
+            }
+            if (SDL_GetGamepadButton(slot.pad, SDL_GAMEPAD_BUTTON_DPAD_LEFT)) {
+                stick = -1;
+            }
+            if (SDL_GetGamepadButton(slot.pad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT)) {
+                stick = 1;
+            }
+            const Sint16 axis = SDL_GetGamepadAxis(slot.pad, SDL_GAMEPAD_AXIS_LEFTX);
+            if (axis <= -12000) {
+                stick = -1;
+            } else if (axis >= 12000) {
+                stick = 1;
+            }
+            if (SDL_GetGamepadButton(slot.pad, SDL_GAMEPAD_BUTTON_SOUTH) ||
+                SDL_GetGamepadButton(slot.pad, SDL_GAMEPAD_BUTTON_START)) {
+                confirmDown = true;
+            }
+        }
+        if (stick != 0) {
+            direction = stick;
+        }
+        if (direction == 0) {
+            holdDirection = 0;
+            holdFrames = 0;
+        } else if (direction != holdDirection) {
+            holdDirection = direction;
+            holdFrames = 0;
+            target += direction;
+        } else if (++holdFrames == 16) {
+            target += direction;
+            holdFrames = 8;
+        }
+        const float wheel = ImGui::GetIO().MouseWheel;
+        if (wheel > 0.2f) {
+            --target;
+        } else if (wheel < -0.2f) {
+            ++target;
+        }
+        if (quitDown && !quitWasDown) {
             pick.quit = true;
             chosen = true;
         }
+        quitWasDown = quitDown;
+        const auto choose = [&](bool demo) {
+            const ConsoleEntry& entry = consoles[wrapIndex(target)];
+            if (demo && !entry.demoReady) {
+                return;
+            }
+            pick.kind = entry.kind;
+            pick.rom = demo && entry.demo != nullptr ? entry.demo->string() : std::string{};
+            chosen = true;
+        };
+        if (confirmDown && !confirmWasDown) {
+            choose(false);
+        }
+        confirmWasDown = confirmDown;
+
+        const ImVec2 origin = ImGui::GetWindowPos();
+        const ImVec2 size = ImGui::GetWindowSize();
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImU32 stageTop = IM_COL32(8, 18, 40, 255);
+        const ImU32 stageMid = IM_COL32(18, 42, 82, 255);
+        const ImU32 stageBottom = IM_COL32(5, 10, 22, 255);
+        draw->AddRectFilledMultiColor(origin, ImVec2(origin.x + size.x, origin.y + size.y * 0.55f), stageTop, stageTop, stageMid, stageMid);
+        draw->AddRectFilledMultiColor(
+            ImVec2(origin.x, origin.y + size.y * 0.55f), ImVec2(origin.x + size.x, origin.y + size.y), stageMid, stageMid, stageBottom, stageBottom);
+        draw->AddText(ImVec2(origin.x + 28.0f, origin.y + 18.0f), IM_COL32(232, 236, 244, 255), "Iris");
+        draw->AddText(
+            ImVec2(origin.x + 28.0f, origin.y + 40.0f), IM_COL32(168, 186, 214, 255),
+            "Mouse, arrows, d-pad, or left stick");
+
+        const float barH = 124.0f;
+        const float top = 72.0f;
+        const float room = std::max(160.0f, size.y - top - barH);
+        const float centerW = std::clamp(size.x * 0.24f, 168.0f, 320.0f);
+        const float centerH = std::min(centerW * 1.38f, std::max(150.0f, room * 0.58f));
+        const float spacing = std::max(centerW * 1.02f, 160.0f);
+        const float stageCenter = origin.y + top + room * 0.36f;
+        shown += (static_cast<float>(target) - shown) * 0.18f;
+        if (std::fabs(static_cast<float>(target) - shown) < 0.001f) {
+            shown = static_cast<float>(target);
+        }
+
+        struct PlateSlot {
+            int index = 0;
+            float delta = 0.0f;
+            float x = 0.0f;
+            float y = 0.0f;
+            float w = 0.0f;
+            float h = 0.0f;
+            int alpha = 255;
+            bool superNes = false;
+        };
+        std::vector<PlateSlot> plates;
+        for (int copy = -2; copy <= 2; ++copy) {
+            for (int console = 0; console < consoleCount; ++console) {
+                const float place = static_cast<float>(console + copy * consoleCount);
+                const float delta = place - shown;
+                const float distance = std::fabs(delta);
+                if (distance > 3.15f) {
+                    continue;
+                }
+                const float scale = 1.0f / (1.0f + distance * 0.62f);
+                const float w = centerW * scale;
+                const float h = centerH * scale;
+                plates.push_back(PlateSlot{
+                    console + copy * consoleCount,
+                    delta,
+                    origin.x + size.x * 0.5f + delta * spacing - w * 0.5f,
+                    stageCenter - h * 0.5f,
+                    w,
+                    h,
+                    static_cast<int>(std::clamp(1.05f - distance * 0.2f, 0.30f, 1.0f) * 255.0f),
+                    consoles[console].superNes,
+                });
+            }
+        }
+        std::sort(plates.begin(), plates.end(), [](const PlateSlot& left, const PlateSlot& right) {
+            return std::fabs(left.delta) > std::fabs(right.delta);
+        });
+        const ImVec2 mouse = ImGui::GetMousePos();
+        const float buttonRow = origin.y + size.y - 52.0f;
+        const PlateSlot* hovered = nullptr;
+        if (mouse.y < buttonRow) {
+            for (const PlateSlot& plate : plates) {
+                const bool inside = mouse.x >= plate.x && mouse.x <= plate.x + plate.w && mouse.y >= plate.y && mouse.y <= plate.y + plate.h;
+                if (inside && (hovered == nullptr || std::fabs(plate.delta) < std::fabs(hovered->delta))) {
+                    hovered = &plate;
+                }
+            }
+        }
+        const bool mouseDown = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+        if (hovered != nullptr && mouseDown && !mouseWasDown) {
+            if (std::fabs(hovered->delta) < 0.45f && wrapIndex(hovered->index) == wrapIndex(target)) {
+                choose(false);
+            } else {
+                target = hovered->index;
+            }
+        }
+        mouseWasDown = mouseDown;
+        if (hovered != nullptr && std::fabs(hovered->delta) >= 0.45f) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        }
+
+        for (const PlateSlot& plate : plates) {
+            const float reflectionH = plate.h * 0.38f;
+            draw->AddRectFilled(
+                ImVec2(plate.x + 10.0f, plate.y + plate.h * 0.08f), ImVec2(plate.x + plate.w + 10.0f, plate.y + plate.h + 12.0f),
+                IM_COL32(0, 0, 0, plate.alpha / 4), 16.0f);
+            drawConsolePlate(draw, ImVec2(plate.x, plate.y), plate.w, plate.h, plate.superNes, plate.alpha, false);
+            drawConsolePlate(
+                draw, ImVec2(plate.x, plate.y + plate.h + 3.0f), plate.w, reflectionH, plate.superNes, plate.alpha / 3, true);
+            draw->AddRectFilledMultiColor(
+                ImVec2(plate.x, plate.y + plate.h + 3.0f), ImVec2(plate.x + plate.w, plate.y + plate.h + 3.0f + reflectionH),
+                IM_COL32(8, 16, 36, 0), IM_COL32(8, 16, 36, 0), IM_COL32(5, 10, 22, 230), IM_COL32(5, 10, 22, 230));
+            if (std::fabs(plate.delta) < 0.35f) {
+                draw->AddRect(
+                    ImVec2(plate.x - 7.0f, plate.y - 7.0f), ImVec2(plate.x + plate.w + 7.0f, plate.y + plate.h + 7.0f),
+                    shellPacked(palette.accent, 210), 18.0f, 0, 3.0f);
+            }
+        }
+
+        const ConsoleEntry& current = consoles[wrapIndex(target)];
+        const float nameScale = 1.85f;
+        const ImVec2 nameRaw = ImGui::CalcTextSize(current.name);
+        const ImVec2 nameSize(nameRaw.x * nameScale, nameRaw.y * nameScale);
+        const float nameY = origin.y + size.y - barH + 8.0f;
+        draw->AddText(
+            ImGui::GetFont(), ImGui::GetFontSize() * nameScale,
+            ImVec2(origin.x + (size.x - nameSize.x) * 0.5f, nameY), IM_COL32(244, 246, 250, 255), current.name);
+        const ImVec2 detailSize = ImGui::CalcTextSize(current.detail);
+        draw->AddText(
+            ImVec2(origin.x + (size.x - detailSize.x) * 0.5f, nameY + nameSize.y + 2.0f), IM_COL32(168, 186, 214, 255), current.detail);
+
+        const float buttonW = std::min(168.0f, std::max(96.0f, (size.x - 48.0f) / 3.0f));
+        const float buttonGap = 12.0f;
+        const float buttonsWidth = buttonW * 3.0f + buttonGap * 2.0f;
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + (size.x - buttonsWidth) * 0.5f, buttonRow));
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f, 0.20f, 0.34f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.34f, 0.54f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.30f, 0.46f, 0.70f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.94f, 0.96f, 0.98f, 1.0f));
+        if (ImGui::Button("Continue", ImVec2(buttonW, 0.0f))) {
+            choose(false);
+        }
+        ImGui::SameLine(0.0f, buttonGap);
+        ImGui::BeginDisabled(!current.demoReady);
+        if (ImGui::Button("Play Iris Demo", ImVec2(buttonW, 0.0f))) {
+            choose(true);
+        }
+        ImGui::EndDisabled();
+        if (!current.demoReady && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::SetTooltip("Iris Demo is placed beside the program when it is built.");
+        }
+        ImGui::SameLine(0.0f, buttonGap);
+        if (ImGui::Button("Quit", ImVec2(buttonW, 0.0f))) {
+            pick.quit = true;
+            chosen = true;
+        }
+        ImGui::PopStyleColor(4);
 
         ImGui::End();
         ImGui::Render();
-        glClearColor(palette.face.red, palette.face.green, palette.face.blue, 1.0f);
+        glClearColor(8.0f / 255.0f, 18.0f / 255.0f, 40.0f / 255.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(window);

@@ -187,6 +187,11 @@ void Cpu::signalIrq() {
     irqPending_ = true;
 }
 
+void Cpu::signalIrqBeforeNmi() {
+    irqPending_ = true;
+    irqFirst_ = true;
+}
+
 void Cpu::interrupt(Bus& bus, std::uint16_t vector) {
     if (!emulation_) {
         push(bus, pbr_);
@@ -197,6 +202,9 @@ void Cpu::interrupt(Bus& bus, std::uint16_t vector) {
     p_ = static_cast<std::uint8_t>(p_ | kIrqDisable);
     pbr_ = 0;
     pc_ = static_cast<std::uint16_t>(bus.read(0, vector) | (bus.read(0, static_cast<std::uint16_t>(vector + 1)) << 8));
+    if (vector == 0xFFEA || vector == 0xFFFA) {
+        bus.setNmiService(true);
+    }
 }
 
 bool Cpu::parked() const {
@@ -217,13 +225,21 @@ int Cpu::step(Bus& bus) {
         return 2;
     }
     waiting_ = false;
+    const bool irqReady = irqPending_ && (p_ & kIrqDisable) == 0;
+    if (irqFirst_ && irqReady) {
+        irqPending_ = false;
+        irqFirst_ = false;
+        interrupt(bus, emulation_ ? 0xFFFE : 0xFFEE);
+        return 7;
+    }
     if (nmiPending_) {
         nmiPending_ = false;
         interrupt(bus, emulation_ ? 0xFFFA : 0xFFEA);
         return 7;
     }
-    if (irqPending_ && (p_ & kIrqDisable) == 0) {
+    if (irqReady) {
         irqPending_ = false;
+        irqFirst_ = false;
         interrupt(bus, emulation_ ? 0xFFFE : 0xFFEE);
         return 7;
     }
@@ -866,6 +882,7 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
         pc_ = pull16();
         if (!emulation_) pbr_ = pull(bus);
         applyWidths();
+        bus.endNmiService();
         return 6;
     }
     case 0x54:
@@ -873,12 +890,18 @@ int Cpu::execute(Bus& bus, std::uint8_t opcode) {
         const std::uint8_t destination = fetch(bus);
         const std::uint8_t source = fetch(bus);
         const bool decrement = opcode == 0x44;
-        const int moves = (accumulator8() ? (a_ & 0xFF) : a_) + 1;
+        // Block move always counts with the full 16-bit accumulator. 8-bit index mode wraps X and Y.
+        const int moves = static_cast<int>(a_) + 1;
+        const std::uint16_t step = decrement ? 0xFFFF : 1;
         for (int count = 0; count < moves; ++count) {
             bus.write(destination, y_, bus.read(source, x_));
-            const std::uint16_t step = decrement ? 0xFFFF : 1;
-            x_ = static_cast<std::uint16_t>(x_ + step);
-            y_ = static_cast<std::uint16_t>(y_ + step);
+            if (index8()) {
+                x_ = static_cast<std::uint16_t>((x_ & 0xFF00) | ((x_ + step) & 0xFF));
+                y_ = static_cast<std::uint16_t>((y_ & 0xFF00) | ((y_ + step) & 0xFF));
+            } else {
+                x_ = static_cast<std::uint16_t>(x_ + step);
+                y_ = static_cast<std::uint16_t>(y_ + step);
+            }
         }
         a_ = 0xFFFF;
         dbr_ = destination;

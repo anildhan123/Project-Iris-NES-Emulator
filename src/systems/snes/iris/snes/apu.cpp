@@ -3,6 +3,7 @@
 #include "iris/byte_io.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstdint>
 
 namespace iris::systems::snes {
@@ -33,11 +34,6 @@ int clip15(int value) {
         return -0x4000;
     }
     return value;
-}
-
-// Intermediate Gaussian sums wrap in 15 bits (S-DSP).
-int wrap15(int value) {
-    return static_cast<std::int16_t>(value << 1) >> 1;
 }
 
 // S-DSP Gaussian interpolation coefficients (public hardware documentation).
@@ -395,8 +391,6 @@ void Apu::tickTimers(int cycles) {
             if (++timerStage_[index] >= target) {
                 timerStage_[index] = 0;
                 timerCount_[index] = static_cast<std::uint8_t>((timerCount_[index] + 1) & 0x0F);
-                // Any timer overflow can raise IRQ when PSW.I is set.
-                irqPending_ = true;
             }
         }
     }
@@ -437,6 +431,7 @@ std::uint8_t Apu::readReg(std::uint16_t address) {
     case 0x00F3:
         return (dspAddress_ & 0x7F) == 0x7C ? endx_ : dsp_[dspAddress_ & 0x7F];
     case 0x00F4:
+        return cpuIn_[0];
     case 0x00F5:
     case 0x00F6:
     case 0x00F7:
@@ -596,8 +591,9 @@ void Apu::decodeBlock(Voice& voice) {
         range = 12;
     }
     const int filter = (header >> 2) & 0x03;
-    voice.blockEnds = (header & 0x02) != 0;
-    voice.blockLoops = (header & 0x01) != 0;
+    // Header layout is SSSSFFLE: bit 0 ends the sample, bit 1 loops.
+    voice.blockEnds = (header & 0x01) != 0;
+    voice.blockLoops = (header & 0x02) != 0;
     for (int pair = 0; pair < 8; ++pair) {
         const int byte = ram_[static_cast<std::size_t>((voice.pointer + 1 + pair) & 0xFFFF)];
         // The low nibble is the earlier sample. Swapping the pair makes a tone buzz.
@@ -608,12 +604,15 @@ void Apu::decodeBlock(Voice& voice) {
                 nibble |= ~0x0F;
             }
             int sample = (nibble << range) >> 1;
+            const int previous = voice.previous;
+            const int older = voice.older;
+            // Arithmetic shifts match the S-DSP. Rounded multiplies drift and click at a loop.
             if (filter == 1) {
-                sample += voice.previous - (voice.previous >> 4);
+                sample += previous + ((-previous) >> 4);
             } else if (filter == 2) {
-                sample += ((voice.previous * 61) >> 5) - ((voice.older * 15) >> 4);
+                sample += (previous * 2) + ((-previous * 3) >> 5) - older + (older >> 4);
             } else if (filter == 3) {
-                sample += ((voice.previous * 115) >> 6) - ((voice.older * 13) >> 4);
+                sample += (previous * 2) + ((-previous * 13) >> 6) - older + ((older * 3) >> 4);
             }
             sample = clamp16(sample);
             voice.decoded[pair * 2 + side] = sample;
@@ -774,13 +773,13 @@ void Apu::tickEnvelope(Voice& voice, int index) {
 int Apu::interpolate(const Voice& voice) const {
     const int index = (voice.phase >> 4) & 0xFF;
     int sample = (kGauss[0x0FF - index] * voice.history[0]) >> 11;
-    sample = wrap15(sample);
     sample += (kGauss[0x1FF - index] * voice.history[1]) >> 11;
-    sample = wrap15(sample);
     sample += (kGauss[0x100 + index] * voice.history[2]) >> 11;
-    sample = wrap15(sample);
+    // The first three taps wrap in 16 bits. Wrapping every tap in 15 bits flips a loud
+    // sample into a one-sample spike.
+    sample = static_cast<std::int16_t>(sample);
     sample += (kGauss[index] * voice.history[3]) >> 11;
-    return clamp16(sample);
+    return clamp16(sample) & ~1;
 }
 
 void Apu::renderSample(float& outLeft, float& outRight) {
